@@ -1,0 +1,7 @@
+# Auditoria antes do S0 — 2026-11-11
+
+Na inspeção inicial, raiz e diretório de trabalho eram `/Volumes/OWC Express 1M2/Develop/data-mozaic`; `git status --short --branch` mostrou `main...origin/main` sem alterações locais. HEAD era `7a731a1` (merge do PR #1), com três commits exibidos no histórico; `origin` configurado. Não foi verificada situação remota por fetch. A [baseline original](repository-baseline.md) é registro histórico de antes da fundação, não inventário atual.
+
+`git ls-files` mostrou documentação arquitetural, cinco ADRs Proposed, tooling e testes do checker, workspace uv e lock, Makefile, hook e GitHub Actions. O mapa documentava 16 BCs; não havia schemas, código de domínio, membros adicionais do workspace ou serviços de captura rastreados. CI executava `make ci`, que sincroniza lock e executa lint, formato, checker e unittest. O projeto requeria Python >=3.12, `.python-version` indicava 3.12; uv local era 0.9.8, Python de sistema 3.14.3 e Make 3.81. Versões locais não são suporte homologado. O S0 acrescenta schemas draft e jsonschema como dependência de desenvolvimento, não runtime.
+
+Leituras: AGENTS, README, índice, baseline, domain, authoring, monorepo, execution, contracts-security, todos ADRs, roadmap, padrões de engenharia, Makefile, pyproject, workflow e hooks. A auditoria foi estática; não prova ausência de falhas arquiteturais nem autorização operacional. Não houve alterações preexistentes a preservar e nenhum commit, push ou operação destrutiva foi realizado.

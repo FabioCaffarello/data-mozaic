@@ -4,7 +4,7 @@
 
 | ID / contexto | Classificação | Estado próprio e fronteira |
 |---|---|---|
-| BC01 Source Catalog | supporting | Source e versões de configuração autorizada; não faz descoberta autônoma |
+| BC01 Source Catalog | supporting | Source e revisões de configuração; não faz descoberta autônoma |
 | BC02 Extension Catalog | generic/supporting | metadados e compatibilidade de extensões; não aprova releases de bot |
 | BC03 Pipeline Design | futuro supporting | definição de pipelines; não agenda tarefas internas de crawl |
 | BC04 Execution Coordination | supporting | CaptureRun, tentativas, conclusão e cancelamento; não possui a frontier |
@@ -26,7 +26,7 @@ BC05/BC16 são distinguíveis pela semântica de captura versus agendamento de t
 ```mermaid
 flowchart LR
  S[BC01 Source] -->|SourceRef e política| I[BC13 Intake]
- S -->|escopo| X[BC14 Scout]
+ S -->|identidade e revisão| X[BC14 Scout]
  X -->|proposta e evidências| P[BC15 Engineering]
  P -->|BotRelease| C[BC04 Coordination]
  I -->|InputReady| C
@@ -53,8 +53,8 @@ Em todos, comandos exigem autorização e chave idempotente; eventos são fatos 
 - Comandos `CreateInput`, `ReprocessInput`; eventos `InputReady`, `InputCompleted`; contrato CaptureInput. Depende SourceRef e recebe outcome de BC04; possui intenção e status do input, transação/outbox; conflito de idempotência rejeitado. Autorização por source/tenant. Não controla requests ou leases. Alternativa módulo no control; testes de duplicação e reprocessamento.
 
 ### BC14 Source Intelligence
-- Linguagem: ScoutSession, objetivo, hipótese e evidência. Root ScoutSession; entidades e VOs detalhados em [authoring](authoring.md). Invariante: qualquer conclusão aponta evidência e confiança, não implica autorização ou aprovação.
-- `StartScout`, `RecordFinding`, `SubmitProposal`; eventos `ScoutCompleted`, `ProposalSubmitted`; contratos ScoutEvidence, SourceProfile, proposta. Depende BC01/BC11 e custódia BC06; possui sessão/observações e referências, persistência auditável. Violação de escopo interrompe; isolamento e egress obrigatórios. Não executa release. Alternativa processo manual sem IA; teste prompt injection e escopo.
+- Linguagem: ScoutSession, objetivo, hipótese e evidência. Root ScoutSession; entidades e VOs detalhados em [Scout S0](scout.md). Invariante: qualquer conclusão aponta evidência e confiança, não implica autorização ou aprovação.
+- `StartScout`, `RecordFinding`, `SubmitProposal`; eventos `ScoutCompleted`, `ProposalSubmitted`; contratos draft ScoutRequest, EvidenceManifest, DiscoveryFinding e PlaybookProposal; SourceProfile futuro. Depende BC01/BC11 e custódia BC06; possui sessão/observações e referências, persistência auditável. Violação de escopo interrompe; isolamento e egress obrigatórios. Não executa release. Alternativa processo manual sem IA; teste prompt injection e escopo.
 
 ### BC15 Collector Engineering
 - Linguagem: PlaybookRevision, build, release. Roots Playbook e BotRelease; build é agregado com ciclo independente; VOs digest e compatibility. Invariante release imutável fixa revisão, compilador, SDK e artefato; aprovação é separada da geração.
@@ -75,3 +75,7 @@ Em todos, comandos exigem autorização e chave idempotente; eventos são fatos 
 ### BC06 Artifact Custody
 - Linguagem: RawArtifact, conteúdo, retenção. Root RawArtifact; entidade localização; VOs digest, classificação e política. Invariante identidade de observação não é hash; bytes compartilhados não compartilham automaticamente autorização ou retenção.
 - `RegisterArtifact`, `ApplyRetention`; eventos `ArtifactStored`, `ArtifactRetired`; contrato RawArtifactRef. Depende armazenamento de objetos e BC11; possui metadados, classificação e retenção; objeto gravado mas não registrado é reconciliável. Segregação por tenant, criptografia e acesso auditado. Não altera payload ou interpreta dados. Alternativa adapter local inicial; testes de integridade, orfandade e autorização.
+
+## BC14 S1
+
+O subconjunto executável de ScoutSession, evidência, finding e proposta está descrito em [BC14 S1](scout.md). Referências a BC01, BC06 e BC11 não transferem ownership; os demais elementos desta página permanecem propostas.

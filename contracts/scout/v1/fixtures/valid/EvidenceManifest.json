@@ -1,0 +1,18 @@
+{
+  "contract_version": "1.0.0",
+  "manifest_id": "manifest-1",
+  "session_id": "session-1",
+  "source": {
+    "source_id": "source-123",
+    "revision": "rev-4"
+  },
+  "sealed_at": "2026-11-11T12:00:00Z",
+  "artifacts": [
+    {
+      "artifact_id": "artifact-1",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "http_response",
+      "redaction": "none"
+    }
+  ]
+}

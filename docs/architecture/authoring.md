@@ -6,7 +6,7 @@
 flowchart LR
  S[Source revision] --> O[Objetivo e escopo]
  O --> X[Scout session]
- X --> E[Evidence bundle e trace]
+ X --> E[Evidence manifest e trace]
  E --> P[Source profile e achados]
  P --> D[Playbook proposal]
  D --> V[Revisão humana e validação]
@@ -16,32 +16,7 @@ flowchart LR
  A --> L[BotRelease imutável]
 ```
 
-```mermaid
-stateDiagram-v2
- [*] --> Created
- Created --> Authorized: escopo e orçamento aprovados
- Created --> Rejected
- Authorized --> Exploring
- Exploring --> Paused: limite ou acesso restrito
- Paused --> Exploring: autorização renovada
- Exploring --> Completed: evidências e proposta
- Exploring --> Failed
- Exploring --> Cancelled
- Completed --> [*]
-```
-
-| Conceito / dono BC14 | Atributos, relação, ciclo e invariantes |
-|---|---|
-| ScoutSession (root) | ID, source revision, objetivo, escopo, orçamento, versão de agente/ferramentas, timestamps, status acima; não navega antes de autorização nem após expiração |
-| ScoutObjective (VO) | pergunta, classe de dados, critérios de sucesso e limites; pertence à sessão e é imutável durante exploração; mudança cria revisão autorizada |
-| SourceObservation (entidade) | tempo, tipo, valor observado, referência a evidência e origem; append-only; hipótese é distinta de fato |
-| EvidenceBundle (entidade) | IDs de artefatos, hashes, classificação, retenção e proveniência; aberto → selado; selado é imutável, sem segredos |
-| NavigationTrace (entidade) | sequência sanitizada de ações, URLs e resultados autorizados, timestamps e referências; parcial ou selada; não armazena tokens |
-| DiscoveryFinding (entidade) | paginação, documentos/endpoints, tipo de dados ou pré-requisito autorizado; hipótese, confiança e evidências; proposto → revisado/rejeitado; confiança é declaração não prova |
-| SourceProfile (artefato versionado) | sumário de estrutura, limites, estratégias e achados referenciados; draft → revisado → substituído; sujeito a drift |
-| PlaybookProposal (entidade) | draft declarativo, suposições, referências de evidência, capacidades e riscos; proposto → aceito/rejeitado; aceite cria revisão em BC15, não release |
-
-Conteúdo de páginas e arquivos, inclusive instruções em linguagem natural, é dado não confiável: não altera missão, permissões ou acesso a segredos. Separar instruções de sistema das observações, reduzir ferramentas, auditar ações, validar saídas e exigir revisão para promoção; nenhuma técnica de prompt isolada garante segurança. Descoberta de paginação, documentos, endpoints e requisitos de autenticação registra o que foi observado e sua confiança, não concede direito de acesso.
+O modelo detalhado, ciclo de sessão e responsabilidades de evidência foram refinados em [BC14 Scout — S0](scout.md). O manifesto BC14 referencia artefatos sob custódia BC06; proposta para BC15 não é release.
 
 ## DSL proposta e IR
 

@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/scout/v1/EvidenceManifest.schema.json",
+  "title": "EvidenceManifest",
+  "description": "Projeção pública, não agregado interno.",
+  "type": "object",
+  "properties": {
+    "contract_version": {
+      "const": "1.0.0",
+      "description": "Versão draft exata do contrato."
+    },
+    "manifest_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identidade do manifesto BC14.",
+      "maxLength": 128
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Sessão de origem BC14.",
+      "maxLength": 128
+    },
+    "source": {
+      "type": "object",
+      "description": "Referência à fonte e revisão, sem copiar seu registro.",
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identidade opaca atribuída pelo BC01.",
+          "maxLength": 128
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Revisão imutável identificada pelo BC01.",
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "source_id",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "sealed_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Instante UTC de selagem.",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "Referências de evidências custodiadas pelo BC06.",
+      "items": {
+        "type": "object",
+        "description": "Referência, não transferência de ownership.",
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Identidade de artefato atribuída por BC06.",
+            "maxLength": 128
+          },
+          "sha256": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Digest dos bytes efetivamente custodiados.",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "kind": {
+            "enum": [
+              "http_response",
+              "rendered_dom",
+              "trace",
+              "other"
+            ],
+            "description": "Tipo da evidência, sem confundir raw e DOM."
+          },
+          "redaction": {
+            "enum": [
+              "none",
+              "redacted"
+            ],
+            "description": "Indica se os bytes referenciados foram redigidos."
+          }
+        },
+        "required": [
+          "artifact_id",
+          "sha256",
+          "kind",
+          "redaction"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "contract_version",
+    "manifest_id",
+    "session_id",
+    "source",
+    "sealed_at",
+    "artifacts"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,23 @@
+name: data-mozaic-scout-local
+
+services:
+  postgres:
+    image: postgres:18.4
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-scout}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a local development password in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-scout_dev}
+    ports:
+      - "127.0.0.1:${SCOUT_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - scout-postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    stop_grace_period: 30s
+
+volumes:
+  scout-postgres-data:

@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/scout/v1/DiscoveryFinding.schema.json",
+  "title": "DiscoveryFinding",
+  "description": "Projeção pública, não agregado interno.",
+  "type": "object",
+  "properties": {
+    "contract_version": {
+      "const": "1.0.0",
+      "description": "Versão draft exata do contrato."
+    },
+    "finding_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identidade do achado.",
+      "maxLength": 128
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Sessão de origem.",
+      "maxLength": 128
+    },
+    "source": {
+      "type": "object",
+      "description": "Referência à fonte e revisão, sem copiar seu registro.",
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identidade opaca atribuída pelo BC01.",
+          "maxLength": 128
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Revisão imutável identificada pelo BC01.",
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "source_id",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "statement": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Afirmação sanitizada.",
+      "maxLength": 4000
+    },
+    "epistemic_status": {
+      "enum": [
+        "observation",
+        "hypothesis",
+        "verified"
+      ],
+      "description": "Natureza da afirmação; verified exige verificação independente conforme política."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Confiança declarada, não prova."
+    },
+    "evidence_manifest_ids": {
+      "type": "array",
+      "description": "Manifestos que sustentam o achado.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Identidade de manifesto.",
+        "maxLength": 128
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "verification_note": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Método de verificação ou motivo de ainda não haver verificação.",
+      "maxLength": 2000
+    }
+  },
+  "required": [
+    "contract_version",
+    "finding_id",
+    "session_id",
+    "source",
+    "statement",
+    "epistemic_status",
+    "confidence",
+    "evidence_manifest_ids",
+    "verification_note"
+  ],
+  "additionalProperties": false
+}

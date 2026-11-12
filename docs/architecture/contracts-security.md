@@ -6,7 +6,8 @@
 |---|---|---|
 | SourceRef | VO público / BC01 | ID estável e revisão ou snapshot identificável |
 | ScoutSession | agregado interno / BC14 | status, objetivo e orçamento; API expõe projeção |
-| ScoutEvidence | mensagem/ref pública / BC14+BC06 | ID, hash, classificação e vínculo de evidência |
+| EvidenceManifest | projeção draft / BC14 | referências a artefatos sob custódia BC06 |
+| ScoutRequest, DiscoveryFinding, PlaybookProposal | projeções draft / BC14 | [schemas e semântica](../../contracts/scout/v1/README.md) |
 | SourceProfile | artefato versionado / BC14 | achados, confiança e evidências |
 | CapturePlaybook | configuração / BC15 | DSL versionada e escopo de aquisição |
 | PlaybookRevision | referência pública / BC15 | revisão imutável e digest da definição |
@@ -21,7 +22,7 @@
 
 IDs opacos estáveis, únicos por namespace/tenant; formato exato pendente. Comando inclui idempotency key escopada ao emissor e operação, hash do payload e retenção declarada; mesma chave com conteúdo diferente é conflito. CloudEvents propõe `id`, `source`, `type`, `specversion`, `subject`, `time`, `dataschema`, correlation/causation IDs, versão de agregado e contexto de trace; par source+id identifica evento, e replay preserva identidade. Dados pessoais e segredos ficam fora de envelopes e logs. Trace context externo é não confiável; correlation não é autorização.
 
-Versão major para incompatibilidade, minor para adição compatível após testes de consumidores, patch para correção sem alteração semântica. Compatibilidade depende de regras concretas do formato: adicionar campo obrigatório, alterar significado, enum fechado ou remover campo pode quebrar; tolerância a campos desconhecidos e enums precisa ser declarada por contrato. Eventos imutáveis publicados não são reescritos; migração usa versão paralela, período de suporte e prazo de depreciação acordado. Política de formatos de erro deve distinguir código estável, categoria, retryability, correlação e detalhes seguros; HTTP usa status adequado, eventos de falha são fatos, não exceções serializadas. Semântica de serialização, UTC, tamanho e normalização serão fixadas nos schemas futuros. Não existe contrato executável homologado nesta fundação.
+Versão major para incompatibilidade, minor para adição compatível após testes de consumidores, patch para correção sem alteração semântica. Compatibilidade depende de regras concretas do formato: adicionar campo obrigatório, alterar significado, enum fechado ou remover campo pode quebrar; tolerância a campos desconhecidos e enums precisa ser declarada por contrato. Eventos imutáveis publicados não são reescritos; migração usa versão paralela, período de suporte e prazo de depreciação acordado. Política de formatos de erro deve distinguir código estável, categoria, retryability, correlação e detalhes seguros; HTTP usa status adequado, eventos de falha são fatos, não exceções serializadas. Semântica de serialização, UTC, tamanho e normalização serão fixadas nos schemas futuros. Existem schemas executáveis draft do Scout, sem homologação; veja [contratos S0](../../contracts/scout/v1/README.md).
 
 ## Segurança de execução
 

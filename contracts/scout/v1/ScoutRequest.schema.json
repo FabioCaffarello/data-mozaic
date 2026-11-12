@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/scout/v1/ScoutRequest.schema.json",
+  "title": "ScoutRequest",
+  "description": "Projeção pública, não agregado interno.",
+  "type": "object",
+  "properties": {
+    "contract_version": {
+      "const": "1.0.0",
+      "description": "Versão draft exata do contrato."
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identidade da solicitação.",
+      "maxLength": 128
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Chave por emissor e operação; reutilização com payload diferente é conflito.",
+      "maxLength": 128
+    },
+    "source": {
+      "type": "object",
+      "description": "Referência à fonte e revisão, sem copiar seu registro.",
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identidade opaca atribuída pelo BC01.",
+          "maxLength": 128
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Revisão imutável identificada pelo BC01.",
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "source_id",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Pergunta e objetivo da investigação.",
+      "maxLength": 2000
+    },
+    "requested_scope": {
+      "type": "object",
+      "description": "Escopo solicitado sujeito à decisão BC11.",
+      "properties": {
+        "origins": {
+          "type": "array",
+          "description": "Origens HTTPS solicitadas; não são autorização.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Origem HTTPS.",
+            "pattern": "^https://[^/?#@\\s]+$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "path_prefixes": {
+          "type": "array",
+          "description": "Prefixos de caminho solicitados.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Prefixo absoluto.",
+            "pattern": "^/"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "methods": {
+          "type": "array",
+          "description": "Métodos solicitados de leitura.",
+          "items": {
+            "enum": [
+              "GET",
+              "HEAD"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "max_requests": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Teto solicitado de requests, incluindo redirects e subrequests."
+        },
+        "max_duration_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Duração máxima solicitada em segundos."
+        }
+      },
+      "required": [
+        "origins",
+        "path_prefixes",
+        "methods",
+        "max_requests",
+        "max_duration_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "requested_by": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identidade do solicitante, autenticada fora do payload.",
+      "maxLength": 128
+    }
+  },
+  "required": [
+    "contract_version",
+    "request_id",
+    "idempotency_key",
+    "source",
+    "objective",
+    "requested_scope",
+    "requested_by"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,18 @@
+name: mozaic-observability
+language: python
+owner: platform-observability
+responsibility: "Allowlisted structured events and correlation context"
+excludes:
+  - "Domain policy, authorization, and bounded-context models"
+  - "Global logging configuration and telemetry exporters"
+visibility: internal
+stability: experimental
+consumers:
+  - "apps/scout (BC14 application event emission)"
+dependencies:
+  runtime: []
+  development: []
+api_version: "0.x"
+tests:
+  command: "uv run --locked --package mozaic-observability python -m unittest discover -s libs/python/observability/tests -v"
+deprecation: "Document replacement and supported removal window before removal"

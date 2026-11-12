@@ -1,0 +1,14 @@
+{
+  "contract_version": "1.0.0",
+  "finding_id": "finding-1",
+  "session_id": "session-1",
+  "source": {
+    "source_id": "source-123",
+    "revision": "rev-4"
+  },
+  "statement": "A página contém um link próximo.",
+  "epistemic_status": "observation",
+  "confidence": 0.8,
+  "evidence_manifest_ids": [],
+  "verification_note": "Observado uma vez; comportamento geral não verificado."
+}
