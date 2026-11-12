@@ -7,3 +7,9 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: conventional-commit
+        name: Conventional Commit header
+        entry: python tooling/check_commit_message.py --file
+        language: system
+        stages: [commit-msg]
+        pass_filenames: true

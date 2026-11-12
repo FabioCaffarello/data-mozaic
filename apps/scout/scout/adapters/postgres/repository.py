@@ -11,7 +11,6 @@ from uuid import uuid4
 import psycopg
 from psycopg.types.json import Jsonb
 
-from ...application import projection
 from ...domain import (
     ArtifactRef,
     AuthorizedNavigationScope,
@@ -27,6 +26,7 @@ from ...domain import (
     SourceRef,
     State,
 )
+from ...projections import projection
 
 MIGRATIONS = Path(__file__).resolve().parents[5] / "migrations" / "scout"
 

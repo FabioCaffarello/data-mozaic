@@ -11,14 +11,14 @@ O projeto raiz é um projeto de ferramentas não publicável e membro raiz do wo
 | Comando | Comportamento |
 |---|---|
 | `make sync` | sincroniza dependências de desenvolvimento com `uv.lock`, sem atualizá-lo |
-| `make check` | verifica lock, lint e formato Ruff, links/fences e testes de tooling e contratos draft |
+| `make check` | verifica lock, lint e formato Ruff, documentação, migrations, naming, dependências de arquitetura e testes offline |
 | `make hooks-install` | sincroniza e instala o hook Git de pre-commit localmente |
 | `make pre-commit` | sincroniza e executa hooks sobre arquivos rastreados |
 | `make ci` | sincroniza e executa `make check`, como no GitHub Actions |
 
-Depois de alterar dependências ou membros, execute `uv lock` e inclua `pyproject.toml` e `uv.lock` no PR. O hook local chama `make check`, sem duplicar comandos; instalá-lo altera somente a configuração local de hooks Git. O CI executa `make ci` em PRs e em pushes para `main`, com token somente de leitura. O job não executa serviços, não valida a sintaxe de Mermaid nem confere links externos. `make pre-commit` considera arquivos rastreados; antes do primeiro commit o hook `always_run` ainda executa os checks do repositório.
+Depois de alterar dependências ou membros, execute `uv lock` e inclua `pyproject.toml` e `uv.lock` no PR. O hook pre-commit local chama `make check`; o hook commit-msg e o CI também validam Conventional Commit com scope explícito. O CI executa `make ci` em PRs e em pushes para `main`, com token somente de leitura, sem depender de PostgreSQL ou Docker. Integração PostgreSQL fica no target opt-in `make test-integration`. Os checks não validam a sintaxe de Mermaid nem links externos. `make pre-commit` considera arquivos rastreados; antes do primeiro commit o hook `always_run` executa os checks do repositório.
 
-CI futura deve acrescentar checagens de tipos, testes de domínio, compatibilidade de contratos e dependências arquiteturais, testes de integração e end-to-end, auditoria de dependências, segurança, build e proveniência de release quando existirem componentes para tal. Filtrar por componentes alterados e dependentes somente quando houver grafo confiável. Testes de arquitetura incluem import boundaries, consumidores, contratos e state ownership; integração cobre broker/DB/storage reais em ambiente controlado; E2E usa fonte de teste autorizada. Fault injection cobre duplicação, expiração, crash e efeitos parciais. Sem metas de coverage arbitrárias.
+CI futura deve acrescentar checagens de tipos, compatibilidade de contratos e consumidores, state ownership, auditoria de dependências, segurança, build e proveniência de release quando existirem componentes para tal. O checker atual cobre imports estáticos diretos nos módulos Python registrados; ele não prova dependências dinâmicas nem ownership em runtime. Filtrar por componentes alterados e dependentes somente quando houver grafo confiável. Integração cobre broker/DB/storage reais em ambiente controlado; E2E usa fonte de teste autorizada. Fault injection cobre duplicação, expiração, crash e efeitos parciais. Sem metas de coverage arbitrárias.
 
 Mudanças arquiteturais significativas exigem ADR com alternativas, trade-offs e critérios de validação. ADR Proposed não significa aprovação. Documentação deve separar estado real, proposta e hipóteses; diagramas descrevem relações nomeadas. Revisão humana é exigida para políticas de acesso, código gerado por IA e promoção de bot; privilégios e segredos mínimos. Alterações devem preservar trabalho não commitado.
 
