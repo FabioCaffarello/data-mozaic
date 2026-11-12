@@ -1,6 +1,6 @@
 # Registro de decisões
 
-Todos os registros estão **Proposed**; não há decisões Accepted, Rejected ou Superseded. A aprovação humana e os critérios de validação são pré-requisitos para consolidar escolhas, não para manter documentação.
+Todos os registros estão **Proposed**; não há decisões Accepted, Rejected ou Superseded. Merge de implementação, CI verde ou evidência técnica local não aprovam ADR. A aprovação humana e os critérios de validação são pré-requisitos para consolidar escolhas, não para manter documentação.
 
 | ADR | Escopo | Estado |
 |---|---|---|

@@ -263,8 +263,8 @@ class FakeProposalHandoff:
         self.deliveries = {}
 
     def deliver_message(self, message_id, payload):
-        from .application import projection
         from .edge import validate
+        from .projections import projection
 
         if isinstance(payload, dict):
             validate("PlaybookProposal", payload)

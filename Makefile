@@ -1,4 +1,4 @@
-.PHONY: help sync lock-check lint format-check docs-check migration-check test-libraries test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once
+.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once
 
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 
@@ -27,16 +27,23 @@ docs-check:
 migration-check:
 	uv run --locked python tooling/check_migrations.py
 
+naming-check:
+	uv run --locked python tooling/check_naming.py
+
+architecture-check:
+	uv run --locked python tooling/check_architecture.py
+
 test-libraries:
 	uv run --locked --package mozaic-observability python -m unittest discover -s libs/python/observability/tests -v
 
 test:
 	uv run --locked python -m unittest discover -s tests -v
 
-check: lock-check lint format-check docs-check migration-check test-libraries test
+check: lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test
 
 hooks-install: sync
-	uv run --locked pre-commit install
+	uv run --locked pre-commit install --hook-type pre-commit
+	uv run --locked pre-commit install --hook-type commit-msg
 
 pre-commit: sync
 	uv run --locked pre-commit run --all-files
