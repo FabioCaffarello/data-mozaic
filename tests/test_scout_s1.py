@@ -15,13 +15,14 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps/scout"))
 
-from scout.__main__ import PolicyDecisionRef, ScoutScope
 from scout.application import ScoutApplication, projection
 from scout.domain import (
     AuthorizationError,
     ConflictError,
     IntegrityError,
+    PolicyDecisionRef,
     ScoutObjective,
+    ScoutScope,
     ScoutSession,
     SourceRef,
     State,

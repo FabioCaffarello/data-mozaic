@@ -2,13 +2,13 @@
 
 ## Estado atual
 
-Scout S1.6 estabeleceu um fluxo offline durável de authoring para BC14: sessão, autorização, evidências de fixture, findings e `PlaybookProposal`, com PostgreSQL, receipts, reconciliação de custódia e relay independente. O acceptance report registra os checks locais. BC06 e BC15 continuam representados por doubles; não há navegação real, CapturePlaybook gerado, serviço de captura ou agente disponível. Os relatórios S0–S1 anteriores são snapshots históricos e permanecem preservados em `docs/architecture/assessments/`.
+Scout S1.6 estabeleceu um fluxo offline durável de authoring para BC14: sessão, autorização, evidências de fixture, findings e `PlaybookProposal`, com PostgreSQL, receipts, reconciliação de custódia e relay independente. O acceptance report registra os checks locais. BC06 e BC15 continuam representados por doubles. Um adapter HTTP controlado está em desenvolvimento experimental; não há tool host, source aprovada, navegação operacional, CapturePlaybook gerado, serviço de captura ou agente disponível. Os relatórios S0–S1 anteriores são snapshots históricos e permanecem preservados em `docs/architecture/assessments/`.
 
-Os ADRs 001–011 permanecem Proposed salvo aprovação registrada por decisão humana. Merge de código ou CI verde não altera o estado de um ADR.
+Os ADRs 001–012 permanecem Proposed salvo aprovação registrada por decisão humana. Merge de código ou CI verde não altera o estado de um ADR.
 
 ## PR A — governança do repositório
 
-Estabelecer Conventional Commits, validação de título de PR, checks de naming e dependências de arquitetura, e atualizar a documentação de estado. Fazer refatoração tática de `apps/scout/scout/application.py`, `domain.py` e `ports.py` somente quando coesa, preservando comportamento e contratos existentes. Os checks offline devem funcionar sem Docker.
+PR #3 estabeleceu Conventional Commits, validação de título de PR, checks de naming e dependências de arquitetura, e atualizou a documentação de estado. A refatoração tática extraiu a projeção de proposta sem alterar contratos. Os checks offline funcionam sem Docker.
 
 ## PR B — ferramentas controladas de authoring
 

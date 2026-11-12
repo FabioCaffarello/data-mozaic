@@ -15,7 +15,6 @@ def validate(name: str, payload: dict):
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(payload)
 
 
-def execute(app, request: dict, principal: str, fixture: bytes, now):
-    """Public request boundary; fixture bytes must be controlled and sanitised."""
+def validate_request(request: dict) -> None:
+    """Validate the public request projection before the application is called."""
     validate("ScoutRequest", request)
-    return app.run(request, principal, fixture, now)

@@ -1,10 +1,10 @@
 # Data Mozaic
 
-Data Mozaic é uma fundação orientada por contratos para aquisição e engenharia de dados. O repositório contém o workflow offline Scout S1, contratos draft, infraestrutura PostgreSQL de recuperação e checks de desenvolvimento. Não oferece navegação real, serviço de captura produtivo ou runtime de agente.
+Data Mozaic é uma fundação orientada por contratos para aquisição e engenharia de dados. O repositório contém o workflow offline Scout S1, contratos draft, infraestrutura PostgreSQL de recuperação e checks de desenvolvimento. Há um adapter HTTP de authoring experimental; sem tool host, source aprovada ou adapters BC06/BC11, navegação não está operacional. Não há serviço de captura produtivo ou runtime de agente.
 
 Comece pelo [índice de arquitetura](docs/architecture/README.md), [roadmap atual](docs/roadmap/implementation.md) e [baseline do repositório](docs/architecture/assessments/repository-baseline.md). O baseline e os assessments S0–S1 são snapshots históricos; use o roadmap para o estado atual. As decisões de arquitetura permanecem Proposed, salvo indicação explícita em cada registro.
 
-As dependências Python usam o workspace uv. Execute `make sync` e depois `make check` para os checks offline do repositório. `make ci` é a entrada do CI. O profile PostgreSQL local é opcional e requer Docker e um `.env` local ignorado pelo Git; veja [operações de recovery do Scout](docs/operations/scout-recovery.md).
+As dependências Python usam o workspace uv. Execute `make sync` e depois `make check` para os checks offline do repositório. `make ci` é a entrada do CI. O profile PostgreSQL local é opcional e requer Docker e um `.env` local ignorado pelo Git; veja [operações de recovery do Scout](docs/operations/scout-recovery.md). Os limites do adapter HTTP estão em [ferramentas de authoring](docs/operations/scout-authoring-tools.md).
 
 A demonstração do Scout é offline e usa fixtures:
 
