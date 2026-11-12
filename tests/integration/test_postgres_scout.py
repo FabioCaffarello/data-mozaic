@@ -7,7 +7,7 @@ import subprocess
 import sys
 import threading
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -19,9 +19,13 @@ from psycopg.sql import SQL, Identifier
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "apps" / "scout"))
 
-from scout.adapters.postgres.repository import PostgresScoutSessionRepository
+from scout.adapters.postgres.repository import (
+    PostgresNavigationBudgetLedger,
+    PostgresScoutSessionRepository,
+)
 from scout.domain import (
     ArtifactRef,
+    AuthorizationError,
     ConflictError,
     IntegrityError,
     PlaybookProposal,
@@ -31,6 +35,7 @@ from scout.domain import (
     SourceRef,
 )
 from scout.outbox_relay import OutboxRelay
+from scout.tools.policy import EffectiveScope, OriginGrant
 
 DSN = os.environ.get("SCOUT_TEST_DATABASE_URL")
 
@@ -138,6 +143,57 @@ class PostgresScoutRepositoryTests(unittest.TestCase):
                 "UPDATE scout_schema_migrations SET checksum=%s WHERE migration_name='001-durable-state.sql'",
                 (next(row[1] for row in before if row[0] == "001-durable-state.sql"),),
             )
+
+    def test_navigation_budget_is_atomic_durable_and_cannot_widen(self):
+        session = self.make_session()
+        self.repo.create(session, "budget-key", "c" * 64)
+        source = session.source
+        narrow = EffectiveScope(
+            "tester",
+            source,
+            (OriginGrant("https://example.org", ("/docs",)),),
+            datetime.now(UTC) + timedelta(minutes=5),
+            2,
+            30,
+            4096,
+        )
+        ledger = PostgresNavigationBudgetLedger(self.test_dsn)
+        with self.assertRaises(AuthorizationError):
+            ledger.consume(
+                session.session_id,
+                "wrong-principal",
+                0,
+                EffectiveScope(
+                    "impostor",
+                    source,
+                    narrow.grants,
+                    narrow.expires_at,
+                    narrow.max_requests,
+                    narrow.max_duration_seconds,
+                    narrow.max_response_bytes,
+                ),
+            )
+        first = ledger.consume(session.session_id, "call-1", 0, narrow)
+        self.assertEqual(first.consumed_requests, 1)
+
+        widened = EffectiveScope(
+            "tester",
+            source,
+            (OriginGrant("https://example.org", ("/",)),),
+            narrow.expires_at + timedelta(hours=1),
+            9,
+            90,
+            8192,
+        )
+        restarted = PostgresNavigationBudgetLedger(self.test_dsn)
+        second = restarted.consume(session.session_id, "call-2", 0, widened)
+        self.assertEqual(second.consumed_requests, 2)
+        self.assertEqual(second.scope.grants[0].path_prefixes, ("/docs",))
+        self.assertEqual(second.scope.max_requests, 2)
+        with self.assertRaises(AuthorizationError):
+            restarted.consume(session.session_id, "call-3", 0, widened)
+        with self.assertRaises(AuthorizationError):
+            restarted.consume(session.session_id, "call-1", 0, widened)
 
     def test_child_process_crash_before_and_after_commit(self):
         with connect(self.test_dsn) as conn:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -13,6 +14,7 @@ from psycopg.types.json import Jsonb
 
 from ...domain import (
     ArtifactRef,
+    AuthorizationError,
     AuthorizedNavigationScope,
     ConflictError,
     DiscoveryFinding,
@@ -27,8 +29,193 @@ from ...domain import (
     State,
 )
 from ...projections import projection
+from ...tools.policy import EffectiveScope, OriginGrant
+from ...tools.ports import BudgetState
 
 MIGRATIONS = Path(__file__).resolve().parents[5] / "migrations" / "scout"
+
+
+class PostgresNavigationBudgetLedger:
+    """Atomic, durable request accounting for authorized Scout HTTP sessions."""
+
+    def __init__(self, dsn: str):
+        self.dsn = dsn
+
+    def consume(
+        self,
+        session_id: str,
+        call_id: str,
+        hop: int,
+        scope: EffectiveScope,
+    ) -> BudgetState:
+        if (
+            not session_id
+            or len(session_id) > 256
+            or not call_id
+            or len(call_id) > 128
+            or hop < 0
+            or hop > 9
+        ):
+            raise AuthorizationError("invalid navigation budget request identity")
+        denial = None
+        result = None
+        with psycopg.connect(self.dsn) as conn:  # noqa: SIM117
+            with conn.transaction():
+                session_identity = conn.execute(
+                    """
+                    SELECT payload #>> '{session,principal}',
+                           payload #>> '{session,source,source_id}',
+                           payload #>> '{session,source,revision}'
+                    FROM scout_sessions WHERE session_id = %s
+                    FOR KEY SHARE
+                    """,
+                    (session_id,),
+                ).fetchone()
+                if session_identity != (
+                    scope.principal,
+                    scope.source.source_id,
+                    scope.source.revision,
+                ):
+                    raise AuthorizationError(
+                        "navigation budget does not match its Scout session"
+                    )
+                conn.execute(
+                    """
+                    INSERT INTO scout_navigation_budgets (
+                        session_id, principal, source_id, source_revision,
+                        approval_expires_at, scope_snapshot, max_requests,
+                        max_duration_seconds, max_response_bytes
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (session_id) DO NOTHING
+                    """,
+                    (
+                        session_id,
+                        scope.principal,
+                        scope.source.source_id,
+                        scope.source.revision,
+                        scope.expires_at,
+                        Jsonb(_scope_document(scope)),
+                        scope.max_requests,
+                        scope.max_duration_seconds,
+                        scope.max_response_bytes,
+                    ),
+                )
+                row = conn.execute(
+                    """
+                    SELECT principal, source_id, source_revision,
+                           max_requests, scope_snapshot, requests_used
+                    FROM scout_navigation_budgets
+                    WHERE session_id = %s
+                    FOR UPDATE
+                    """,
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    raise AuthorizationError("navigation budget session is missing")
+                (
+                    saved_principal,
+                    source_id,
+                    source_revision,
+                    saved_max_requests,
+                    saved_scope,
+                    requests_used,
+                ) = row
+                if (saved_principal, source_id, source_revision) != (
+                    scope.principal,
+                    scope.source.source_id,
+                    scope.source.revision,
+                ):
+                    raise AuthorizationError("navigation budget identity changed")
+                effective = _scope_from_document(saved_scope).intersect(scope)
+                conn.execute(
+                    """
+                    UPDATE scout_navigation_budgets SET
+                        approval_expires_at = %s,
+                        scope_snapshot = %s,
+                        max_requests = %s,
+                        max_duration_seconds = %s,
+                        max_response_bytes = %s
+                    WHERE session_id = %s
+                    """,
+                    (
+                        effective.expires_at,
+                        Jsonb(_scope_document(effective)),
+                        effective.max_requests,
+                        effective.max_duration_seconds,
+                        effective.max_response_bytes,
+                        session_id,
+                    ),
+                )
+                active = conn.execute(
+                    """
+                    SELECT approval_expires_at > statement_timestamp()
+                       AND started_at + max_duration_seconds * interval '1 second'
+                           > statement_timestamp()
+                    FROM scout_navigation_budgets WHERE session_id = %s
+                    """,
+                    (session_id,),
+                ).fetchone()[0]
+                if not active:
+                    denial = "navigation budget expired"
+                elif requests_used >= min(saved_max_requests, effective.max_requests):
+                    denial = "navigation request budget exhausted"
+                else:
+                    duplicate = conn.execute(
+                        """
+                        SELECT 1 FROM scout_navigation_budget_requests
+                        WHERE session_id = %s AND call_id = %s AND hop = %s
+                        """,
+                        (session_id, call_id, hop),
+                    ).fetchone()
+                    if duplicate:
+                        denial = "navigation request replay is not permitted"
+                if denial is None:
+                    conn.execute(
+                        """
+                        INSERT INTO scout_navigation_budget_requests (session_id, call_id, hop)
+                        VALUES (%s, %s, %s)
+                        """,
+                        (session_id, call_id, hop),
+                    )
+                    result = conn.execute(
+                        """
+                        UPDATE scout_navigation_budgets
+                        SET requests_used = requests_used + 1
+                        WHERE session_id = %s
+                        RETURNING started_at, requests_used
+                        """,
+                        (session_id,),
+                    ).fetchone()
+        if denial:
+            raise AuthorizationError(denial)
+        return BudgetState(*result, effective)
+
+
+def _scope_document(scope: EffectiveScope) -> dict:
+    return {
+        "principal": scope.principal,
+        "source": asdict(scope.source),
+        "grants": [asdict(grant) for grant in scope.grants],
+        "expires_at": scope.expires_at.isoformat(),
+        "max_requests": scope.max_requests,
+        "max_duration_seconds": scope.max_duration_seconds,
+        "max_response_bytes": scope.max_response_bytes,
+    }
+
+
+def _scope_from_document(value: dict) -> EffectiveScope:
+    return EffectiveScope(
+        value["principal"],
+        SourceRef(**value["source"]),
+        tuple(
+            OriginGrant(item["origin"], tuple(item["path_prefixes"]))
+            for item in value["grants"]
+        ),
+        datetime.fromisoformat(value["expires_at"]),
+        value["max_requests"],
+        value["max_duration_seconds"],
+        value["max_response_bytes"],
+    )
 
 
 def _session_document(session: ScoutSession) -> dict[str, Any]:

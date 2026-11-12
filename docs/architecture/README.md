@@ -1,6 +1,6 @@
 # Arquitetura Data Mozaic
 
-Status das decisões: **Proposed**, salvo indicação explícita; nenhuma ADR foi homologada. Os assessments registram evidências de incrementos implementados. Scout S1.6 é um fluxo offline com fixtures, doubles e relay durável; não há navegação real, serviço de captura ou runtime de agente.
+Status das decisões: **Proposed**, salvo indicação explícita; nenhuma ADR foi homologada. Os assessments registram evidências de incrementos implementados. Scout S1.6 é um fluxo offline com fixtures, doubles e relay durável. Um adapter HTTP experimental foi adicionado, sem tool host, source aprovada ou adapters BC06/BC11 configurados; não há navegação operacional, serviço de captura ou runtime de agente.
 
 1. [Baseline](assessments/repository-baseline.md)
 2. [Visão, planos e requisitos não funcionais](platform.md)
@@ -25,3 +25,5 @@ Status das decisões: **Proposed**, salvo indicação explícita; nenhuma ADR fo
 20. [Scout recovery operations](../operations/scout-recovery.md)
 
 O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os próximos limites de PR. Os assessments por incremento permanecem registros históricos de seu snapshot e comandos observados.
+
+O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental.

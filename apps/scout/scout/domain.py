@@ -60,14 +60,14 @@ class ScoutScope:
             raise IntegrityError("empty scope or budget")
 
     def intersect(self, other: "ScoutScope") -> "ScoutScope":
-        # Prefix intersection selects the narrower prefix, never its parent.
+        # Prefix containment is path-segment aware: /foo does not contain /foobar.
         paths = tuple(
             sorted(
                 {
-                    a if len(a) >= len(b) else b
+                    a if _path_prefix_contains(b, a) else b
                     for a in self.path_prefixes
                     for b in other.path_prefixes
-                    if a.startswith(b) or b.startswith(a)
+                    if _path_prefix_contains(a, b) or _path_prefix_contains(b, a)
                 }
             )
         )
@@ -78,6 +78,13 @@ class ScoutScope:
             min(self.max_requests, other.max_requests),
             min(self.max_duration_seconds, other.max_duration_seconds),
         )
+
+
+def _path_prefix_contains(prefix: str, path: str) -> bool:
+    normalized = prefix.rstrip("/") or "/"
+    if normalized == "/":
+        return path.startswith("/")
+    return path == normalized or path.startswith(normalized + "/")
 
 
 @dataclass(frozen=True)

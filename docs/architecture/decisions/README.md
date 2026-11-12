@@ -15,6 +15,7 @@ Todos os registros estão **Proposed**; não há decisões Accepted, Rejected ou
 | [009](009-scout-local-postgres-profile.md) | perfil local PostgreSQL | Proposed |
 | [010](010-shared-library-architecture.md) | organização de libraries compartilhadas | Proposed |
 | [011](011-scout-outbox-relay-protocol.md) | lease, fencing e retry do relay Scout | Proposed |
+| [012](012-scout-controlled-discovery-tools.md) | ferramentas HTTP de descoberta com política local | Proposed |
 
 Use o [template](template.md) para alterações que imponham restrições novas. Decisões menores e reversíveis podem permanecer nos documentos de arquitetura até existir evidência suficiente para ADR.
 7. [Recuperação durável de comandos Scout](007-scout-durable-recovery.md)
