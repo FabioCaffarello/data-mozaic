@@ -1,0 +1,4 @@
+# Exact registered source hostnames only; no wildcard suffixes.
+# This sample list is deliberately non-routable. Copy to .local/scout-egress-domains.txt
+# and replace entries with the hostnames of explicitly approved source registrations.
+blocked-target.example.test

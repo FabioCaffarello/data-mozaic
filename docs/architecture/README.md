@@ -1,6 +1,6 @@
 # Arquitetura Data Mozaic
 
-Status das decisões: **Proposed**, salvo indicação explícita; nenhuma ADR foi homologada. Os assessments registram evidências de incrementos implementados. Scout S1.6 é um fluxo offline com fixtures, doubles e relay durável. PR #4 adicionou um adapter HTTP experimental, sem tool host, source aprovada, sandbox ou adapters BC06/BC11 configurados. BC15 tem um gerador de CapturePlaybook draft e replay local por fixture; não há navegação operacional, serviço de captura ou runtime de agente.
+Status das decisões: **Proposed**, salvo indicação explícita; nenhuma ADR foi homologada. Os assessments registram evidências de incrementos implementados. Scout S1.6 é um fluxo offline com fixtures, doubles e relay durável. PR #4 adicionou um adapter HTTP experimental; PR #6 prova uma topologia opcional de egress isolado, mas ainda não fornece MCP/tool host ou sandbox do agente. BC15 tem um gerador de CapturePlaybook draft e replay local por fixture; não há navegação operacional, serviço de captura ou runtime de agente.
 
 1. [Baseline](assessments/repository-baseline.md)
 2. [Visão, planos e requisitos não funcionais](platform.md)
@@ -24,6 +24,7 @@ Status das decisões: **Proposed**, salvo indicação explícita; nenhuma ADR fo
 19. [Scout S1.6 acceptance evidence](assessments/scout-s1-6-acceptance.md)
 20. [Scout recovery operations](../operations/scout-recovery.md)
 21. [CapturePlaybook draft operations](../operations/capture-playbook-drafts.md)
+22. [Scout egress sandbox operations](../operations/scout-egress-sandbox.md)
 
 O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os próximos limites de PR. Os assessments por incremento permanecem registros históricos de seu snapshot e comandos observados.
 
