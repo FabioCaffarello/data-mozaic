@@ -1,4 +1,4 @@
-.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once
+.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check
 
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 
@@ -7,7 +7,7 @@ define require_env
 endef
 
 help:
-	@printf '%s\n' 'sync          Install locked development dependencies' 'check         Run repository checks' 'db-up         Start local PostgreSQL and wait for readiness' 'db-migrate    Apply checksummed pending Scout migrations' 'test-integration Run PostgreSQL recovery tests in an isolated database' 'scout-relay   Run independent Scout outbox worker' 'db-down       Stop PostgreSQL without deleting its volume' 'ci            Run repository checks'
+	@printf '%s\n' 'sync          Install locked development dependencies' 'check         Run repository checks' 'db-up         Start local PostgreSQL and wait for readiness' 'db-migrate    Apply checksummed pending Scout migrations' 'test-integration Run PostgreSQL recovery tests in an isolated database' 'scout-relay   Run independent Scout outbox worker' 'scout-sandbox-check Verify optional network egress isolation with Docker' 'db-down       Stop PostgreSQL without deleting its volume' 'ci            Run repository checks'
 
 sync:
 	uv sync --all-packages --locked
@@ -79,3 +79,6 @@ scout-relay:
 scout-relay-once:
 	$(require_env)
 	@set -a; . ./.env; set +a; PYTHONPATH=apps/scout uv run --locked python -m scout.relay_worker --once
+
+scout-sandbox-check:
+	uv run --locked python tooling/check_scout_sandbox.py

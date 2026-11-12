@@ -6,5 +6,6 @@ __pycache__/
 .env.*
 !.env.example
 .local/authoring-policy.json
+.local/scout-egress-domains.txt
 node_modules/
 target/

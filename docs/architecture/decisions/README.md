@@ -17,6 +17,7 @@ Todos os registros estão **Proposed**; não há decisões Accepted, Rejected ou
 | [011](011-scout-outbox-relay-protocol.md) | lease, fencing e retry do relay Scout | Proposed |
 | [012](012-scout-controlled-discovery-tools.md) | ferramentas HTTP de descoberta com política local | Proposed |
 | [013](013-capture-playbook-draft-contract.md) | artefato draft de CapturePlaybook com ownership BC15 | Proposed |
+| [014](014-scout-egress-sandbox.md) | isolamento de egress para o tool worker Scout | Proposed |
 
 Use o [template](template.md) para alterações que imponham restrições novas. Decisões menores e reversíveis podem permanecer nos documentos de arquitetura até existir evidência suficiente para ADR.
 7. [Recuperação durável de comandos Scout](007-scout-durable-recovery.md)

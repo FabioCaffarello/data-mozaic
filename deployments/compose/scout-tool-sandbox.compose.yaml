@@ -1,0 +1,32 @@
+name: data-mozaic-scout-tool-sandbox
+
+services:
+  squid:
+    image: ubuntu/squid:7.2-26.04_edge@sha256:6a252a42875d08bbb9dae4ab70a041afd4f8b530eaa0226102d1816309eef8b5
+    volumes:
+      - ../../config/scout/squid.conf:/etc/squid/squid.conf:ro
+      - ${SCOUT_EGRESS_DOMAINS_FILE:-../../config/scout/egress-domains.example.txt}:/etc/squid/allowed-domains.txt:ro
+    extra_hosts:
+      - "blocked-target.example.test:127.0.0.1"
+    networks:
+      - tool-internal
+      - egress
+
+  sandbox-probe:
+    image: python:3.12-slim
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ../../tooling/scout_sandbox_probe.py:/probe.py:ro
+    command: ["python", "/probe.py"]
+    networks:
+      - tool-internal
+
+networks:
+  tool-internal:
+    internal: true
+  egress:
+    driver: bridge

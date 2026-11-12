@@ -1,16 +1,13 @@
-"""HTTP-only transport with DNS results validated and pinned for each connection."""
+"""HTTP-only transport that requires the isolated Squid egress proxy."""
 
 from __future__ import annotations
 
-import asyncio
-import ipaddress
-import socket
 import ssl
 from dataclasses import dataclass
 from typing import Protocol
+from urllib.parse import urlsplit
 
 import aiohttp
-from aiohttp.abc import AbstractResolver
 
 from .url_policy import TargetRejected, normalize_url
 
@@ -28,57 +25,23 @@ class HTTPTransportPort(Protocol):
     ) -> HTTPResponse: ...
 
 
-class PublicAddressResolver(AbstractResolver):
-    """Resolve and return the exact public IPs that the connector will use."""
+class AiohttpSquidTransport:
+    """HTTP/TLS client that can only reach destinations through the local proxy."""
 
-    def __init__(self):
-        self._resolved_hosts = set()
-
-    async def resolve(self, host, port=0, family=socket.AF_UNSPEC):
-        if host in self._resolved_hosts:
-            raise TargetRejected(
-                "a logical HTTP request may resolve its host only once"
-            )
-        self._resolved_hosts.add(host)
-        try:
-            address = ipaddress.ip_address(host)
-        except ValueError:
-            loop = asyncio.get_running_loop()
-            records = await loop.getaddrinfo(
-                host, port, family=family, type=socket.SOCK_STREAM
-            )
-            values = {(item[0], item[4][0]) for item in records}
-            if not values:
-                raise TargetRejected("DNS returned no address")
-            if any(not ipaddress.ip_address(value).is_global for _, value in values):
-                raise TargetRejected("DNS resolved to a non-public address")
-        else:
-            if not address.is_global:
-                raise TargetRejected("non-public IP literals are prohibited")
-            values = {
-                (
-                    socket.AF_INET6 if address.version == 6 else socket.AF_INET,
-                    address.compressed,
-                )
-            }
-        return [
-            {
-                "hostname": host,
-                "host": ip,
-                "port": port,
-                "family": address_family,
-                "proto": socket.IPPROTO_TCP,
-                "flags": socket.AI_NUMERICHOST,
-            }
-            for address_family, ip in sorted(values)
-        ]
-
-    async def close(self):
-        return None
-
-
-class AiohttpPinnedTransport:
-    """Mature HTTP/TLS client; redirects and budgets are owned by the caller."""
+    def __init__(self, proxy_url: str):
+        parts = urlsplit(proxy_url)
+        if (
+            parts.scheme != "http"
+            or parts.hostname != "squid"
+            or parts.port != 3128
+            or parts.username is not None
+            or parts.password is not None
+            or parts.path
+            or parts.query
+            or parts.fragment
+        ):
+            raise ValueError("Scout transport requires the isolated squid:3128 proxy")
+        self.proxy_url = proxy_url
 
     async def get(
         self, url: str, max_bytes: int, timeout_seconds: float
@@ -90,7 +53,6 @@ class AiohttpPinnedTransport:
             sock_read=timeout_seconds,
         )
         connector = aiohttp.TCPConnector(
-            resolver=PublicAddressResolver(),
             use_dns_cache=False,
             force_close=True,
             ssl=ssl.create_default_context(),
@@ -107,7 +69,11 @@ class AiohttpPinnedTransport:
                     "User-Agent": "DataMozaic-Scout/0.1",
                 },
             ) as client,
-            client.get(target.url, allow_redirects=False) as response,
+            client.get(
+                target.url,
+                proxy=self.proxy_url,
+                allow_redirects=False,
+            ) as response,
         ):
             content_length = response.headers.get("Content-Length")
             if content_length is not None:

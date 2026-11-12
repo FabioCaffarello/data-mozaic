@@ -1,8 +1,6 @@
 import hashlib
-import socket
 import unittest
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
 
 from scout.domain import AuthorizationError, SourceRef
 from scout.tools.discovery import HTTPDiscoveryTool
@@ -15,7 +13,7 @@ from scout.tools.policy import (
     effective_scope,
 )
 from scout.tools.ports import BudgetState, EvidenceReference, TrustedToolContext
-from scout.tools.transport import HTTPResponse
+from scout.tools.transport import AiohttpSquidTransport, HTTPResponse
 from scout.tools.url_policy import TargetRejected, normalize_origin, normalize_url
 
 NOW = datetime(2026, 11, 12, 12, tzinfo=UTC)
@@ -53,6 +51,21 @@ class URLPolicyTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(TargetRejected):
                 normalize_url(url)
 
+
+class HTTPTransportConfigurationTests(unittest.TestCase):
+    def test_transport_requires_the_named_local_egress_proxy(self):
+        self.assertEqual(
+            "http://squid:3128", AiohttpSquidTransport("http://squid:3128").proxy_url
+        )
+        for proxy in (
+            "https://squid:3128",
+            "http://squid:8080",
+            "http://other-proxy:3128",
+            "http://user:secret@squid:3128",
+        ):
+            with self.subTest(proxy=proxy), self.assertRaises(ValueError):
+                AiohttpSquidTransport(proxy)
+
     def test_path_prefix_matches_segments(self):
         grant = OriginGrant("https://example.org", ("/foo",))
         policy = EffectiveScope(
@@ -69,37 +82,6 @@ class URLPolicyTests(unittest.TestCase):
         policy = ScoutScope(("https://example.org",), ("/foobar",), ("GET",), 2, 10)
         with self.assertRaises(IntegrityError):
             requested.intersect(policy)
-
-
-class DNSResolverTests(unittest.IsolatedAsyncioTestCase):
-    async def test_resolver_pins_only_public_results_and_rejects_private_answers(self):
-        class Loop:
-            async def getaddrinfo(self, host, port, family, type):
-                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))]
-
-        from scout.tools.transport import PublicAddressResolver
-
-        with patch(
-            "scout.tools.transport.asyncio.get_running_loop", return_value=Loop()
-        ):
-            resolver = PublicAddressResolver()
-            result = await resolver.resolve("example.org", 443)
-            self.assertEqual([item["host"] for item in result], ["8.8.8.8"])
-            with self.assertRaises(TargetRejected):
-                await resolver.resolve("example.org", 443)
-
-        class PrivateLoop:
-            async def getaddrinfo(self, host, port, family, type):
-                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.4", port))]
-
-        with (
-            patch(
-                "scout.tools.transport.asyncio.get_running_loop",
-                return_value=PrivateLoop(),
-            ),
-            self.assertRaises(TargetRejected),
-        ):
-            await PublicAddressResolver().resolve("example.org", 443)
 
 
 class LocalAuthorizationTests(unittest.TestCase):
