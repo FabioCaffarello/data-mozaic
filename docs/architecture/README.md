@@ -13,3 +13,13 @@ Status geral: **Proposed**, salvo indicação explícita. Nenhuma decisão foi h
 9. [Padrões de engenharia](../development/standards.md)
 10. [Roadmap e primeiro incremento](../roadmap/implementation.md)
 11. [Validação e limitações](assessments/architecture-validation.md)
+
+12. [BC14 Scout — modelo e segurança S0](scout.md)
+13. [Auditoria do estado antes do S0](assessments/scout-s0-audit.md)
+14. [Auditoria e garantias do Scout S1.1](assessments/scout-s1-1.md)
+15. [Estado durável e recovery S1.2](assessments/scout-s1-2-durable-recovery.md)
+16. [Convenções de nomenclatura](../development/naming-conventions.md)
+17. [Auditoria de Compose e recovery S1.2b](assessments/scout-s1-2b-recovery-gate.md)
+18. [Library Architecture](libraries.md)
+19. [Scout S1.6 acceptance evidence](assessments/scout-s1-6-acceptance.md)
+20. [Scout recovery operations](../operations/scout-recovery.md)

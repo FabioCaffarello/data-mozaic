@@ -1,0 +1,25 @@
+{
+  "contract_version": "1.0.0",
+  "proposal_id": "proposal-1",
+  "session_id": "session-1",
+  "source": {
+    "source_id": "source-123",
+    "revision": "rev-4"
+  },
+  "summary": "Investigar paginação por links dentro do escopo.",
+  "finding_ids": [
+    "finding-1"
+  ],
+  "evidence_manifest_ids": [
+    "manifest-1"
+  ],
+  "assumptions": [
+    "Links mantêm o mesmo formato."
+  ],
+  "risks": [
+    "A estrutura pode mudar."
+  ],
+  "required_capabilities": [
+    "http-read"
+  ]
+}

@@ -1,0 +1,13 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mozaic-observability"
+version = "0.1.0"
+description = "Structured, allowlisted event fields and correlation context for Data Mozaic applications"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mozaic_observability"]
