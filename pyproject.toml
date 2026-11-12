@@ -18,8 +18,9 @@ dev = [
 package = false
 
 [tool.uv.workspace]
-members = ["apps/scout", "libs/python/observability"]
+members = ["apps/scout", "apps/collector-engineering", "libs/python/observability"]
 
 [tool.uv.sources]
 mozaic-scout = { workspace = true }
+mozaic-collector-engineering = { workspace = true }
 mozaic-observability = { workspace = true }

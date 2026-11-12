@@ -8,6 +8,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOTS = (
     (ROOT / "apps/scout/scout", "scout"),
     (
+        ROOT / "apps/collector-engineering/collector_engineering",
+        "collector_engineering",
+    ),
+    (
         ROOT / "libs/python/observability/src/mozaic_observability",
         "mozaic_observability",
     ),
@@ -44,9 +48,15 @@ ALLOWED = {
         "scout.demo",
     },
     "mozaic_observability": set(),
+    "collector_engineering": set(),
     "tooling": {"scout.adapters", "scout.domain"},
 }
-INTERNAL_ROOTS = ("scout", "mozaic_observability", "tooling")
+INTERNAL_ROOTS = (
+    "scout",
+    "mozaic_observability",
+    "collector_engineering",
+    "tooling",
+)
 
 
 def module_name(path: Path, root: Path, prefix: str) -> str:

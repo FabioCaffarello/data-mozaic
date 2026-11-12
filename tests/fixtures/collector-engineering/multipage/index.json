@@ -1,0 +1,18 @@
+{
+  "pages": [
+    {
+      "url": "https://catalog.test/",
+      "status": 200,
+      "evidence_ref": "evidence-page-1",
+      "body_file": "page-1.html",
+      "sha256": "956ca70c1430ba75e36531c3e379d22dea13d88f8c0d01458958ebbfa432fde8"
+    },
+    {
+      "url": "https://catalog.test/items/page-2",
+      "status": 200,
+      "evidence_ref": "evidence-page-2",
+      "body_file": "page-2.html",
+      "sha256": "62bb4a67b6a0da1115e33c14ef727da2d2cebd4f23965484a432f737be377835"
+    }
+  ]
+}

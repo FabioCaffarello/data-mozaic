@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOTS = (
     ROOT / "apps/scout/scout",
+    ROOT / "apps/collector-engineering/collector_engineering",
     ROOT / "libs/python/observability/src",
     ROOT / "tooling",
 )

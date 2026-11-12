@@ -16,10 +16,10 @@ lock-check:
 	uv lock --check
 
 lint:
-	uv run --locked ruff check tooling tests apps/scout libs/python/observability
+	uv run --locked ruff check tooling tests apps/scout apps/collector-engineering libs/python/observability
 
 format-check:
-	uv run --locked ruff format --check tooling tests apps/scout libs/python/observability
+	uv run --locked ruff format --check tooling tests apps/scout apps/collector-engineering libs/python/observability
 
 docs-check:
 	uv run --locked python tooling/check_docs.py
