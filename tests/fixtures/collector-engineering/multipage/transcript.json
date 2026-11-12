@@ -1,0 +1,67 @@
+{
+  "objective": "Identify the structure of a paginated public catalog.",
+  "approval_record": {
+    "approval_id": "local-test-approval-1",
+    "source_id": "catalog-test",
+    "revision": "revision-1",
+    "origin": "https://catalog.test",
+    "path_prefixes": ["/"],
+    "budgets": {
+      "max_requests": 5,
+      "max_pages": 3,
+      "max_response_bytes": 100000
+    }
+  },
+  "approved_scope": {
+    "source_id": "catalog-test",
+    "revision": "revision-1",
+    "origin": "https://catalog.test",
+    "path_prefixes": ["/"],
+    "budgets": {
+      "max_requests": 5,
+      "max_pages": 3,
+      "max_response_bytes": 100000
+    }
+  },
+  "proposal": {
+    "contract_version": "1.0.0",
+    "proposal_id": "proposal-catalog-1",
+    "session_id": "session-catalog-1",
+    "source": {"source_id": "catalog-test", "revision": "revision-1"},
+    "summary": "Read the observed catalog pages and preserve their raw responses.",
+    "finding_ids": ["finding-catalog-1", "finding-catalog-2", "finding-catalog-3"],
+    "evidence_manifest_ids": ["evidence-page-1", "evidence-page-2"],
+    "assumptions": [],
+    "risks": ["Fixture replay does not establish production behavior."],
+    "required_capabilities": ["http-read"]
+  },
+  "findings": [
+    {
+      "finding_id": "finding-catalog-1",
+      "classification": "observed",
+      "evidence_refs": ["evidence-page-1", "evidence-page-2"]
+    },
+    {
+      "finding_id": "finding-catalog-2",
+      "classification": "hypothesized",
+      "evidence_refs": ["evidence-page-1"]
+    },
+    {
+      "finding_id": "finding-catalog-3",
+      "classification": "independently_verified",
+      "evidence_refs": ["evidence-page-2"]
+    }
+  ],
+  "pages": [
+    {
+      "url": "https://catalog.test/",
+      "evidence_ref": "evidence-page-1",
+      "discovered_links": ["https://catalog.test/items/page-2"]
+    },
+    {
+      "url": "https://catalog.test/items/page-2",
+      "evidence_ref": "evidence-page-2",
+      "discovered_links": []
+    }
+  ]
+}

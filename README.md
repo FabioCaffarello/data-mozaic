@@ -6,7 +6,9 @@ Comece pelo [índice de arquitetura](docs/architecture/README.md), [roadmap atua
 
 As dependências Python usam o workspace uv. Execute `make sync` e depois `make check` para os checks offline do repositório. `make ci` é a entrada do CI. O profile PostgreSQL local é opcional e requer Docker e um `.env` local ignorado pelo Git; veja [operações de recovery do Scout](docs/operations/scout-recovery.md). Os limites do adapter HTTP estão em [ferramentas de authoring](docs/operations/scout-authoring-tools.md).
 
-A demonstração do Scout é offline e usa fixtures:
+A demonstração do Scout e a validação/replay de CapturePlaybook draft são offline e usam fixtures. Veja [operações de drafts BC15](docs/operations/capture-playbook-drafts.md). Nenhum desses comandos navega pela rede.
+
+Demo Scout:
 
 ```sh
 PYTHONPATH=apps/scout uv run --locked python -m scout
