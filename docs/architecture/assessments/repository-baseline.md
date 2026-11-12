@@ -1,0 +1,5 @@
+# Repository baseline — 2026-11-11
+
+Auditoria antes da criação de arquivos. Diretório e raiz Git: `/Volumes/OWC Express 1M2/Develop/data-mozaic`. `.git` existente; branch `main` sem commits (HEAD inexistente). `git status --short --untracked-files=all`, `git ls-files` e `git ls-files --others --exclude-standard` não retornaram arquivos; `rg --files --hidden -g '!.git'` não encontrou arquivos. A listagem da raiz continha apenas `.git`. Não havia documentação, contratos, Input Manager, workflows, configurações ou convenções locais a preservar ou avaliar. Nenhum repositório aninhado foi criado.
+
+Ferramentas observadas: Git 2.39.5, Go 1.26.5, Python 3.14.3, uv 0.9.8, Cargo/rustc 1.90.0, Node 26.3.0, pnpm 10.33.2 e Docker 28.5.1. `task` não foi encontrado no PATH. Estas são versões locais observadas, não versões aprovadas para o projeto. Não foram verificadas instalações de servidores, conectividade Docker ou extensões. Nenhum workspace anterior existia. Risco inicial baixo de sobrescrita; ainda assim o estado Git deve ser inspecionado antes de cada alteração.
