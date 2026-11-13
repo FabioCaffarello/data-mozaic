@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -19,10 +20,13 @@ from psycopg.sql import SQL, Identifier
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "apps" / "scout"))
 
+from scout.adapters.fixtures import FixtureExplorer
+from scout.adapters.local_custody import LocalFileEvidenceCustody
 from scout.adapters.postgres.repository import (
     PostgresNavigationBudgetLedger,
     PostgresScoutSessionRepository,
 )
+from scout.application import ScoutApplication
 from scout.domain import (
     ArtifactRef,
     AuthorizationError,
@@ -34,6 +38,7 @@ from scout.domain import (
     ScoutSession,
     SourceRef,
 )
+from scout.fakes import FakePolicy, FakeSourceLookup
 from scout.outbox_relay import OutboxRelay
 from scout.tools.policy import EffectiveScope, OriginGrant
 
@@ -110,6 +115,169 @@ class PostgresScoutRepositoryTests(unittest.TestCase):
         self.assertEqual(restored, session)
         with self.assertRaises(ConflictError):
             restarted.find_intent("tester", key, "b" * 64)
+
+    def test_incremental_command_intent_cas_and_result_survive_restart(self):
+        session = self.make_session()
+        self.repo.create(
+            session,
+            "incremental-start",
+            "d" * 64,
+            command_kind="StartScout",
+            receipt_status="completed",
+        )
+        command_key = "fixture-command-" + uuid4().hex
+        command_id = "fixture-id-" + uuid4().hex
+        fingerprint = "e" * 64
+        self.repo.begin_command(
+            "tester",
+            session.session_id,
+            command_key,
+            command_id,
+            "ExploreFixture",
+            fingerprint,
+            {"fixture_id": "catalog-home", "expected_version": 0},
+        )
+        restarted = PostgresScoutSessionRepository(self.test_dsn)
+        self.assertTrue(restarted.has_incomplete_commands(session.session_id))
+        loaded = restarted.get_session(session.session_id)
+        restarted.complete_command(loaded, 0, "tester", command_key, fingerprint)
+        another_restart = PostgresScoutSessionRepository(self.test_dsn)
+        self.assertFalse(another_restart.has_incomplete_commands(session.session_id))
+        result = another_restart.get_command_result("tester", command_key, fingerprint)
+        self.assertEqual(1, result.version)
+        self.assertEqual(
+            "completed",
+            another_restart.find_command_header("tester", command_key, fingerprint)[
+                "status"
+            ],
+        )
+        with self.assertRaises(ConflictError):
+            another_restart.get_command_result("tester", command_key, "f" * 64)
+
+    def test_custody_intent_can_be_reconciled_after_repository_restart(self):
+        session = self.make_session()
+        self.repo.create(session, "custody-start", "a" * 64)
+        artifact_id = "artifact-" + "b" * 64
+        self.repo.begin_custody_intent(artifact_id, session.session_id, "c" * 64, 42)
+        restarted = PostgresScoutSessionRepository(self.test_dsn)
+        intent = restarted.get_custody_intent(artifact_id)
+        self.assertEqual("pending", intent["status"])
+        self.assertEqual(42, intent["expected_size_bytes"])
+        restarted.mark_custody_unknown(artifact_id)
+        unresolved = PostgresScoutSessionRepository(self.test_dsn).get_custody_intent(
+            artifact_id
+        )
+        self.assertEqual("unknown", unresolved["status"])
+
+    def test_incremental_fixture_to_transcript_recovers_lost_custody_ack(self):
+        source = SourceRef("catalog-test", "revision-1")
+        scope = ScoutScope(("https://catalog.test",), ("/",), ("GET",), 4, 60)
+        now = datetime.now(UTC)
+        from scout.domain import PolicyDecisionRef
+
+        decision = PolicyDecisionRef(
+            "approval-integration",
+            "tester",
+            source,
+            True,
+            now + timedelta(minutes=5),
+            scope,
+        )
+        with tempfile.TemporaryDirectory(prefix="scout-postgres-custody-") as root:
+            custody_root = Path(root).resolve()
+            local_custody = LocalFileEvidenceCustody(custody_root)
+
+            class LostAcknowledgement:
+                def lookup(self, artifact_id):
+                    return local_custody.lookup(artifact_id)
+
+                def store(self, session_id, source, content, artifact_id):
+                    local_custody.store(session_id, source, content, artifact_id)
+                    raise OSError("lost acknowledgement after durable local write")
+
+                def verify(self, artifact):
+                    return local_custody.verify(artifact)
+
+            def application(repository, custody):
+                return ScoutApplication(
+                    FakeSourceLookup({source: scope}),
+                    FakePolicy(decision),
+                    repository,
+                    custody,
+                    FixtureExplorer(),
+                )
+
+            first_app = application(self.repo, LostAcknowledgement())
+            session = first_app.start_incremental(
+                source=source,
+                objective="recover a durable fixture capture",
+                principal="tester",
+                command_id="session-integration-" + uuid4().hex,
+                now=now,
+            )
+            fixture_command = {
+                "session_id": session.session_id,
+                "principal": "tester",
+                "command_id": "capture-integration-" + uuid4().hex,
+                "idempotency_key": "capture-key-" + uuid4().hex,
+                "fingerprint": "a" * 64,
+                "expected_version": 0,
+                "fixture_id": "catalog-home",
+                "now": now,
+            }
+            with self.assertRaises(OSError):
+                first_app.explore_fixture_incremental(**fixture_command)
+
+            restarted_repository = PostgresScoutSessionRepository(self.test_dsn)
+            restarted_app = application(
+                restarted_repository, LocalFileEvidenceCustody(custody_root)
+            )
+            captured = restarted_app.explore_fixture_incremental(**fixture_command)
+            self.assertEqual(1, captured.version)
+            manifest_id = captured.manifests[0].manifest_id
+            finding = restarted_app.record_finding_incremental(
+                session_id=session.session_id,
+                principal="tester",
+                command_id="finding-integration-" + uuid4().hex,
+                idempotency_key="finding-key-" + uuid4().hex,
+                fingerprint="b" * 64,
+                expected_version=1,
+                statement="The registered fixture page has a captured link.",
+                epistemic_status="observation",
+                confidence=1,
+                manifest_ids=(manifest_id,),
+                verification_note="Observed in the verified fixture bytes.",
+                now=now,
+            )
+            proposed = restarted_app.submit_proposal_incremental(
+                session_id=session.session_id,
+                principal="tester",
+                expected_version=2,
+                command_id="proposal-integration-" + uuid4().hex,
+                idempotency_key="proposal-key-" + uuid4().hex,
+                fingerprint="c" * 64,
+                summary="Draft a plan for the registered catalog fixture.",
+                finding_ids=(finding.findings[0].finding_id,),
+                manifest_ids=(manifest_id,),
+                assumptions=(),
+                risks=("Captured fixture is not a live source.",),
+                required_capabilities=("http.fetch",),
+                now=now,
+            )
+            self.assertEqual(3, proposed.version)
+            exported = restarted_app.export_transcript(
+                session.session_id, "tester", now
+            )
+            again = application(
+                PostgresScoutSessionRepository(self.test_dsn),
+                LocalFileEvidenceCustody(custody_root),
+            ).export_transcript(session.session_id, "tester", now)
+            self.assertEqual(exported, again)
+            self.assertTrue(
+                restarted_repository.handoff_status(
+                    "handoff:" + proposed.proposal.proposal_id
+                )
+            )
 
     def test_migrations_are_checksummed_and_idempotent(self):
         self.repo.migrate()

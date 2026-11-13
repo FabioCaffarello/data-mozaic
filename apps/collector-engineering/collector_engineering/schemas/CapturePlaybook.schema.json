@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/capture-playbook/draft/v1/CapturePlaybook.schema.json",
+  "title": "CapturePlaybookDraft",
+  "description": "Illustrative draft DSL for BC15 validation; not a runtime or release contract.",
+  "type": "object",
+  "properties": {
+    "dsl_version": {"const": "capture-playbook-draft/v1"},
+    "playbook_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "status": {"const": "draft"},
+    "source": {
+      "type": "object",
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "revision": {"type": "string", "minLength": 1, "maxLength": 128},
+        "origin": {"type": "string", "format": "uri"},
+        "path_prefixes": {"type": "array", "items": {"type": "string", "pattern": "^/"}, "minItems": 1, "uniqueItems": true}
+      },
+      "required": ["source_id", "revision", "origin", "path_prefixes"],
+      "additionalProperties": false
+    },
+    "objective": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "proposal_ref": {"type": "string", "minLength": 1, "maxLength": 128},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "finding_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "classification": {"enum": ["observed", "hypothesized", "independently_verified"]},
+          "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true}
+        },
+        "required": ["finding_id", "classification", "evidence_refs"],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "capabilities": {"type": "array", "items": {"enum": ["http.fetch", "links.discover", "pagination.bounded", "output.raw"]}, "minItems": 1, "uniqueItems": true},
+    "budgets": {
+      "type": "object",
+      "properties": {
+        "max_requests": {"type": "integer", "minimum": 1, "maximum": 50},
+        "max_pages": {"type": "integer", "minimum": 1, "maximum": 20},
+        "max_response_bytes": {"type": "integer", "minimum": 1, "maximum": 2000000}
+      },
+      "required": ["max_requests", "max_pages", "max_response_bytes"],
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {"type": "object", "properties": {"id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"}, "action": {"const": "http.fetch"}, "url": {"type": "string", "format": "uri"}}, "required": ["id", "action", "url"], "additionalProperties": false},
+          {"type": "object", "properties": {"id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"}, "action": {"const": "links.discover"}, "from_step": {"type": "string"}, "max_links": {"type": "integer", "minimum": 1, "maximum": 100}}, "required": ["id", "action", "from_step", "max_links"], "additionalProperties": false},
+          {"type": "object", "properties": {"id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"}, "action": {"const": "pagination.follow"}, "from_step": {"type": "string"}, "max_pages": {"type": "integer", "minimum": 1, "maximum": 20}}, "required": ["id", "action", "from_step", "max_pages"], "additionalProperties": false},
+          {"type": "object", "properties": {"id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"}, "action": {"const": "output.raw"}, "from_step": {"type": "string"}}, "required": ["id", "action", "from_step"], "additionalProperties": false}
+        ]
+      },
+      "minItems": 2
+    }
+  },
+  "required": ["dsl_version", "playbook_id", "status", "source", "objective", "proposal_ref", "findings", "capabilities", "budgets", "steps"],
+  "additionalProperties": false
+}

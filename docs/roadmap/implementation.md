@@ -2,9 +2,9 @@
 
 ## Estado atual
 
-Scout S1.6 estabeleceu um fluxo offline durável de authoring para BC14: sessão, autorização, evidências de fixture, findings e `PlaybookProposal`, com PostgreSQL, receipts, reconciliação de custódia e relay independente. PR #4 adicionou adapter HTTP experimental; PR #5 adicionou o gerador BC15 de draft CapturePlaybook e replay por fixtures; PR #6 adiciona uma prova Docker opcional de isolamento de egress para um container worker. BC06 e integrações BC15 seguem doubles. Ainda não há MCP/tool host, aprovação de source produtiva, integração do worker isolado com a ferramenta, navegação operacional, serviço de captura ou agente integrado. Os relatórios S0–S1 anteriores são snapshots históricos e permanecem preservados em `docs/architecture/assessments/`.
+Scout S1.6 estabeleceu um fluxo offline durável de authoring para BC14: sessão, autorização, evidências de fixture, findings e `PlaybookProposal`, com PostgreSQL, receipts, reconciliação de custódia e relay independente. PR #4 adicionou adapter HTTP experimental; PR #5 adicionou o gerador BC15 de draft CapturePlaybook e replay por fixtures; PR #6 adicionou uma prova Docker opcional de isolamento de egress para um container worker. O incremento PR #7 em `feat/scout-mcp-tool-host` fecha autoria incremental MCP STDIO: source/policy local → sessão → fixtures registradas → custody de referência e manifest → findings → proposal/outbox → transcript versionado → BC15 draft/validate/replay. Os gates locais incluem PostgreSQL/recovery sem skips e a prova Docker do worker. O host não navega por HTTP público nem autentica usuários corporativamente; custody BC06 e integrações BC11/BC15 permanecem de referência. Os relatórios S0–S1 anteriores são snapshots históricos e permanecem preservados em `docs/architecture/assessments/`.
 
-Os ADRs 001–014 permanecem Proposed salvo aprovação registrada por decisão humana. Merge de código ou CI verde não altera o estado de um ADR.
+Os ADRs 001–015 permanecem Proposed salvo aprovação registrada por decisão humana. Merge de código ou CI verde não altera o estado de um ADR.
 
 ## PR A — governança do repositório
 
@@ -18,9 +18,17 @@ PR #4 entregou o adapter HTTP como base experimental com fixtures de transporte 
 
 PR #5 implementou skill local, CLI e artefato separado de CapturePlaybook draft, sem alterar o schema público Scout v1. Valida schema, semântica, capabilities e escopo para HTTP fetch mínimo, descoberta de links, paginação limitada e saída raw. Reproduz o plano contra fixtures capturadas; não o executa em produção arbitrária. O E2E determinístico usa transcript e site fixture multipágina, evidências, proposta, YAML draft, validação, replay e relatório. A skill falha fechado quando não há tool host com isolamento verificável. Smoke test com Codex ao vivo não está disponível.
 
-## PR D — host de ferramenta e integração com sandbox
+## PR #7 — MCP STDIO e autoria incremental
 
-Próximo incremento: integrar MCP/tool host com o container worker e proxy de PR #6, derive identidade/session/call exclusivamente do launcher confiável, iniciar sessão BC14 pela aplicação, e plugar somente adapters aprovados BC06/BC11. Provar protocolo MCP por transporte STDIO, sem expor porta local nem credenciais. Teste E2E usa HTTPS local multipágina e comprovadamente não alcança rede direta; redirects/path/DNS/bytes/budgets são negados no runtime, e evidência durável alimenta proposta e PR #5 replay. Não conectar Codex ao workflow até provar como o processo do agente fica sem shell/rede de bypass ou delimitar explicitamente a ameaça.
+O branch local `feat/scout-mcp-tool-host` fecha o fluxo hermético MCP client → source/policy local → sessão incremental → fixture catalog registrada → custody de referência e manifest → finding → proposal/outbox → transcript versionado → BC15 CLI draft/validate/replay. O SDK oficial `mcp>=1.30,<2` está travado em 1.30.0 para manter compatibilidade com o handshake legado. BC15 carrega schemas empacotados e wheel/sdist passam instalação externa isolada. PostgreSQL/recovery passou 19 testes sem skips em cada alvo explícito; o `make ci` agregado passou com os 19 casos PostgreSQL ignorados porque não carrega `.env`. O sandbox Docker de egress do worker passou. Isso não habilita navegação pública, autenticação corporativa ou isolamento do processo Codex/agente. O Draft PR #7 será publicado após commits locais e permanece sujeito à revisão humana. Consulte [avaliação de fechamento](../architecture/assessments/scout-mcp-pr7-closure.md), [readiness histórico](../architecture/assessments/scout-mcp-host-readiness.md) e [runbook](../operations/scout-authoring-tools.md).
+
+## PR #8 — navegação hermética integrada ao host
+
+Integrar o adapter HTTP autorizado ao worker e proxy de PR #6, adicionar teste HTTPS local multipágina com budgets/egress e validar intent/recovery/outbox em PostgreSQL real. Não conectar Codex ao workflow até provar como o processo do agente fica sem shell/rede de bypass ou delimitar explicitamente a ameaça.
+
+## PR #9 — adapters proprietários e adoção controlada
+
+Integrar somente fontes e approvals fornecidas pelos owners BC01/BC11 e custódia/traces por BC06, com revisão dos contratos de receipts e validação de transcript pelo CLI BC15. Não implementar produção até haver política operacional e gates de egress e sandbox do agente.
 
 ## Critérios do primeiro MVP útil
 

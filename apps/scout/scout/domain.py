@@ -79,6 +79,16 @@ class ScoutScope:
             min(self.max_duration_seconds, other.max_duration_seconds),
         )
 
+    def allows(self, origin: str, path: str, method: str = "GET") -> bool:
+        """Check a normalized target against this already-authorized scope."""
+        return (
+            origin in self.origins
+            and method in self.methods
+            and any(
+                _path_prefix_contains(prefix, path) for prefix in self.path_prefixes
+            )
+        )
+
 
 def _path_prefix_contains(prefix: str, path: str) -> bool:
     normalized = prefix.rstrip("/") or "/"
@@ -96,6 +106,7 @@ class PolicyDecisionRef:
     expires_at: datetime
     scope: ScoutScope
     revoked: bool = False
+    max_response_bytes: int = 2_000_000
 
     def check(self, principal: str, source: SourceRef, now: datetime):
         if (
@@ -136,6 +147,11 @@ class SourceObservation:
     source: SourceRef
     statement: str
     artifact_id: str
+    url: str | None = None
+    status: int | None = None
+    content_type: str | None = None
+    title: str | None = None
+    links: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
