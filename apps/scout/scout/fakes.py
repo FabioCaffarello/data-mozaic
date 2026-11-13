@@ -36,8 +36,109 @@ class FakeSessionRepository:
         self.outbox = {}
         self.custody_intents = {}
         self.custody_intent_sizes = {}
+        self.commands = {}
         # Serializes operations only inside this Python process.
         self._lock = RLock()
+
+    def get_session_header(self, session_id):
+        with self._lock:
+            session = self.sessions.get(session_id)
+            if session is None:
+                return None
+            return {"principal": session.principal, "source": session.source}
+
+    def get_session(self, session_id):
+        with self._lock:
+            session = self.sessions.get(session_id)
+            return copy.deepcopy(session) if session else None
+
+    def find_command_header(self, principal, key, fingerprint):
+        with self._lock:
+            record = self.commands.get((principal, key))
+            if record is None:
+                return None
+            if record["fingerprint"] != fingerprint:
+                raise ConflictError("idempotency key reused with different arguments")
+            session = self.sessions.get(record["session_id"])
+            return {
+                "principal": principal,
+                "command_id": record["command_id"],
+                "command_kind": record["command_kind"],
+                "status": record["status"],
+                "source": session.source,
+            }
+
+    def begin_command(
+        self, principal, session_id, key, command_id, command_kind, fingerprint, intent
+    ):
+        with self._lock:
+            receipt = self.commands.get((principal, key))
+            if receipt is not None:
+                if (
+                    receipt["fingerprint"] != fingerprint
+                    or receipt["command_id"] != command_id
+                ):
+                    raise ConflictError(
+                        "idempotency key reused with different arguments"
+                    )
+                if receipt["status"] == "uncertain":
+                    receipt["status"] = "in_progress"
+                return copy.deepcopy(receipt)
+            self.commands[(principal, key)] = {
+                "command_id": command_id,
+                "command_kind": command_kind,
+                "fingerprint": fingerprint,
+                "session_id": session_id,
+                "status": "in_progress",
+                "snapshot": {"intent": copy.deepcopy(intent)},
+            }
+            return copy.deepcopy(self.commands[(principal, key)])
+
+    def get_command_result(self, principal, key, fingerprint):
+        with self._lock:
+            receipt = self.commands.get((principal, key))
+            if receipt is None:
+                return None
+            if receipt["fingerprint"] != fingerprint:
+                raise ConflictError("idempotency key reused with different arguments")
+            if receipt["status"] != "completed":
+                return None
+            return copy.deepcopy(receipt["snapshot"])
+
+    def has_incomplete_commands(self, session_id):
+        with self._lock:
+            return any(
+                row["session_id"] == session_id
+                and row["status"] in {"in_progress", "uncertain"}
+                for row in self.commands.values()
+            )
+
+    def mark_command_uncertain(self, principal, key):
+        with self._lock:
+            receipt = self.commands.get((principal, key))
+            if receipt and receipt["status"] == "in_progress":
+                receipt["status"] = "uncertain"
+
+    def complete_command(self, session, expected_version, principal, key, fingerprint):
+        with self._lock:
+            current = self.sessions.get(session.session_id)
+            receipt = self.commands.get((principal, key))
+            if (
+                current is None
+                or current.version != expected_version
+                or session.version != expected_version
+                or receipt is None
+                or receipt["fingerprint"] != fingerprint
+                or receipt["status"] not in {"in_progress", "uncertain"}
+            ):
+                raise ConflictError("optimistic concurrency or receipt conflict")
+            committed = copy.deepcopy(session)
+            committed.version = expected_version + 1
+            self.sessions[session.session_id] = committed
+            self._queue_proposal(committed)
+            receipt["status"] = "completed"
+            receipt["snapshot"] = copy.deepcopy(committed)
+            session.version = committed.version
 
     def find_intent(self, principal, key, digest):
         with self._lock:
@@ -58,7 +159,15 @@ class FakeSessionRepository:
             session = self.sessions[record[1]]
             return {"principal": session.principal, "source": session.source}
 
-    def create(self, session, key, digest):
+    def create(
+        self,
+        session,
+        key,
+        digest,
+        *,
+        command_kind="RunScout",
+        receipt_status="in_progress",
+    ):
         with self._lock:
             if (
                 session.principal,
@@ -67,6 +176,15 @@ class FakeSessionRepository:
                 raise ConflictError("session or intent already exists")
             self.sessions[session.session_id] = copy.deepcopy(session)
             self.intents[(session.principal, key)] = (digest, session.session_id)
+            if command_kind != "RunScout":
+                self.commands[(session.principal, key)] = {
+                    "command_id": session.session_id,
+                    "command_kind": command_kind,
+                    "fingerprint": digest,
+                    "session_id": session.session_id,
+                    "status": receipt_status,
+                    "snapshot": copy.deepcopy(session),
+                }
             self._queue_proposal(session)
 
     def save(self, session, expected_version):
@@ -218,8 +336,9 @@ class FakeSessionRepository:
 
 
 class FakeEvidenceCustody:
-    def __init__(self):
+    def __init__(self, kind="other"):
         self.objects = {}
+        self.kind = kind
         self.fail_before_store = False
         self.fail_after_store = False
 
@@ -232,6 +351,7 @@ class FakeEvidenceCustody:
             session_id,
             source,
             digest,
+            kind=self.kind,
             size_bytes=len(content),
             custody_status="available",
         )

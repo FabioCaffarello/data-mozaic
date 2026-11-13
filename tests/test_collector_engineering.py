@@ -38,13 +38,27 @@ class CapturePlaybookTests(unittest.TestCase):
         self.assertEqual([], report["failures"])
         self.assertEqual("draft", draft["status"])
         self.assertEqual(
-            {"observed", "hypothesized", "independently_verified"},
+            {"observed", "hypothesized"},
             {item["classification"] for item in draft["findings"]},
         )
 
     def test_draft_requires_receipt_and_scope_to_match(self):
         self.transcript["approval_record"]["origin"] = "https://other.test"
         with self.assertRaisesRegex(PlaybookError, "receipt differs"):
+            build_draft(self.transcript)
+
+    def test_transcript_digest_and_evidence_references_are_cross_checked(self):
+        self.transcript["pages"][0]["sha256"] = "0" * 64
+        with self.assertRaisesRegex(PlaybookError, "evidence reference"):
+            build_draft(self.transcript)
+
+    def test_draft_requires_versioned_transcript_snapshot(self):
+        self.transcript["transcript_schema"] = "scout-transcript-draft/v9"
+        with self.assertRaisesRegex(PlaybookError, "transcript draft v1"):
+            build_draft(self.transcript)
+        self.transcript = json.loads((MULTIPAGE / "transcript.json").read_text())
+        self.transcript["pages"][0]["evidence_ref"] = "invented-manifest"
+        with self.assertRaisesRegex(PlaybookError, "evidence reference"):
             build_draft(self.transcript)
 
     def test_draft_rejects_unreferenced_or_invented_finding(self):

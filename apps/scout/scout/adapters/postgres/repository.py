@@ -256,6 +256,11 @@ def _restore(value: dict[str, Any]) -> ScoutSession:
             SourceRef(**item["source"]),
             item["statement"],
             item["artifact_id"],
+            item.get("url"),
+            item.get("status"),
+            item.get("content_type"),
+            item.get("title"),
+            tuple(item.get("links", ())),
         )
         for item in raw["observations"]
     )
@@ -390,7 +395,194 @@ class PostgresScoutSessionRepository:
             raise ConflictError("idempotency key reused with different arguments")
         return {"principal": row[1], "source": SourceRef(**row[2])}
 
-    def create(self, session: ScoutSession, key: str, digest: str) -> None:
+    def get_session_header(self, session_id: str) -> dict[str, Any] | None:
+        """Return only immutable authorization metadata before loading a snapshot."""
+        with psycopg.connect(self.dsn) as conn:
+            row = conn.execute(
+                """SELECT payload #>> '{session,principal}',
+                          payload #> '{session,source}'
+                   FROM scout_sessions WHERE session_id=%s""",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"principal": row[0], "source": SourceRef(**row[1])}
+
+    def get_session(self, session_id: str) -> ScoutSession | None:
+        with psycopg.connect(self.dsn) as conn:
+            row = conn.execute(
+                "SELECT payload FROM scout_sessions WHERE session_id=%s",
+                (session_id,),
+            ).fetchone()
+        return _restore(row[0]) if row else None
+
+    def find_command_header(
+        self, principal: str, key: str, fingerprint: str
+    ) -> dict[str, Any] | None:
+        """Resolve command metadata without reading its result snapshot."""
+        with psycopg.connect(self.dsn) as conn:
+            row = conn.execute(
+                """SELECT r.fingerprint,r.command_id,r.command_kind,r.status,
+                          s.payload #> '{session,source}'
+                   FROM scout_command_receipts r JOIN scout_sessions s USING (session_id)
+                   WHERE r.principal=%s AND r.idempotency_key=%s""",
+                (principal, key),
+            ).fetchone()
+        if row is None:
+            return None
+        if row[0] != fingerprint:
+            raise ConflictError("idempotency key reused with different arguments")
+        return {
+            "principal": principal,
+            "command_id": row[1],
+            "command_kind": row[2],
+            "status": row[3],
+            "source": SourceRef(**row[4]),
+        }
+
+    def begin_command(
+        self,
+        principal: str,
+        session_id: str,
+        key: str,
+        command_id: str,
+        command_kind: str,
+        fingerprint: str,
+        intent: dict,
+    ) -> dict[str, Any]:
+        """Commit a command intent before deterministic fixture/custody work."""
+        with psycopg.connect(self.dsn) as conn:
+            conn.execute(
+                """INSERT INTO scout_command_receipts
+                   (principal,idempotency_key,command_id,command_kind,fingerprint,
+                    session_id,status,response_snapshot)
+                   VALUES (%s,%s,%s,%s,%s,%s,'in_progress',%s)
+                   ON CONFLICT (principal,idempotency_key) DO NOTHING""",
+                (
+                    principal,
+                    key,
+                    command_id,
+                    command_kind,
+                    fingerprint,
+                    session_id,
+                    Jsonb({"intent": intent}),
+                ),
+            )
+            row = conn.execute(
+                """SELECT command_id,command_kind,fingerprint,status,response_snapshot
+                   FROM scout_command_receipts
+                   WHERE principal=%s AND idempotency_key=%s""",
+                (principal, key),
+            ).fetchone()
+            if row is None:
+                raise IntegrityError("command receipt unavailable")
+            if row[2] != fingerprint or row[0] != command_id:
+                raise ConflictError("idempotency key reused with different arguments")
+            if row[3] == "uncertain":
+                conn.execute(
+                    """UPDATE scout_command_receipts SET status='in_progress',updated_at=now()
+                       WHERE principal=%s AND idempotency_key=%s AND status='uncertain'""",
+                    (principal, key),
+                )
+                row = (*row[:3], "in_progress", row[4])
+        return {
+            "command_id": row[0],
+            "command_kind": row[1],
+            "status": row[3],
+            "snapshot": row[4],
+        }
+
+    def get_command_result(
+        self, principal: str, key: str, fingerprint: str
+    ) -> ScoutSession | None:
+        with psycopg.connect(self.dsn) as conn:
+            row = conn.execute(
+                """SELECT fingerprint,status,response_snapshot FROM scout_command_receipts
+                   WHERE principal=%s AND idempotency_key=%s""",
+                (principal, key),
+            ).fetchone()
+        if row is None:
+            return None
+        if row[0] != fingerprint:
+            raise ConflictError("idempotency key reused with different arguments")
+        if row[1] != "completed" or "session" not in row[2]:
+            return None
+        return _restore(row[2])
+
+    def has_incomplete_commands(self, session_id: str) -> bool:
+        with psycopg.connect(self.dsn) as conn:
+            return bool(
+                conn.execute(
+                    """SELECT 1 FROM scout_command_receipts
+                       WHERE session_id=%s AND status IN ('in_progress','uncertain') LIMIT 1""",
+                    (session_id,),
+                ).fetchone()
+            )
+
+    def mark_command_uncertain(self, principal: str, key: str) -> None:
+        with psycopg.connect(self.dsn) as conn:
+            conn.execute(
+                """UPDATE scout_command_receipts SET status='uncertain',updated_at=now()
+                   WHERE principal=%s AND idempotency_key=%s AND status='in_progress'""",
+                (principal, key),
+            )
+
+    def complete_command(
+        self,
+        session: ScoutSession,
+        expected_version: int,
+        principal: str,
+        key: str,
+        fingerprint: str,
+    ) -> None:
+        """CAS the aggregate, receipt snapshot and proposal outbox atomically."""
+        next_version = expected_version + 1
+        document = _session_document(session)
+        document["session"]["version"] = next_version
+        with psycopg.connect(self.dsn) as conn:
+            row = conn.execute(
+                """UPDATE scout_sessions SET version=%s,payload=%s,updated_at=now()
+                   WHERE session_id=%s AND version=%s RETURNING session_id""",
+                (next_version, Jsonb(document), session.session_id, expected_version),
+            ).fetchone()
+            if row is None:
+                raise ConflictError("optimistic concurrency conflict")
+            receipt = conn.execute(
+                """UPDATE scout_command_receipts
+                   SET status='completed',response_snapshot=%s,updated_at=now()
+                   WHERE principal=%s AND idempotency_key=%s AND fingerprint=%s
+                     AND session_id=%s AND status IN ('in_progress','uncertain')
+                   RETURNING command_id""",
+                (Jsonb(document), principal, key, fingerprint, session.session_id),
+            ).fetchone()
+            if receipt is None:
+                raise ConflictError("command receipt is not active")
+            if session.proposal is not None:
+                payload = projection(session.proposal)
+                conn.execute(
+                    """INSERT INTO scout_outbox
+                       (event_id,aggregate_id,aggregate_version,event_kind,channel,proposal_id,payload,publication_state)
+                       VALUES (%s,%s,%s,'PlaybookProposalSubmitted','BC15',%s,%s,'pending')
+                       ON CONFLICT (channel,proposal_id) DO NOTHING""",
+                    (
+                        "handoff:" + session.proposal.proposal_id,
+                        session.session_id,
+                        next_version,
+                        session.proposal.proposal_id,
+                        Jsonb(payload),
+                    ),
+                )
+        session.version = next_version
+
+    def create(
+        self,
+        session: ScoutSession,
+        key: str,
+        digest: str,
+        *,
+        command_kind: str = "RunScout",
+        receipt_status: str = "in_progress",
+    ) -> None:
         document = _session_document(session)
         with psycopg.connect(self.dsn) as conn:
             try:
@@ -401,13 +593,15 @@ class PostgresScoutSessionRepository:
                 conn.execute(
                     """INSERT INTO scout_command_receipts
                     (principal,idempotency_key,command_id,command_kind,fingerprint,session_id,status,response_snapshot)
-                    VALUES (%s,%s,%s,'RunScout',%s,%s,'in_progress',%s)""",
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (
                         session.principal,
                         key,
                         session.session_id,
+                        command_kind,
                         digest,
                         session.session_id,
+                        receipt_status,
                         Jsonb(document),
                     ),
                 )

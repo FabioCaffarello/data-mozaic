@@ -1,5 +1,6 @@
 """Only ports consumed by the offline use case."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
@@ -24,7 +25,65 @@ class PolicyDecisionPort(Protocol):
     ) -> PolicyDecisionRef: ...
 
 
+@dataclass(frozen=True)
+class FixtureLink:
+    url: str
+    origin: str
+    path: str
+
+
+@dataclass(frozen=True)
+class FixtureExplorationResult:
+    """Untrusted bytes and normalized metadata returned by a hermetic adapter."""
+
+    fixture_id: str
+    url: str
+    origin: str
+    path: str
+    status: int
+    content_type: str
+    body: bytes
+    title: str | None
+    text: str
+    links: tuple[FixtureLink, ...]
+    elapsed_seconds: int = 1
+
+
+class FixtureExplorationPort(Protocol):
+    def explore(
+        self, source: SourceRef, scope: ScoutScope, fixture_id: str, max_bytes: int
+    ) -> FixtureExplorationResult: ...
+
+
 class ScoutSessionRepositoryPort(Protocol):
+    def get_session_header(self, session_id: str) -> dict | None: ...
+    def get_session(self, session_id: str) -> ScoutSession | None: ...
+    def find_command_header(
+        self, principal: str, key: str, fingerprint: str
+    ) -> dict | None: ...
+    def begin_command(
+        self,
+        principal: str,
+        session_id: str,
+        key: str,
+        command_id: str,
+        command_kind: str,
+        fingerprint: str,
+        intent: dict,
+    ) -> dict: ...
+    def get_command_result(
+        self, principal: str, key: str, fingerprint: str
+    ) -> ScoutSession | None: ...
+    def has_incomplete_commands(self, session_id: str) -> bool: ...
+    def complete_command(
+        self,
+        session: ScoutSession,
+        expected_version: int,
+        principal: str,
+        key: str,
+        fingerprint: str,
+    ) -> None: ...
+    def mark_command_uncertain(self, principal: str, key: str) -> None: ...
     def find_intent_header(
         self, principal: str, key: str, digest: str
     ) -> dict | None: ...
@@ -32,7 +91,15 @@ class ScoutSessionRepositoryPort(Protocol):
     def find_intent(
         self, principal: str, key: str, digest: str
     ) -> ScoutSession | None: ...
-    def create(self, session: ScoutSession, key: str, digest: str) -> None: ...
+    def create(
+        self,
+        session: ScoutSession,
+        key: str,
+        digest: str,
+        *,
+        command_kind: str = "RunScout",
+        receipt_status: str = "in_progress",
+    ) -> None: ...
     def save(self, session: ScoutSession, expected_version: int) -> None: ...
     def handoff_status(self, event_id: str) -> dict | None: ...
     def begin_custody_intent(
