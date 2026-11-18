@@ -79,6 +79,16 @@ class ScoutScope:
             min(self.max_duration_seconds, other.max_duration_seconds),
         )
 
+    def allows(self, origin: str, path: str, method: str = "GET") -> bool:
+        """Check a normalized target against this already-authorized scope."""
+        return (
+            origin in self.origins
+            and method in self.methods
+            and any(
+                _path_prefix_contains(prefix, path) for prefix in self.path_prefixes
+            )
+        )
+
 
 def _path_prefix_contains(prefix: str, path: str) -> bool:
     normalized = prefix.rstrip("/") or "/"
@@ -96,6 +106,7 @@ class PolicyDecisionRef:
     expires_at: datetime
     scope: ScoutScope
     revoked: bool = False
+    max_response_bytes: int = 2_000_000
 
     def check(self, principal: str, source: SourceRef, now: datetime):
         if (
@@ -136,6 +147,11 @@ class SourceObservation:
     source: SourceRef
     statement: str
     artifact_id: str
+    url: str | None = None
+    status: int | None = None
+    content_type: str | None = None
+    title: str | None = None
+    links: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -355,6 +371,14 @@ class ScoutSession:
     ):
         self._state(State.EXPLORING)
         self._policy(decision, now)
+        finding_ids = set(proposal.finding_ids)
+        finding_manifest_ids = {
+            manifest_id
+            for finding in self.findings
+            if finding.finding_id in finding_ids
+            for manifest_id in finding.manifest_ids
+        }
+        proposal_manifest_ids = set(proposal.manifest_ids)
         if (
             self.proposal is not None
             or proposal.session_id != self.session_id
@@ -362,15 +386,9 @@ class ScoutSession:
             or not proposal.summary.strip()
             or not proposal.finding_ids
             or not proposal.manifest_ids
-            or not set(proposal.finding_ids) <= {f.finding_id for f in self.findings}
-            or not set(proposal.manifest_ids) <= {m.manifest_id for m in self.manifests}
-            or not set(proposal.manifest_ids)
-            <= {
-                m
-                for f in self.findings
-                if f.finding_id in proposal.finding_ids
-                for m in f.manifest_ids
-            }
+            or not finding_ids <= {f.finding_id for f in self.findings}
+            or not proposal_manifest_ids <= {m.manifest_id for m in self.manifests}
+            or not finding_manifest_ids <= proposal_manifest_ids
         ):
             raise IntegrityError("invalid proposal")
         self.proposal = proposal

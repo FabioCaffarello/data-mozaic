@@ -1,6 +1,6 @@
 # Arquitetura Data Mozaic
 
-Status das decisões: **Proposed**, salvo indicação explícita; nenhuma ADR foi homologada. Os assessments registram evidências de incrementos implementados. Scout S1.6 é um fluxo offline com fixtures, doubles e relay durável. PR #4 adicionou um adapter HTTP experimental; PR #6 prova uma topologia opcional de egress isolado, mas ainda não fornece MCP/tool host ou sandbox do agente. BC15 tem um gerador de CapturePlaybook draft e replay local por fixture; não há navegação operacional, serviço de captura ou runtime de agente.
+Status das decisões: **Proposed**, salvo indicação explícita; nenhuma ADR foi homologada. Os assessments registram evidências de incrementos implementados. Scout S1.6 é um fluxo offline com fixtures, doubles e relay durável. PR #4 adicionou um adapter HTTP experimental; PR #6 prova uma topologia opcional de egress isolado; o incremento PR #7 adiciona um host MCP STDIO experimental para autoria incremental com fixtures e integração local ao CLI BC15. Não há navegação pública pelo host, integração produtiva de custody, sandbox do agente, serviço de captura ou runtime de agente.
 
 1. [Baseline](assessments/repository-baseline.md)
 2. [Visão, planos e requisitos não funcionais](platform.md)
@@ -27,5 +27,8 @@ Status das decisões: **Proposed**, salvo indicação explícita; nenhuma ADR fo
 22. [Scout egress sandbox operations](../operations/scout-egress-sandbox.md)
 
 O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os próximos limites de PR. Os assessments por incremento permanecem registros históricos de seu snapshot e comandos observados.
+
+23. [Scout MCP tool host readiness](assessments/scout-mcp-host-readiness.md)
+24. [Scout MCP PR #7 closure e acceptance gates](assessments/scout-mcp-pr7-closure.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.

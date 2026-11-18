@@ -30,7 +30,12 @@ ALLOWED = {
         "scout.projections",
         "mozaic_observability",
     },
-    "scout.adapters": {"scout.domain", "scout.projections", "scout.tools"},
+    "scout.adapters": {
+        "scout.domain",
+        "scout.ports",
+        "scout.projections",
+        "scout.tools",
+    },
     "scout.edge": set(),
     "scout.fakes": {"scout.domain", "scout.projections", "scout.edge"},
     "scout.outbox_relay": {"mozaic_observability"},
@@ -47,6 +52,13 @@ ALLOWED = {
     "scout.__main__": {
         "scout.demo",
     },
+    "scout.tool_host": {
+        "scout.adapters",
+        "scout.application",
+        "scout.domain",
+        "scout.edge",
+        "scout.tools",
+    },
     "mozaic_observability": set(),
     "collector_engineering": set(),
     "tooling": {"scout.adapters", "scout.domain"},
@@ -57,6 +69,15 @@ INTERNAL_ROOTS = (
     "collector_engineering",
     "tooling",
 )
+SCOUT_DOMAIN_FORBIDDEN = {
+    "mcp",
+    "psycopg",
+    "jsonschema",
+    "http",
+    "urllib",
+    "pathlib",
+    "os",
+}
 
 
 def module_name(path: Path, root: Path, prefix: str) -> str:
@@ -136,6 +157,13 @@ def violations() -> list[str]:
                     str(path.relative_to(ROOT)),
                 )
             )
+            if current == "scout.domain":
+                for imported in imported_modules(tree, current):
+                    root_name = imported.split(".", 1)[0]
+                    if root_name in SCOUT_DOMAIN_FORBIDDEN:
+                        errors.append(
+                            f"{path.relative_to(ROOT)}: domain imports forbidden infrastructure {root_name}"
+                        )
     return errors
 
 

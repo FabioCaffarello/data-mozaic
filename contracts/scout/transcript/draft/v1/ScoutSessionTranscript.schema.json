@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/scout/transcript/draft/v1/ScoutSessionTranscript.schema.json",
+  "title": "ScoutSessionTranscriptDraft",
+  "description": "BC14 projection for offline BC15 draft authoring; local approval metadata is not cryptographically authenticated.",
+  "type": "object",
+  "properties": {
+    "transcript_schema": {"const": "scout-transcript-draft/v1"},
+    "producer": {
+      "type": "object",
+      "properties": {"bounded_context": {"const": "BC14"}, "tool_host": {"type": "string", "minLength": 1}},
+      "required": ["bounded_context", "tool_host"],
+      "additionalProperties": false
+    },
+    "session": {
+      "type": "object",
+      "properties": {
+        "session_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"type": "integer", "minimum": 0},
+        "state": {"enum": ["exploring", "completed"]},
+        "source": {"$ref": "#/$defs/source"},
+        "objective": {"type": "string", "minLength": 1, "maxLength": 2000}
+      },
+      "required": ["session_id", "version", "state", "source", "objective"],
+      "additionalProperties": false
+    },
+    "approval_record": {"$ref": "#/$defs/approval"},
+    "approved_scope": {
+      "type": "object",
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "origin": {"type": "string", "format": "uri"},
+        "path_prefixes": {"type": "array", "items": {"type": "string", "pattern": "^/"}, "minItems": 1, "uniqueItems": true},
+        "budgets": {"$ref": "#/$defs/budgets"}
+      },
+      "required": ["source_id", "revision", "origin", "path_prefixes", "budgets"],
+      "additionalProperties": false
+    },
+    "objective": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "artifact_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "size_bytes": {"type": "integer", "minimum": 0},
+          "kind": {"enum": ["http_response", "rendered_dom", "trace", "other"]},
+          "redaction": {"enum": ["none", "redacted"]},
+          "manifest_id": {"type": "string", "minLength": 1, "maxLength": 128}
+        },
+        "required": ["artifact_id", "sha256", "size_bytes", "kind", "redaction", "manifest_id"],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "proposal": {"type": "object"},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "finding_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "classification": {"enum": ["observed", "hypothesized"]},
+          "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true}
+        },
+        "required": ["finding_id", "classification", "evidence_refs"],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string", "format": "uri"},
+          "evidence_ref": {"type": "string", "minLength": 1},
+          "artifact_id": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "size_bytes": {"type": "integer", "minimum": 0},
+          "discovered_links": {"type": "array", "items": {"type": "string", "format": "uri"}, "uniqueItems": true}
+        },
+        "required": ["url", "evidence_ref", "artifact_id", "sha256", "size_bytes", "discovered_links"],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "redaction": {
+      "type": "object",
+      "properties": {"raw_content_included": {"const": false}, "policy": {"const": "metadata-only/v1"}},
+      "required": ["raw_content_included", "policy"],
+      "additionalProperties": false
+    },
+    "integrity": {
+      "type": "object",
+      "properties": {"custody_verified": {"const": true}, "approval_authentication": {"const": "local-reference-not-cryptographically-signed"}},
+      "required": ["custody_verified", "approval_authentication"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["transcript_schema", "producer", "session", "approval_record", "approved_scope", "objective", "evidence", "proposal", "findings", "pages", "redaction", "integrity"],
+  "additionalProperties": false,
+  "$defs": {
+    "source": {
+      "type": "object",
+      "properties": {"source_id": {"type": "string", "minLength": 1, "maxLength": 128}, "revision": {"type": "string", "minLength": 1, "maxLength": 128}},
+      "required": ["source_id", "revision"],
+      "additionalProperties": false
+    },
+    "budgets": {
+      "type": "object",
+      "properties": {"max_requests": {"type": "integer", "minimum": 1, "maximum": 50}, "max_pages": {"type": "integer", "minimum": 1, "maximum": 20}, "max_response_bytes": {"type": "integer", "minimum": 1, "maximum": 2000000}},
+      "required": ["max_requests", "max_pages", "max_response_bytes"],
+      "additionalProperties": false
+    },
+    "approval": {
+      "type": "object",
+      "properties": {
+        "approval_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "source_id": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "origin": {"type": "string", "format": "uri"},
+        "path_prefixes": {"type": "array", "items": {"type": "string", "pattern": "^/"}, "minItems": 1, "uniqueItems": true},
+        "budgets": {"$ref": "#/$defs/budgets"}
+      },
+      "required": ["approval_id", "source_id", "revision", "origin", "path_prefixes", "budgets"],
+      "additionalProperties": false
+    }
+  }
+}

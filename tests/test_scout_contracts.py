@@ -6,8 +6,10 @@ import unittest
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
+from scout.edge import validate_transcript
 
 ROOT = Path(__file__).resolve().parents[1] / "contracts" / "scout" / "v1"
+TRANSCRIPTS = ROOT.parent / "transcript" / "draft" / "v1"
 NAMES = ("ScoutRequest", "EvidenceManifest", "DiscoveryFinding", "PlaybookProposal")
 
 
@@ -32,6 +34,23 @@ class ScoutContractTests(unittest.TestCase):
                 missing = copy.deepcopy(valid)
                 del missing["contract_version"]
                 self.assertTrue(list(validator.iter_errors(missing)))
+
+    def test_transcript_contract_and_cross_reference_fixtures(self):
+        schema = read(TRANSCRIPTS / "ScoutSessionTranscript.schema.json")
+        Draft202012Validator.check_schema(schema)
+        valid = read(TRANSCRIPTS / "fixtures/valid/multipage.json")
+        validate_transcript(valid)
+        invalid = read(TRANSCRIPTS / "fixtures/invalid/evidence-digest-mismatch.json")
+        with self.assertRaisesRegex(ValueError, "evidence reference mismatch"):
+            validate_transcript(invalid)
+        altered_approval = copy.deepcopy(valid)
+        altered_approval["approval_record"]["origin"] = "https://other.test"
+        with self.assertRaisesRegex(ValueError, "approval references mismatch"):
+            validate_transcript(altered_approval)
+        invented_ref = copy.deepcopy(valid)
+        invented_ref["pages"][0]["evidence_ref"] = "invented-manifest"
+        with self.assertRaisesRegex(ValueError, "evidence reference mismatch"):
+            validate_transcript(invented_ref)
 
     def test_security_and_evidence_constraints(self):
         cases = [

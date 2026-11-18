@@ -229,6 +229,14 @@ class LocalAuthorizationStore:
             raise AuthorizationError("navigation approval expired")
         return effective_scope(registered, approval)
 
+    def registered_source(self, source: SourceRef) -> RegisteredSource | None:
+        """Expose configured BC01 reference metadata to local composition."""
+        return self._sources.get(source)
+
+    def approved_scope(self, principal: str, source: SourceRef) -> ApprovedScope | None:
+        """Expose local approval metadata without returning credential values."""
+        return self._approvals.get((principal, source))
+
 
 class ReloadingAuthorizationStore:
     """Reload a local policy file for each authorization check and redirect hop."""

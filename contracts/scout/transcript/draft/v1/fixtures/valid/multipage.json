@@ -1,0 +1,141 @@
+{
+  "approval_record": {
+    "approval_id": "local-test-approval-1",
+    "budgets": {
+      "max_pages": 3,
+      "max_requests": 5,
+      "max_response_bytes": 100000
+    },
+    "origin": "https://catalog.test",
+    "path_prefixes": [
+      "/"
+    ],
+    "revision": "revision-1",
+    "source_id": "catalog-test"
+  },
+  "approved_scope": {
+    "budgets": {
+      "max_pages": 3,
+      "max_requests": 5,
+      "max_response_bytes": 100000
+    },
+    "origin": "https://catalog.test",
+    "path_prefixes": [
+      "/"
+    ],
+    "revision": "revision-1",
+    "source_id": "catalog-test"
+  },
+  "evidence": [
+    {
+      "artifact_id": "artifact-page-1",
+      "kind": "http_response",
+      "manifest_id": "evidence-page-1",
+      "redaction": "none",
+      "sha256": "956ca70c1430ba75e36531c3e379d22dea13d88f8c0d01458958ebbfa432fde8",
+      "size_bytes": 94
+    },
+    {
+      "artifact_id": "artifact-page-2",
+      "kind": "http_response",
+      "manifest_id": "evidence-page-2",
+      "redaction": "none",
+      "sha256": "62bb4a67b6a0da1115e33c14ef727da2d2cebd4f23965484a432f737be377835",
+      "size_bytes": 82
+    }
+  ],
+  "findings": [
+    {
+      "classification": "observed",
+      "evidence_refs": [
+        "evidence-page-1",
+        "evidence-page-2"
+      ],
+      "finding_id": "finding-catalog-1"
+    },
+    {
+      "classification": "hypothesized",
+      "evidence_refs": [
+        "evidence-page-1"
+      ],
+      "finding_id": "finding-catalog-2"
+    },
+    {
+      "classification": "hypothesized",
+      "evidence_refs": [
+        "evidence-page-2"
+      ],
+      "finding_id": "finding-catalog-3"
+    }
+  ],
+  "integrity": {
+    "approval_authentication": "local-reference-not-cryptographically-signed",
+    "custody_verified": true
+  },
+  "objective": "Identify the structure of a paginated public catalog.",
+  "pages": [
+    {
+      "artifact_id": "artifact-page-1",
+      "discovered_links": [
+        "https://catalog.test/items/page-2"
+      ],
+      "evidence_ref": "evidence-page-1",
+      "sha256": "956ca70c1430ba75e36531c3e379d22dea13d88f8c0d01458958ebbfa432fde8",
+      "size_bytes": 94,
+      "url": "https://catalog.test/"
+    },
+    {
+      "artifact_id": "artifact-page-2",
+      "discovered_links": [],
+      "evidence_ref": "evidence-page-2",
+      "sha256": "62bb4a67b6a0da1115e33c14ef727da2d2cebd4f23965484a432f737be377835",
+      "size_bytes": 82,
+      "url": "https://catalog.test/items/page-2"
+    }
+  ],
+  "producer": {
+    "bounded_context": "BC14",
+    "tool_host": "data-mozaic-scout-mcp/1"
+  },
+  "proposal": {
+    "assumptions": [],
+    "contract_version": "1.0.0",
+    "evidence_manifest_ids": [
+      "evidence-page-1",
+      "evidence-page-2"
+    ],
+    "finding_ids": [
+      "finding-catalog-1",
+      "finding-catalog-2",
+      "finding-catalog-3"
+    ],
+    "proposal_id": "proposal-catalog-1",
+    "required_capabilities": [
+      "http-read"
+    ],
+    "risks": [
+      "Fixture replay does not establish production behavior."
+    ],
+    "session_id": "session-catalog-1",
+    "source": {
+      "revision": "revision-1",
+      "source_id": "catalog-test"
+    },
+    "summary": "Read the observed catalog pages and preserve their raw responses."
+  },
+  "redaction": {
+    "policy": "metadata-only/v1",
+    "raw_content_included": false
+  },
+  "session": {
+    "objective": "Identify the structure of a paginated public catalog.",
+    "session_id": "session-catalog-1",
+    "source": {
+      "revision": "revision-1",
+      "source_id": "catalog-test"
+    },
+    "state": "exploring",
+    "version": 5
+  },
+  "transcript_schema": "scout-transcript-draft/v1"
+}

@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/scout/v1/PlaybookProposal.schema.json",
+  "title": "PlaybookProposal",
+  "description": "Projeção pública, não agregado interno.",
+  "type": "object",
+  "properties": {
+    "contract_version": {
+      "const": "1.0.0",
+      "description": "Versão draft exata do contrato."
+    },
+    "proposal_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identidade da proposta BC14.",
+      "maxLength": 128
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Sessão de origem.",
+      "maxLength": 128
+    },
+    "source": {
+      "type": "object",
+      "description": "Referência à fonte e revisão, sem copiar seu registro.",
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identidade opaca atribuída pelo BC01.",
+          "maxLength": 128
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Revisão imutável identificada pelo BC01.",
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "source_id",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Estratégia proposta em linguagem declarativa, sem código executável.",
+      "maxLength": 4000
+    },
+    "finding_ids": {
+      "type": "array",
+      "description": "Achados de suporte.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Identidade de achado.",
+        "maxLength": 128
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "evidence_manifest_ids": {
+      "type": "array",
+      "description": "Manifestos de suporte.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Identidade de manifesto.",
+        "maxLength": 128
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "assumptions": {
+      "type": "array",
+      "description": "Suposições pendentes de validação.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Suposição sanitizada.",
+        "maxLength": 1000
+      }
+    },
+    "risks": {
+      "type": "array",
+      "description": "Riscos e restrições identificados.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Risco sanitizado.",
+        "maxLength": 1000
+      }
+    },
+    "required_capabilities": {
+      "type": "array",
+      "description": "Capacidades propostas, não concessões.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Nome de capacidade.",
+        "maxLength": 128
+      },
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "contract_version",
+    "proposal_id",
+    "session_id",
+    "source",
+    "summary",
+    "finding_ids",
+    "evidence_manifest_ids",
+    "assumptions",
+    "risks",
+    "required_capabilities"
+  ],
+  "additionalProperties": false
+}

@@ -1,4 +1,19 @@
 {
+  "transcript_schema": "scout-transcript-draft/v1",
+  "producer": {
+    "bounded_context": "BC14",
+    "tool_host": "data-mozaic-scout-mcp/1"
+  },
+  "session": {
+    "session_id": "session-catalog-1",
+    "version": 5,
+    "state": "exploring",
+    "source": {
+      "source_id": "catalog-test",
+      "revision": "revision-1"
+    },
+    "objective": "Identify the structure of a paginated public catalog."
+  },
   "objective": "Identify the structure of a paginated public catalog.",
   "approval_record": {
     "approval_id": "local-test-approval-1",
@@ -35,6 +50,32 @@
     "risks": ["Fixture replay does not establish production behavior."],
     "required_capabilities": ["http-read"]
   },
+  "evidence": [
+    {
+      "artifact_id": "artifact-page-1",
+      "sha256": "956ca70c1430ba75e36531c3e379d22dea13d88f8c0d01458958ebbfa432fde8",
+      "size_bytes": 94,
+      "kind": "http_response",
+      "redaction": "none",
+      "manifest_id": "evidence-page-1"
+    },
+    {
+      "artifact_id": "artifact-page-2",
+      "sha256": "62bb4a67b6a0da1115e33c14ef727da2d2cebd4f23965484a432f737be377835",
+      "size_bytes": 82,
+      "kind": "http_response",
+      "redaction": "none",
+      "manifest_id": "evidence-page-2"
+    }
+  ],
+  "redaction": {
+    "raw_content_included": false,
+    "policy": "metadata-only/v1"
+  },
+  "integrity": {
+    "custody_verified": true,
+    "approval_authentication": "local-reference-not-cryptographically-signed"
+  },
   "findings": [
     {
       "finding_id": "finding-catalog-1",
@@ -48,7 +89,7 @@
     },
     {
       "finding_id": "finding-catalog-3",
-      "classification": "independently_verified",
+      "classification": "hypothesized",
       "evidence_refs": ["evidence-page-2"]
     }
   ],
@@ -56,11 +97,17 @@
     {
       "url": "https://catalog.test/",
       "evidence_ref": "evidence-page-1",
+      "artifact_id": "artifact-page-1",
+      "sha256": "956ca70c1430ba75e36531c3e379d22dea13d88f8c0d01458958ebbfa432fde8",
+      "size_bytes": 94,
       "discovered_links": ["https://catalog.test/items/page-2"]
     },
     {
       "url": "https://catalog.test/items/page-2",
       "evidence_ref": "evidence-page-2",
+      "artifact_id": "artifact-page-2",
+      "sha256": "62bb4a67b6a0da1115e33c14ef727da2d2cebd4f23965484a432f737be377835",
+      "size_bytes": 82,
       "discovered_links": []
     }
   ]

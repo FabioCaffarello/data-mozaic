@@ -11,3 +11,6 @@ dependencies = ["jsonschema>=4.23,<5", "PyYAML>=6.0,<7"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["collector_engineering"]
+
+[tool.hatch.build.targets.sdist]
+include = ["collector_engineering/**", "pyproject.toml"]

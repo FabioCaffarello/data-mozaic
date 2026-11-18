@@ -8,17 +8,20 @@ import json
 import re
 import unicodedata
 from html.parser import HTMLParser
+from importlib.resources import files
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import yaml
-from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
-ROOT = Path(__file__).resolve().parents[3]
-SCHEMA_PATH = ROOT / "contracts/capture-playbook/draft/v1/CapturePlaybook.schema.json"
-SCHEMA = json.loads(SCHEMA_PATH.read_text())
+_SCHEMAS = files("collector_engineering").joinpath("schemas")
+SCHEMA = json.loads(_SCHEMAS.joinpath("CapturePlaybook.schema.json").read_text())
 PROPOSAL_SCHEMA = json.loads(
-    (ROOT / "contracts/scout/v1/PlaybookProposal.schema.json").read_text()
+    _SCHEMAS.joinpath("PlaybookProposal.schema.json").read_text()
+)
+TRANSCRIPT_SCHEMA = json.loads(
+    _SCHEMAS.joinpath("ScoutSessionTranscript.schema.json").read_text()
 )
 
 
@@ -270,6 +273,14 @@ def build_draft(transcript: dict) -> dict:
     """Project a host/tool transcript into a separate BC15 draft artifact."""
     if not isinstance(transcript, dict):
         raise PlaybookError("transcript root must be a JSON object")
+    try:
+        Draft202012Validator(
+            TRANSCRIPT_SCHEMA, format_checker=FormatChecker()
+        ).validate(transcript)
+    except ValidationError as error:
+        raise PlaybookError(
+            "input does not satisfy Scout transcript draft v1"
+        ) from error
     approval = transcript.get("approved_scope", {})
     proposal = transcript.get("proposal", {})
     if not isinstance(approval, dict) or not isinstance(proposal, dict):
@@ -318,6 +329,18 @@ def build_draft(transcript: dict) -> dict:
         raise PlaybookError("transcript contains duplicate finding IDs")
     proposal_findings = set(proposal.get("finding_ids", []))
     evidence_ids = set(proposal.get("evidence_manifest_ids", []))
+    evidence_by_artifact = {
+        item.get("artifact_id"): item
+        for item in transcript.get("evidence", [])
+        if isinstance(item, dict)
+    }
+    if len(evidence_by_artifact) != len(transcript.get("evidence", [])):
+        raise PlaybookError("transcript has duplicate or malformed evidence metadata")
+    evidence_manifests = {
+        item.get("manifest_id") for item in evidence_by_artifact.values()
+    }
+    if not evidence_ids <= evidence_manifests:
+        raise PlaybookError("proposal references missing transcript evidence metadata")
     findings = []
     for finding_id in sorted(proposal_findings):
         finding = finding_map.get(finding_id)
@@ -341,10 +364,21 @@ def build_draft(transcript: dict) -> dict:
             }
         )
     first_url = _scoped_url(pages[0].get("url", ""), origin, prefixes)
+    page_urls = set()
     for page in pages:
         _scoped_url(page.get("url", ""), origin, prefixes)
-        if page.get("evidence_ref") not in evidence_ids:
+        metadata = evidence_by_artifact.get(page.get("artifact_id"))
+        if (
+            page.get("evidence_ref") not in evidence_ids
+            or metadata is None
+            or metadata.get("manifest_id") != page.get("evidence_ref")
+            or metadata.get("sha256") != page.get("sha256")
+            or metadata.get("size_bytes") != page.get("size_bytes")
+        ):
             raise PlaybookError("page evidence reference is absent from the proposal")
+        if page["url"] in page_urls:
+            raise PlaybookError("transcript contains a duplicate page URL")
+        page_urls.add(page["url"])
     budgets = approval.get("budgets", {})
     max_requests = budgets.get("max_requests", 0)
     max_pages = budgets.get("max_pages", 0)
