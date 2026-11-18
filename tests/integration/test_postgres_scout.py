@@ -1,5 +1,6 @@
 """PostgreSQL durability checks; run with SCOUT_TEST_DATABASE_URL set."""
 
+import asyncio
 import hashlib
 import json
 import os
@@ -8,8 +9,10 @@ import sys
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -33,6 +36,7 @@ from scout.domain import (
     ConflictError,
     IntegrityError,
     PlaybookProposal,
+    PolicyDecisionRef,
     ScoutObjective,
     ScoutScope,
     ScoutSession,
@@ -41,6 +45,7 @@ from scout.domain import (
 from scout.fakes import FakePolicy, FakeSourceLookup
 from scout.outbox_relay import OutboxRelay
 from scout.tools.policy import EffectiveScope, OriginGrant
+from scout.tools.url_policy import normalize_url
 
 DSN = os.environ.get("SCOUT_TEST_DATABASE_URL")
 
@@ -362,6 +367,120 @@ class PostgresScoutRepositoryTests(unittest.TestCase):
             restarted.consume(session.session_id, "call-3", 0, widened)
         with self.assertRaises(AuthorizationError):
             restarted.consume(session.session_id, "call-1", 0, widened)
+
+    def test_navigation_budget_concurrent_calls_never_exceed_approved_limit(self):
+        session = self.make_session()
+        self.repo.create(session, "parallel-budget", "c" * 64)
+        scope = EffectiveScope(
+            "tester",
+            session.source,
+            (OriginGrant("https://example.org", ("/",)),),
+            datetime.now(UTC) + timedelta(minutes=5),
+            2,
+            30,
+            4096,
+        )
+
+        def consume(index):
+            try:
+                PostgresNavigationBudgetLedger(self.test_dsn).consume(
+                    session.session_id, f"parallel-{index}", 0, scope
+                )
+                return "allowed"
+            except AuthorizationError:
+                return "denied"
+
+        with ThreadPoolExecutor(max_workers=8) as workers:
+            outcomes = list(workers.map(consume, range(8)))
+        self.assertEqual(outcomes.count("allowed"), 2)
+        self.assertEqual(outcomes.count("denied"), 6)
+
+    def test_http_capture_receipt_and_evidence_replay_after_application_restart(self):
+        source = SourceRef("http-source", "revision-1")
+        scope = ScoutScope(("https://catalog.test",), ("/docs",), ("GET",), 3, 30)
+        now = datetime.now(UTC)
+        decision = PolicyDecisionRef(
+            "approval-http", "tester", source, True, now + timedelta(minutes=5), scope
+        )
+        body = b"<html><title>Persisted</title><p>original bytes</p></html>"
+        result = SimpleNamespace(
+            status=200,
+            content_type="text/html",
+            body=body,
+            request_count=1,
+            elapsed_seconds=1,
+            final_url="https://catalog.test/docs/page",
+            completed_at=now,
+            title="Persisted",
+            links=(),
+            text="Persisted original bytes",
+            truncated=False,
+        )
+
+        class Discovery:
+            def normalize_target(self, url):
+                return normalize_url(url)
+
+            async def fetch(self, source_id, revision, url):
+                return result
+
+        with tempfile.TemporaryDirectory() as temporary:
+            custody = LocalFileEvidenceCustody(Path(temporary).resolve())
+            sources = FakeSourceLookup({source: scope})
+            policy = FakePolicy(decision)
+            first_app = ScoutApplication(
+                sources,
+                policy,
+                self.repo,
+                custody,
+                http_discovery_factory=lambda *_: Discovery(),
+            )
+            session = first_app.start_incremental(
+                source=source,
+                objective="verify durable authorized HTTP capture",
+                principal="tester",
+                command_id="http-start-" + uuid4().hex,
+                now=now,
+            )
+            command_id = "http-command-" + uuid4().hex
+            idempotency_key = "http-key-" + uuid4().hex
+            outcome = asyncio.run(
+                first_app.explore_http_incremental(
+                    session_id=session.session_id,
+                    principal="tester",
+                    command_id=command_id,
+                    idempotency_key=idempotency_key,
+                    fingerprint="f" * 64,
+                    expected_version=0,
+                    url="https://catalog.test/docs/page",
+                    now=now,
+                )
+            )
+            artifact = outcome.session.manifests[0].artifacts[0]
+            restarted_repo = PostgresScoutSessionRepository(self.test_dsn)
+            restarted = ScoutApplication(
+                sources,
+                policy,
+                restarted_repo,
+                LocalFileEvidenceCustody(Path(temporary).resolve()),
+                http_discovery_factory=lambda *_: self.fail(
+                    "completed HTTP request was fetched again"
+                ),
+            )
+            replay = asyncio.run(
+                restarted.explore_http_incremental(
+                    session_id=session.session_id,
+                    principal="tester",
+                    command_id=command_id,
+                    idempotency_key=idempotency_key,
+                    fingerprint="f" * 64,
+                    expected_version=0,
+                    url="https://catalog.test/docs/page",
+                    now=now,
+                )
+            )
+            self.assertEqual(replay.session.version, 1)
+            self.assertTrue(restarted.custody.verify(artifact))
 
     def test_child_process_crash_before_and_after_commit(self):
         with connect(self.test_dsn) as conn:

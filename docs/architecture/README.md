@@ -30,5 +30,7 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 
 23. [Scout MCP tool host readiness](assessments/scout-mcp-host-readiness.md)
 24. [Scout MCP PR #7 closure e acceptance gates](assessments/scout-mcp-pr7-closure.md)
+25. [Matriz de ameaças HTTP do Scout](assessments/scout-http-threat-matrix.md)
+26. [Resultado Scout Authorized HTTP Exploration](assessments/scout-http-exploration.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.

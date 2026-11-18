@@ -8,6 +8,8 @@ services:
       - ${SCOUT_EGRESS_DOMAINS_FILE:-../../config/scout/egress-domains.example.txt}:/etc/squid/allowed-domains.txt:ro
     extra_hosts:
       - "blocked-target.example.test:127.0.0.1"
+    ports:
+      - "127.0.0.1:3128:3128"
     networks:
       - tool-internal
       - egress

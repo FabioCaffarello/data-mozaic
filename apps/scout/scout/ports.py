@@ -55,6 +55,27 @@ class FixtureExplorationPort(Protocol):
     ) -> FixtureExplorationResult: ...
 
 
+@dataclass(frozen=True)
+class NavigationTarget:
+    """A URL canonicalized by the HTTP policy adapter before application use."""
+
+    url: str
+    origin: str
+    path: str
+
+
+class HTTPDiscoveryPort(Protocol):
+    def normalize_target(self, url: str) -> NavigationTarget: ...
+
+    async def fetch(self, source_id: str, revision: str, url: str): ...
+
+
+class HTTPDiscoveryFactoryPort(Protocol):
+    def __call__(
+        self, principal: str, session_id: str, call_id: str
+    ) -> HTTPDiscoveryPort: ...
+
+
 class ScoutSessionRepositoryPort(Protocol):
     def get_session_header(self, session_id: str) -> dict | None: ...
     def get_session(self, session_id: str) -> ScoutSession | None: ...

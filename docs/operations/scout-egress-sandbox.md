@@ -14,6 +14,8 @@ Este alvo requer Docker e é separado dos checks offline. O probe tenta conexão
 
 O arquivo padrão [egress-domains.example.txt](../../config/scout/egress-domains.example.txt) só lista `blocked-target.example.test`, um domínio de teste não roteável. Para uma fonte aprovada, copie para `.local/scout-egress-domains.txt` e liste nomes de host exatos, um por linha. Passe seu caminho absoluto como `SCOUT_EGRESS_DOMAINS_FILE`. Esse arquivo é configuração administrativa ignorada pelo Git; ele só restringe destinos no proxy e não substitui source registration ou autorização BC14.
 
+Para o host MCP local no próprio computador, a porta do Squid é publicada somente em `127.0.0.1:3128`. Inicie o broker com o domínio já cadastrado no arquivo administrativo e use `SCOUT_EGRESS_PROXY=http://127.0.0.1:3128`. Dentro de um container na rede `tool-internal`, use `http://squid:3128`. A aplicação rejeita outros endpoints de proxy. Não publique essa porta em uma interface não-loopback.
+
 Squid permite apenas CONNECT na porta 443, exige hostname listado e bloqueia ranges IPv4/IPv6 locais e especiais com ACL de IP destino ([referência Squid](https://www.squid-cache.org/Doc/config/acl/)). Ele termina o túnel em TCP/TLS sem descriptografar HTTPS: origem, caminho, GET, redirects, budgets e bytes ainda dependem do adapter. Egress firewall fora do container continua necessário para ambientes operacionais.
 
 ## Limites atuais

@@ -3,12 +3,13 @@
 import hashlib
 import json
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 
 from mozaic_observability import bind_context, log_event
 
 from .domain import (
+    AuthorizationError,
     ConflictError,
     DiscoveryFinding,
     EvidenceManifest,
@@ -26,6 +27,7 @@ from .ports import (
     CUSTODY_STATUS_AVAILABLE,
     EvidenceCustodyPort,
     FixtureExplorationPort,
+    HTTPDiscoveryFactoryPort,
     PolicyDecisionPort,
     ScoutSessionRepositoryPort,
     SourceLookupPort,
@@ -33,6 +35,13 @@ from .ports import (
 from .projections import projection
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class HTTPExplorationOutcome:
+    session: ScoutSession
+    text: str
+    truncated: bool
 
 
 class ScoutApplication:
@@ -43,10 +52,12 @@ class ScoutApplication:
         repository: ScoutSessionRepositoryPort,
         custody: EvidenceCustodyPort,
         fixture_explorer: FixtureExplorationPort | None = None,
+        http_discovery_factory: HTTPDiscoveryFactoryPort | None = None,
     ):
         self.sources, self.policy, self.repository = sources, policy, repository
         self.custody = custody
         self.fixture_explorer = fixture_explorer
+        self.http_discovery_factory = http_discovery_factory
 
     @staticmethod
     def _trace(event: str, session_id: str, command_id: str, state: str) -> None:
@@ -360,6 +371,207 @@ class ScoutApplication:
             session.state.value,
         )
         return session
+
+    async def explore_http_incremental(
+        self,
+        *,
+        session_id: str,
+        principal: str,
+        command_id: str,
+        idempotency_key: str,
+        fingerprint: str,
+        expected_version: int,
+        url: str,
+        now: datetime,
+    ) -> HTTPExplorationOutcome:
+        """Fetch one authorized URL and attach the original bytes to BC14 evidence."""
+        if self.http_discovery_factory is None:
+            raise IntegrityError("authorized HTTP discovery is not configured")
+        session, decision = self.authorized_session(session_id, principal, now)
+        header = self.repository.find_command_header(
+            principal, idempotency_key, fingerprint
+        )
+        if header is not None and header["status"] == "completed":
+            replay = self.repository.get_command_result(
+                principal, idempotency_key, fingerprint
+            )
+            if replay is None:
+                raise IntegrityError("completed HTTP command has no result snapshot")
+            return HTTPExplorationOutcome(replay, "", True)
+        if session.version != expected_version:
+            raise ConflictError("optimistic concurrency conflict")
+        if session.remaining_requests < 1 or session.remaining_seconds < 1:
+            raise IntegrityError("authorized session budget is exhausted")
+        discovery = self.http_discovery_factory(principal, session_id, command_id)
+        normalized = discovery.normalize_target(url)
+        if not session.authorization.scope.allows(normalized.origin, normalized.path):
+            raise AuthorizationError("target is outside the approved source scope")
+        if any(
+            observation.url == normalized.url for observation in session.observations
+        ):
+            raise IntegrityError("session already contains an observation for this URL")
+        intent = {
+            "session_id": session_id,
+            "source": asdict(session.source),
+            "url_sha256": hashlib.sha256(normalized.url.encode()).hexdigest(),
+            "expected_version": expected_version,
+        }
+        replay = self._begin_incremental_command(
+            session=session,
+            principal=principal,
+            command_id=command_id,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+            command_kind="ExploreHTTP",
+            intent=intent,
+        )
+        if replay is not None:
+            return replay
+        try:
+            result = await discovery.fetch(
+                session.source.source_id, session.source.revision, normalized.url
+            )
+        except BaseException:
+            self.repository.mark_command_uncertain(principal, idempotency_key)
+            raise
+        if (
+            result.status < 100
+            or result.status > 599
+            or result.content_type not in {"text/html", "text/plain"}
+            or not isinstance(result.body, bytes)
+            or not isinstance(result.completed_at, datetime)
+            or result.completed_at.tzinfo is None
+            or len(result.body) > min(decision.max_response_bytes, 2_000_000)
+            or not 1 <= result.request_count <= session.remaining_requests
+            or not 0 <= result.elapsed_seconds <= session.remaining_seconds
+        ):
+            self.repository.mark_command_uncertain(principal, idempotency_key)
+            raise IntegrityError(
+                "HTTP result violates approved response or budget limits"
+            )
+        try:
+            current_decision = self.policy.decide(
+                principal, session.source, result.completed_at
+            )
+            session._policy(current_decision, result.completed_at)
+            if len(result.body) > current_decision.max_response_bytes:
+                raise AuthorizationError(
+                    "response exceeds the current approved byte limit"
+                )
+            current_source_scope = self.sources.resolve(session.source)
+            if (
+                session.authorization.scope.intersect(current_source_scope)
+                != session.authorization.scope
+            ):
+                raise SourceRevisionConflict(
+                    "source revision changed during HTTP fetch"
+                )
+        except Exception:
+            self.repository.mark_command_uncertain(principal, idempotency_key)
+            raise
+        final_target = discovery.normalize_target(result.final_url)
+        if not session.authorization.scope.allows(
+            final_target.origin, final_target.path
+        ):
+            self.repository.mark_command_uncertain(principal, idempotency_key)
+            raise AuthorizationError("final redirect target is outside approved scope")
+        try:
+            for link in result.links:
+                normalized_link = discovery.normalize_target(link)
+                if not session.authorization.scope.allows(
+                    normalized_link.origin, normalized_link.path
+                ):
+                    raise AuthorizationError(
+                        "discovered link is outside approved scope"
+                    )
+        except Exception:
+            self.repository.mark_command_uncertain(principal, idempotency_key)
+            raise
+        artifact_id = (
+            "artifact-"
+            + hashlib.sha256(f"{session_id}\0{command_id}".encode()).hexdigest()
+        )
+        digest = hashlib.sha256(result.body).hexdigest()
+        self.repository.begin_custody_intent(
+            artifact_id, session_id, digest, len(result.body)
+        )
+        try:
+            artifact = self.custody.lookup(artifact_id)
+            if artifact is None:
+                artifact = self.custody.store(
+                    session_id, session.source, result.body, artifact_id
+                )
+        except BaseException:
+            self.repository.mark_custody_unknown(artifact_id)
+            self.repository.mark_command_uncertain(principal, idempotency_key)
+            raise
+        if (
+            artifact.artifact_id != artifact_id
+            or artifact.session_id != session_id
+            or artifact.source != session.source
+            or artifact.sha256 != digest
+            or artifact.size_bytes != len(result.body)
+            or artifact.kind != "http_response"
+            or artifact.custody_status != CUSTODY_STATUS_AVAILABLE
+            or not self.custody.verify(artifact)
+        ):
+            self.repository.mark_custody_discrepancy(
+                artifact_id, "http_evidence_integrity_mismatch"
+            )
+            self.repository.mark_command_uncertain(principal, idempotency_key)
+            raise IntegrityError("HTTP evidence receipt failed integrity verification")
+        self.repository.confirm_custody_intent(artifact_id, digest, asdict(artifact))
+        observation_id = (
+            "observation-"
+            + hashlib.sha256(f"{session_id}\0{command_id}".encode()).hexdigest()
+        )
+        observation = SourceObservation(
+            observation_id,
+            session_id,
+            session.source,
+            f"HTTP response captured: {result.status} {result.content_type}.",
+            artifact_id,
+            final_target.url,
+            result.status,
+            result.content_type,
+            result.title,
+            tuple(result.links),
+        )
+        session.observe(
+            observation,
+            current_decision,
+            result.completed_at,
+            result.elapsed_seconds,
+            result.request_count,
+        )
+        manifest_id = (
+            "manifest-"
+            + hashlib.sha256(f"{session_id}\0{artifact_id}".encode()).hexdigest()
+        )
+        session.seal(
+            EvidenceManifest(
+                manifest_id,
+                session_id,
+                session.source,
+                result.completed_at.isoformat().replace("+00:00", "Z"),
+                (artifact,),
+            ),
+            self.custody.verify(artifact),
+            current_decision,
+            result.completed_at,
+        )
+        session = self._complete_incremental_command(
+            session=session,
+            expected_version=expected_version,
+            principal=principal,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+        )
+        self.repository.confirm_custody_intent(artifact_id, digest, asdict(artifact))
+        self._trace(
+            "scout.http.explored", session.session_id, command_id, session.state.value
+        )
+        return HTTPExplorationOutcome(session, result.text, result.truncated)
 
     def authorized_session(
         self, session_id: str, principal: str, now: datetime

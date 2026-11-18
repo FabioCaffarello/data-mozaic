@@ -30,7 +30,7 @@ class AiohttpSquidTransport:
 
     def __init__(self, proxy_url: str):
         parts = urlsplit(proxy_url)
-        if (
+        container_proxy = (
             parts.scheme != "http"
             or parts.hostname != "squid"
             or parts.port != 3128
@@ -39,7 +39,18 @@ class AiohttpSquidTransport:
             or parts.path
             or parts.query
             or parts.fragment
-        ):
+        )
+        host_loopback_proxy = (
+            parts.scheme != "http"
+            or parts.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or parts.port != 3128
+            or parts.username is not None
+            or parts.password is not None
+            or parts.path
+            or parts.query
+            or parts.fragment
+        )
+        if container_proxy and host_loopback_proxy:
             raise ValueError("Scout transport requires the isolated squid:3128 proxy")
         self.proxy_url = proxy_url
 

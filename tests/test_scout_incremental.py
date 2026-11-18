@@ -1,11 +1,14 @@
 """Incremental application use cases reuse the BC14 aggregate and repository."""
 
+import asyncio
+import hashlib
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from scout.adapters.fixtures import FixtureExplorer
 from scout.adapters.local_custody import LocalFileEvidenceCustody
@@ -28,6 +31,7 @@ from scout.fakes import (
     FakeSessionRepository,
     FakeSourceLookup,
 )
+from scout.tools.url_policy import normalize_url
 
 
 class ScoutIncrementalTests(unittest.TestCase):
@@ -76,6 +80,97 @@ class ScoutIncrementalTests(unittest.TestCase):
         )
         with self.assertRaises(IntegrityError):
             self.app.status_incremental(session.session_id, "other", self.now)
+
+    def test_authorized_http_capture_seals_original_bytes_and_budget(self):
+        body = b"<html><title>HTTPS fixture</title><p>untrusted page</p></html>"
+        result = SimpleNamespace(
+            status=200,
+            content_type="text/html",
+            body=body,
+            request_count=1,
+            elapsed_seconds=2,
+            final_url="https://catalog.test/docs/page",
+            completed_at=self.now,
+            title="HTTPS fixture",
+            links=("https://catalog.test/docs/next",),
+            text="HTTPS fixture untrusted page",
+            truncated=False,
+        )
+
+        class Discovery:
+            def normalize_target(self, url):
+                return normalize_url(url)
+
+            async def fetch(self, source_id, revision, url):
+                self.request = (source_id, revision, url)
+                return result
+
+        discovery = Discovery()
+        self.app.http_discovery_factory = lambda *_: discovery
+        session = self.app.start_incremental(
+            source=self.source,
+            objective="inspect authorized HTTPS content",
+            principal="operator",
+            command_id="http-session",
+            now=self.now,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            self.app.custody = LocalFileEvidenceCustody(Path(temporary).resolve())
+            outcome = asyncio.run(
+                self.app.explore_http_incremental(
+                    session_id=session.session_id,
+                    principal="operator",
+                    command_id="http-command",
+                    idempotency_key="http-key",
+                    fingerprint="http-fingerprint",
+                    expected_version=0,
+                    url="https://catalog.test/docs/page",
+                    now=self.now,
+                )
+            )
+            captured = outcome.session
+            artifact = captured.manifests[0].artifacts[0]
+            self.assertTrue(self.app.custody.verify(artifact))
+            self.assertEqual(artifact.sha256, hashlib.sha256(body).hexdigest())
+            self.assertEqual(artifact.size_bytes, len(body))
+            self.assertEqual(captured.remaining_requests, 3)
+            self.assertEqual(captured.remaining_seconds, 58)
+            self.assertEqual(outcome.text, "HTTPS fixture untrusted page")
+            self.assertEqual(discovery.request[2], "https://catalog.test/docs/page")
+
+    def test_http_cancellation_leaves_command_receipt_uncertain(self):
+        class CancelledDiscovery:
+            def normalize_target(self, url):
+                return normalize_url(url)
+
+            async def fetch(self, source_id, revision, url):
+                raise asyncio.CancelledError
+
+        self.app.http_discovery_factory = lambda *_: CancelledDiscovery()
+        session = self.app.start_incremental(
+            source=self.source,
+            objective="cancel authorized HTTP work safely",
+            principal="operator",
+            command_id="http-cancel-session",
+            now=self.now,
+        )
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(
+                self.app.explore_http_incremental(
+                    session_id=session.session_id,
+                    principal="operator",
+                    command_id="http-cancel-command",
+                    idempotency_key="http-cancel-key",
+                    fingerprint="cancel-fingerprint",
+                    expected_version=0,
+                    url="https://catalog.test/docs/page",
+                    now=self.now,
+                )
+            )
+        self.assertEqual(
+            self.repository.commands[("operator", "http-cancel-key")]["status"],
+            "uncertain",
+        )
 
     def test_finding_requires_session_manifest_and_expected_version(self):
         session = self.app.start_incremental(

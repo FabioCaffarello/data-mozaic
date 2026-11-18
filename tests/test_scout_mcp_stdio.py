@@ -42,6 +42,7 @@ class ScoutMCPStdioTests(unittest.TestCase):
                         "scout_start",
                         "scout_record_finding",
                         "scout_explore_fixture",
+                        "scout_fetch",
                         "scout_propose",
                         "scout_status",
                         "scout_export_transcript",
@@ -77,7 +78,13 @@ class ScoutMCPStdioTests(unittest.TestCase):
                 self.assertFalse(denied.isError)
                 self.assertEqual(
                     json.loads(denied.content[0].text)["error"]["code"],
-                    "authorization_denied",
+                    "policy_denied",
+                )
+                fetch_schema = by_name["scout_fetch"].inputSchema
+                self.assertFalse(fetch_schema["additionalProperties"])
+                self.assertEqual(
+                    set(fetch_schema["properties"]),
+                    {"session_id", "expected_version", "url"},
                 )
 
                 start_args = {

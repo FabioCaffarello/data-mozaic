@@ -1,0 +1,23 @@
+# Matriz de ameaças — Scout Authorized HTTP Exploration
+
+Estado: avaliação do incremento HTTP local. Mitigações aqui descritas são experimentais e não substituem autenticação, integração produtiva ou revisão humana.
+
+| Ameaça/caso | Controle no código/runtime | Teste/evidência exigida | Estado nesta branch |
+|---|---|---|---|
+| URL livre confundida com autorização | URL é normalizada e validada contra source revision e scope da sessão; policy revalidada por hop | URL externa à origem/path não alcança transporte | Coberto em testes unitários do adapter; coberto parcialmente pelo caso de aplicação |
+| Traversal e percent-encoding | Segmentos `.`/`..`, separadores codificados, escapes inválidos e controle são rejeitados | variantes plain/encoded/double-encoded antes do socket | Cobertura existente do normalizador; ampliar negativos específicos |
+| Redirect a privado/metadata ou fora do path | Redirect manual, normalização e autorização antes de próxima request; proxy nega ranges locais/especiais | redirects públicos/privados, metadata IPv4/IPv6, cross-origin e cross-path | Redirect fora de path cobre unitário; proxy loopback existe; metadata/IPv6 redirect pendentes |
+| DNS rebinding/CNAME e resposta mista | Transporte usa somente Squid; ACL valida hostname e endereços de destino após resolução no broker; cache DNS do client desativado | DNS controlado alternando public/private e CNAME com A/AAAA mistos | Não provado por fixture controlada ainda; sandbox existente cobre hostname de teste resolvido para loopback |
+| Acesso direto fora do proxy | `AiohttpSquidTransport` exige Squid do container ou localhost loopback, `trust_env=False` | processo fetch sem egress direto e proxy requerido | Transporte exige proxy; probe Docker confirma worker de teste sem egress direto, mas não contém shell do host MCP/Codex |
+| Resposta oversized, compressão/zip bomb | `auto_decompress=False`, `Accept-Encoding: identity`, limite de `Content-Length` e streaming; conteúdo comprimido rejeitado | declared/streamed oversized, gzip/zip bomb sem descompressão | Transporte implementa; ampliar testes negatives |
+| Timeout, quota, requests concorrentes e cancelamento | timeout limitado pelo restante da sessão; ledger PostgreSQL atômico por hop/call; cancelamento deixa receipt incerto | corrida multi-processo, timeout, cancelamento, restart e replay | Ledger/recovery existentes em PostgreSQL; integração HTTP com concorrência/cancelamento pendente |
+| Negação de rede/broker indisponível | Erro de rede tipado e sem retry alternativo; proxy fixo no host | parar broker, garantir sem conexão direta e sem captura | Tipo de erro implementado; prova host/broker pendente |
+| Prompt injection em HTML | HTML é texto externo; nenhum conteúdo é executado; retorno MCP limitado e marcado como não confiável na skill | fixture com instruções adversariais em HTML | Parser remove scripts/styles; fixture MCP injection dedicada pendente |
+| Falha/corrupção de custody | BC14 começa intent, verifica identity/digest/size e sela somente evidência válida | corrupção, ACK perdido, restart e reconciliação | Caminho reutiliza verificação/receipt existente; novo teste de corrupção HTTP pendente |
+| Replay de BC15 | Transcript draft validado por BC15 e replay usa bytes capturados; sem rede | restart do host e replay offline a partir do artefato preservado | Contrato/CLI já existem; replay com captura HTTP pendente |
+| Informação sensível em resposta/logs | URL/paths em trace são hashed ou allowlisted; bytes não entram no transcript; conteúdo textual extraído tem redaction conservadora para campos de segredo comuns; sem cookies/headers auth | query secrets, headers e conteúdo fora do log/transcript | Implementado com regex comum, não substitui classificação sensível específica do domínio |
+| Shell/rede do agente | Nenhum controle neste incremento | prova de contenção de Codex/tool caller | Fora de escopo; risco residual explícito |
+
+Smoke MCP com `https://www.iana.org/domains/reserved` e `https://example.com/` chegou ao broker, que respondeu 403 CONNECT; nenhum conteúdo público foi capturado. A deny do broker foi mapeada para `policy_denied`. Não houve bypass nem tentativa de repetir fora do MCP. O sandbox negativo continua passando para loopback e host não registrado. O teste fixture HTTPS positivo e a causa ambiental/específica da negação pública continuam pendentes.
+
+Para qualquer teste público futuro, exija source, revision, path, budgets e hostname egress explicitamente cadastrados por operador, use somente GET e não contorne autenticação, CAPTCHA, bloqueio ou limites do site.

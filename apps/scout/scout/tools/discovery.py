@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
+from datetime import datetime
 from html.parser import HTMLParser
 from urllib.parse import urljoin
+
+import aiohttp
 
 from ..domain import AuthorizationError, SourceRef
 from .ports import (
@@ -25,6 +29,34 @@ class DiscoveryError(RuntimeError):
     pass
 
 
+class DiscoveryNetworkError(DiscoveryError):
+    pass
+
+
+class DiscoveryPolicyError(DiscoveryError):
+    pass
+
+
+class DiscoveryStructureError(DiscoveryError):
+    pass
+
+
+class DiscoveryCustodyError(DiscoveryError):
+    pass
+
+
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(password|passwd|secret|access[_-]?token|api[_-]?key)\b"
+    r"(\s*[:=]\s*)([^\s,;\"'<>]+)"
+)
+_BEARER_VALUE = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/-]+=*")
+
+
+def _redact_page_text(value: str) -> str:
+    value = _SECRET_ASSIGNMENT.sub(r"\1\2[REDACTED]", value)
+    return _BEARER_VALUE.sub(r"\1[REDACTED]", value)
+
+
 @dataclass(frozen=True)
 class DiscoveryResult:
     evidence: EvidenceReference
@@ -34,6 +66,11 @@ class DiscoveryResult:
     title: str | None
     links: tuple[str, ...]
     truncated: bool
+    body: bytes
+    elapsed_seconds: int
+    request_count: int
+    final_url: str
+    completed_at: datetime
 
 
 class _PageParser(HTMLParser):
@@ -85,6 +122,8 @@ class HTTPDiscoveryTool:
         trace: TracePort,
         clock: ClockPort,
         transport: HTTPTransportPort,
+        *,
+        preserve_evidence: bool = True,
     ):
         self.context = context
         self.authorization = authorization
@@ -93,8 +132,10 @@ class HTTPDiscoveryTool:
         self.trace = trace
         self.clock = clock
         self.transport = transport
+        self.preserve_evidence = preserve_evidence
 
     async def fetch(self, source_id: str, revision: str, url: str) -> DiscoveryResult:
+        started_at = self.clock.now()
         caller = self.context.current()
         if not caller.principal or not caller.session_id or not caller.call_id:
             raise AuthorizationError(
@@ -133,10 +174,10 @@ class HTTPDiscoveryTool:
             ):
                 raise AuthorizationError("invalid or exhausted navigation budget")
             elapsed = (now - budget_state.started_at).total_seconds()
-            if elapsed < 0:
-                raise AuthorizationError(
-                    "navigation budget start time is in the future"
-                )
+            # PostgreSQL commits the durable start timestamp after the host's
+            # preflight clock read. A small positive database lead is zero
+            # elapsed time; the ledger itself remains authoritative for expiry.
+            elapsed = max(0.0, elapsed)
             remaining = min(
                 scope.max_duration_seconds - elapsed,
                 scope.expires_at.timestamp() - now.timestamp(),
@@ -153,6 +194,14 @@ class HTTPDiscoveryTool:
                 response = await self.transport.get(
                     current.url, scope.max_response_bytes, remaining
                 )
+            except aiohttp.ClientHttpProxyError as error:
+                if error.status in {403, 407}:
+                    raise DiscoveryPolicyError(
+                        "egress broker denied destination"
+                    ) from error
+                raise DiscoveryNetworkError("egress broker request failed") from error
+            except TargetRejected as error:
+                raise DiscoveryStructureError(str(error)) from error
             except Exception as error:
                 self.trace.append(
                     caller.session_id,
@@ -160,14 +209,16 @@ class HTTPDiscoveryTool:
                     _trace_target(current) | {"failure_type": type(error).__name__},
                     self.clock.now(),
                 )
-                raise DiscoveryError("HTTP request failed") from error
+                raise DiscoveryNetworkError("HTTP request failed") from error
             if len(response.body) > scope.max_response_bytes:
-                raise DiscoveryError("transport exceeded approved response byte limit")
+                raise DiscoveryStructureError(
+                    "transport exceeded approved response byte limit"
+                )
             if response.headers.get("content-encoding", "identity").lower() not in (
                 "",
                 "identity",
             ):
-                raise DiscoveryError("compressed responses are not accepted")
+                raise DiscoveryStructureError("compressed responses are not accepted")
             after_response = self.clock.now()
             refreshed = self.authorization.authorize(
                 caller.principal, source, after_response
@@ -181,14 +232,18 @@ class HTTPDiscoveryTool:
                     "navigation time budget expired during response"
                 )
             if response.status in {301, 302, 303, 307, 308}:
-                redirect_evidence = self._store_evidence(
-                    caller.session_id,
-                    source,
-                    current,
-                    response,
-                    response.headers.get("content-type", "application/octet-stream")
-                    .split(";", 1)[0]
-                    .lower(),
+                redirect_evidence = (
+                    self._store_evidence(
+                        caller.session_id,
+                        source,
+                        current,
+                        response,
+                        response.headers.get("content-type", "application/octet-stream")
+                        .split(";", 1)[0]
+                        .lower(),
+                    )
+                    if self.preserve_evidence
+                    else None
                 )
                 self.trace.append(
                     caller.session_id,
@@ -196,14 +251,18 @@ class HTTPDiscoveryTool:
                     _trace_target(current)
                     | {
                         "status": response.status,
-                        "evidence_id": redirect_evidence.evidence_id,
-                        "size_bytes": redirect_evidence.size_bytes,
+                        "evidence_id": redirect_evidence.evidence_id
+                        if redirect_evidence
+                        else None,
+                        "size_bytes": redirect_evidence.size_bytes
+                        if redirect_evidence
+                        else len(response.body),
                     },
                     after_response,
                 )
                 location = response.headers.get("location")
                 if not location:
-                    raise DiscoveryError("redirect response has no location")
+                    raise DiscoveryStructureError("redirect response has no location")
                 next_target = normalize_url(urljoin(current.url, location))
                 self._authorize_target(
                     caller.session_id, next_target, scope, after_response
@@ -217,9 +276,19 @@ class HTTPDiscoveryTool:
                 current = next_target
                 continue
             return self._record_result(
-                caller.session_id, source, current, response, scope
+                caller.session_id,
+                source,
+                current,
+                response,
+                scope,
+                started_at,
+                hop + 1,
             )
         raise AuthorizationError("redirect count exceeds the approved request budget")
+
+    @staticmethod
+    def normalize_target(url: str):
+        return normalize_url(url)
 
     def _authorize_target(self, session_id, target, scope, now):
         try:
@@ -234,21 +303,32 @@ class HTTPDiscoveryTool:
             raise
 
     def _record_result(
-        self, session_id, source, target, response, scope
+        self, session_id, source, target, response, scope, started_at, request_count
     ) -> DiscoveryResult:
         now = self.clock.now()
         content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
         if content_type not in {"text/html", "text/plain"}:
-            raise DiscoveryError("only HTML and plain text responses are accepted")
-        evidence = self._store_evidence(
-            session_id, source, target, response, content_type
+            raise DiscoveryStructureError(
+                "only HTML and plain text responses are accepted"
+            )
+        evidence = (
+            self._store_evidence(session_id, source, target, response, content_type)
+            if self.preserve_evidence
+            else EvidenceReference(
+                "",
+                hashlib.sha256(response.body).hexdigest(),
+                len(response.body),
+                source,
+            )
         )
         current_scope = scope.intersect(self._scope_for(session_id, source))
         text, title, links = _extract_content(
             response.body, content_type, target, current_scope, now
         )
         truncated = len(text) > 16_000
-        text = text[:16_000]
+        text = _redact_page_text(text[:16_000])
+        if title:
+            title = _redact_page_text(title)[:512]
         self.trace.append(
             session_id,
             "http.response.recorded",
@@ -262,7 +342,18 @@ class HTTPDiscoveryTool:
             now,
         )
         return DiscoveryResult(
-            evidence, response.status, content_type, text, title, links, truncated
+            evidence,
+            response.status,
+            content_type,
+            text,
+            title,
+            links,
+            truncated,
+            response.body,
+            max(0, int((now - started_at).total_seconds())),
+            request_count,
+            target.url,
+            now,
         )
 
     def _store_evidence(self, session_id, source, target, response, content_type):
@@ -280,7 +371,7 @@ class HTTPDiscoveryTool:
             or evidence.size_bytes != len(response.body)
             or evidence.sha256 != hashlib.sha256(response.body).hexdigest()
         ):
-            raise DiscoveryError(
+            raise DiscoveryCustodyError(
                 "evidence store returned inconsistent identity or digest"
             )
         return evidence
