@@ -207,6 +207,7 @@ class ScoutApplication:
                 principal, idempotency_key, fingerprint
             )
             if result is None:
+                self.repository.abandon_command(principal, idempotency_key)
                 raise
             return result
 
@@ -413,6 +414,18 @@ class ScoutApplication:
             return replay
         if session.version != expected_version or not command_id:
             raise ConflictError("expected version or command identity is invalid")
+        finding = DiscoveryFinding(
+            "finding-" + command_id,
+            session.session_id,
+            session.source,
+            statement,
+            epistemic_status,
+            confidence,
+            manifest_ids,
+            verification_note,
+        )
+        # Validate domain rules before creating a durable in-progress receipt.
+        session.add_finding(finding, decision, now)
         replay = self._begin_incremental_command(
             session=session,
             principal=principal,
@@ -424,17 +437,6 @@ class ScoutApplication:
         )
         if replay is not None:
             return replay
-        finding = DiscoveryFinding(
-            "finding-" + command_id,
-            session.session_id,
-            session.source,
-            statement,
-            epistemic_status,
-            confidence,
-            manifest_ids,
-            verification_note,
-        )
-        session.add_finding(finding, decision, now)
         committed = self._complete_incremental_command(
             session=session,
             expected_version=expected_version,
@@ -481,17 +483,6 @@ class ScoutApplication:
             return replay
         if session.version != expected_version or not command_id:
             raise ConflictError("expected version or command identity is invalid")
-        replay = self._begin_incremental_command(
-            session=session,
-            principal=principal,
-            command_id=command_id,
-            idempotency_key=idempotency_key,
-            fingerprint=fingerprint,
-            command_kind="SubmitProposal",
-            intent={"session_id": session_id, "expected_version": expected_version},
-        )
-        if replay is not None:
-            return replay
         proposal = PlaybookProposal(
             "proposal-" + command_id,
             session.session_id,
@@ -503,8 +494,20 @@ class ScoutApplication:
             risks,
             required_capabilities,
         )
+        # Validate proposal references before persisting its command intent.
         session.propose(proposal, decision, now)
         session.handoff_result = "delivery_pending"
+        replay = self._begin_incremental_command(
+            session=session,
+            principal=principal,
+            command_id=command_id,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+            command_kind="SubmitProposal",
+            intent={"session_id": session_id, "expected_version": expected_version},
+        )
+        if replay is not None:
+            return replay
         committed = self._complete_incremental_command(
             session=session,
             expected_version=expected_version,

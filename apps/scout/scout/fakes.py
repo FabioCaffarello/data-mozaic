@@ -119,6 +119,12 @@ class FakeSessionRepository:
             if receipt and receipt["status"] == "in_progress":
                 receipt["status"] = "uncertain"
 
+    def abandon_command(self, principal, key):
+        with self._lock:
+            receipt = self.commands.get((principal, key))
+            if receipt and receipt["status"] in {"in_progress", "uncertain"}:
+                del self.commands[(principal, key)]
+
     def complete_command(self, session, expected_version, principal, key, fingerprint):
         with self._lock:
             current = self.sessions.get(session.session_id)

@@ -133,6 +133,7 @@ class ScoutIncrementalTests(unittest.TestCase):
                 verification_note="stale",
                 now=self.now,
             )
+        self.assertFalse(self.repository.has_incomplete_commands(session.session_id))
 
     def test_independently_verified_is_not_accepted_without_domain_support(self):
         session = self.app.start_incremental(
@@ -157,6 +158,7 @@ class ScoutIncrementalTests(unittest.TestCase):
                 verification_note="claimed",
                 now=self.now,
             )
+        self.assertFalse(self.repository.has_incomplete_commands(session.session_id))
 
     def test_fixture_receipt_is_idempotent_concurrent_and_digest_verified(self):
         source = SourceRef("catalog-test", "revision-1")

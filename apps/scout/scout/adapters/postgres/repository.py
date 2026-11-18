@@ -527,6 +527,16 @@ class PostgresScoutSessionRepository:
                 (principal, key),
             )
 
+    def abandon_command(self, principal: str, key: str) -> None:
+        """Remove an uncommitted command after a definite CAS/domain rejection."""
+        with psycopg.connect(self.dsn) as conn:
+            conn.execute(
+                """DELETE FROM scout_command_receipts
+                   WHERE principal=%s AND idempotency_key=%s
+                     AND status IN ('in_progress','uncertain')""",
+                (principal, key),
+            )
+
     def complete_command(
         self,
         session: ScoutSession,
