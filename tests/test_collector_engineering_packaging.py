@@ -35,10 +35,34 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="bc15-isolated-") as temporary:
             external = Path(temporary)
             distributions = external / "dist"
+            requirements = external / "requirements.txt"
+            subprocess.run(
+                [
+                    "uv",
+                    "export",
+                    "--offline",
+                    "--locked",
+                    "--package",
+                    "mozaic-collector-engineering",
+                    "--no-default-groups",
+                    "--no-emit-workspace",
+                    "--no-header",
+                    "--no-annotate",
+                    "--format",
+                    "requirements.txt",
+                    "--output-file",
+                    str(requirements),
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
             subprocess.run(
                 [
                     "uv",
                     "build",
+                    "--offline",
                     "--package",
                     "mozaic-collector-engineering",
                     "--out-dir",
@@ -66,12 +90,34 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                     text=True,
                 )
                 python = environment / "bin/python"
+                dependencies = subprocess.run(
+                    [
+                        "uv",
+                        "pip",
+                        "install",
+                        "--offline",
+                        "--python",
+                        str(python),
+                        "--requirements",
+                        str(requirements),
+                    ],
+                    cwd=external,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if dependencies.returncode:
+                    self.fail(
+                        "could not install locked runtime dependencies offline:\n"
+                        f"{dependencies.stdout}\n{dependencies.stderr}"
+                    )
                 installed = subprocess.run(
                     [
                         "uv",
                         "pip",
                         "install",
                         "--offline",
+                        "--no-deps",
                         "--python",
                         str(python),
                         str(distribution),
