@@ -66,21 +66,25 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                     text=True,
                 )
                 python = environment / "bin/python"
-                subprocess.run(
+                installed = subprocess.run(
                     [
                         "uv",
                         "pip",
                         "install",
-                        "--offline",
                         "--python",
                         str(python),
                         str(distribution),
                     ],
                     cwd=external,
-                    check=True,
+                    check=False,
                     capture_output=True,
                     text=True,
                 )
+                if installed.returncode:
+                    self.fail(
+                        f"could not install {suffix} into the isolated environment:\n"
+                        f"{installed.stdout}\n{installed.stderr}"
+                    )
                 clean_env = os.environ.copy()
                 clean_env.pop("PYTHONPATH", None)
                 clean_env["PYTHONNOUSERSITE"] = "1"
