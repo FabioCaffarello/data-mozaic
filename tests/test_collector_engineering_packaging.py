@@ -1,16 +1,49 @@
 """Wheel and sdist are usable from outside the monorepo checkout."""
 
 import hashlib
+import importlib.metadata
 import os
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
+
+from packaging.requirements import Requirement
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "apps/collector-engineering"
 FIXTURE = ROOT / "tests/fixtures/collector-engineering/multipage"
+
+
+def copy_runtime_dependencies(destination: Path) -> None:
+    """Copy locked runtime dependencies without checkout or registry paths."""
+    project = tomllib.loads((PACKAGE / "pyproject.toml").read_text())
+    pending = list(project["project"]["dependencies"])
+    copied = set()
+    while pending:
+        requirement = Requirement(pending.pop())
+        if requirement.marker and not requirement.marker.evaluate({"extra": ""}):
+            continue
+        distribution = importlib.metadata.distribution(requirement.name)
+        normalized_name = distribution.metadata["Name"].lower().replace("_", "-")
+        if normalized_name in copied:
+            continue
+        copied.add(normalized_name)
+        for dependency in distribution.requires or ():
+            child = Requirement(dependency)
+            if child.marker is None or child.marker.evaluate({"extra": ""}):
+                pending.append(child.name)
+        for entry in distribution.files or ():
+            relative = Path(str(entry))
+            if relative.is_absolute() or ".." in relative.parts:
+                continue
+            source = Path(distribution.locate_file(entry))
+            if source.is_file():
+                target = destination / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
 
 
 class CollectorEngineeringPackagingTests(unittest.TestCase):
@@ -35,29 +68,6 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="bc15-isolated-") as temporary:
             external = Path(temporary)
             distributions = external / "dist"
-            requirements = external / "requirements.txt"
-            subprocess.run(
-                [
-                    "uv",
-                    "export",
-                    "--offline",
-                    "--locked",
-                    "--package",
-                    "mozaic-collector-engineering",
-                    "--no-default-groups",
-                    "--no-emit-workspace",
-                    "--no-header",
-                    "--no-annotate",
-                    "--format",
-                    "requirements.txt",
-                    "--output-file",
-                    str(requirements),
-                ],
-                cwd=ROOT,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
             subprocess.run(
                 [
                     "uv",
@@ -76,6 +86,8 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
             fixture_copy = external / "fixtures"
             shutil.copytree(FIXTURE, fixture_copy)
             transcript_path = fixture_copy / "transcript.json"
+            runtime_dependencies = external / "runtime-dependencies"
+            copy_runtime_dependencies(runtime_dependencies)
 
             for suffix, distribution in (
                 ("wheel", next(distributions.glob("*.whl"))),
@@ -90,27 +102,6 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                     text=True,
                 )
                 python = environment / "bin/python"
-                dependencies = subprocess.run(
-                    [
-                        "uv",
-                        "pip",
-                        "install",
-                        "--offline",
-                        "--python",
-                        str(python),
-                        "--requirements",
-                        str(requirements),
-                    ],
-                    cwd=external,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                if dependencies.returncode:
-                    self.fail(
-                        "could not install locked runtime dependencies offline:\n"
-                        f"{dependencies.stdout}\n{dependencies.stderr}"
-                    )
                 installed = subprocess.run(
                     [
                         "uv",
@@ -140,6 +131,11 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                         str(python),
                         "-c",
                         (
+                            "import sys; from pathlib import Path; "
+                            f"sys.path.insert(0, {str(runtime_dependencies)!r}); "
+                            "import collector_engineering; "
+                            "assert Path(collector_engineering.__file__).is_relative_to("
+                            "Path(__import__('sysconfig').get_paths()['purelib'])); "
                             "from importlib.resources import files; import hashlib, json; "
                             "root=files('collector_engineering').joinpath('schemas'); "
                             "print(json.dumps({name: hashlib.sha256(root.joinpath(name).read_bytes()).hexdigest() "
@@ -170,7 +166,16 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                     ],
                 ):
                     subprocess.run(
-                        [str(python), "-m", "collector_engineering", *command],
+                        [
+                            str(python),
+                            "-c",
+                            (
+                                "import runpy,sys; "
+                                f"sys.path.insert(0, {str(runtime_dependencies)!r}); "
+                                "runpy.run_module('collector_engineering',run_name='__main__')"
+                            ),
+                            *command,
+                        ],
                         cwd=external,
                         env=clean_env,
                         check=True,
