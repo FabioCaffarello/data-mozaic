@@ -261,6 +261,8 @@ class ScoutApplication:
             )
         ):
             raise IntegrityError("fixture result violates approved scope or limits")
+        if any(observation.url == page.url for observation in session.observations):
+            raise IntegrityError("session already contains an observation for this URL")
         intent = {
             "session_id": session_id,
             "source": asdict(session.source),
@@ -561,6 +563,8 @@ class ScoutApplication:
         ):
             raise IntegrityError("proposal references do not match session snapshot")
         observation_artifacts = {item.artifact_id for item in session.observations}
+        proposal_manifest_ids = set(session.proposal.manifest_ids)
+        proposal_finding_ids = set(session.proposal.finding_ids)
         pages = []
         manifests_by_artifact = {}
         artifact_metadata = {}
@@ -571,6 +575,8 @@ class ScoutApplication:
                 or manifest.source != session.source
             ):
                 raise IntegrityError("manifest source/session mismatch")
+            if manifest.manifest_id not in proposal_manifest_ids:
+                continue
             for artifact in manifest.artifacts:
                 if (
                     artifact.artifact_id not in observation_artifacts
@@ -594,6 +600,8 @@ class ScoutApplication:
         for observation in sorted(
             session.observations, key=lambda item: item.observation_id
         ):
+            if observation.artifact_id not in artifact_metadata:
+                continue
             manifest_id = manifests_by_artifact.get(observation.artifact_id)
             artifact = artifact_metadata.get(observation.artifact_id)
             if not manifest_id or not observation.url or artifact is None:
@@ -620,6 +628,7 @@ class ScoutApplication:
                 "evidence_refs": sorted(finding.manifest_ids),
             }
             for finding in sorted(session.findings, key=lambda item: item.finding_id)
+            if finding.finding_id in proposal_finding_ids
         ]
         if any(item["classification"] == "unsupported" for item in findings):
             raise IntegrityError("unsupported epistemic status in transcript")

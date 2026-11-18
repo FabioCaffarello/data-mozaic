@@ -21,6 +21,7 @@ from scout.domain import (
     SourceObservation,
     SourceRef,
 )
+from scout.edge import validate_transcript
 from scout.fakes import (
     FakeEvidenceCustody,
     FakePolicy,
@@ -277,6 +278,187 @@ class ScoutIncrementalTests(unittest.TestCase):
                 command_id="wrong-revision-session",
                 now=self.now,
             )
+
+    def test_fixture_reexploration_of_same_url_fails_before_receipt_or_custody(self):
+        source = SourceRef("catalog-test", "revision-1")
+        scope = ScoutScope(("https://catalog.test",), ("/",), ("GET",), 4, 60)
+        decision = PolicyDecisionRef(
+            "approval-no-duplicate-url",
+            "operator",
+            source,
+            True,
+            self.now + timedelta(hours=1),
+            scope,
+        )
+        repository = FakeSessionRepository()
+        custody = FakeEvidenceCustody(kind="http_response")
+        app = ScoutApplication(
+            FakeSourceLookup({source: scope}),
+            FakePolicy(decision),
+            repository,
+            custody,
+            FixtureExplorer(),
+        )
+        session = app.start_incremental(
+            source=source,
+            objective="reject duplicate transcript pages",
+            principal="operator",
+            command_id="session-no-duplicate-url",
+            now=self.now,
+        )
+        first = app.explore_fixture_incremental(
+            session_id=session.session_id,
+            principal="operator",
+            command_id="first-capture",
+            idempotency_key="first-capture-key",
+            fingerprint="first-capture-fingerprint",
+            expected_version=0,
+            fixture_id="catalog-home",
+            now=self.now,
+        )
+        command_count = len(repository.commands)
+        artifact_count = len(custody.objects)
+
+        with self.assertRaisesRegex(IntegrityError, "observation for this URL"):
+            app.explore_fixture_incremental(
+                session_id=session.session_id,
+                principal="operator",
+                command_id="second-capture",
+                idempotency_key="second-capture-key",
+                fingerprint="second-capture-fingerprint",
+                expected_version=first.version,
+                fixture_id="catalog-home",
+                now=self.now,
+            )
+
+        saved = repository.get_session(session.session_id)
+        self.assertEqual(first.version, saved.version)
+        self.assertEqual(1, len(saved.observations))
+        self.assertEqual(1, len(saved.manifests))
+        self.assertEqual(command_count, len(repository.commands))
+        self.assertEqual(artifact_count, len(custody.objects))
+        self.assertFalse(repository.has_incomplete_commands(session.session_id))
+
+    def test_subset_proposal_exports_only_its_validated_evidence_closure(self):
+        source = SourceRef("catalog-test", "revision-1")
+        scope = ScoutScope(("https://catalog.test",), ("/",), ("GET",), 4, 60)
+        decision = PolicyDecisionRef(
+            "approval-subset-proposal",
+            "operator",
+            source,
+            True,
+            self.now + timedelta(hours=1),
+            scope,
+        )
+        repository = FakeSessionRepository()
+        app = ScoutApplication(
+            FakeSourceLookup({source: scope}),
+            FakePolicy(decision),
+            repository,
+            FakeEvidenceCustody(kind="http_response"),
+            FixtureExplorer(),
+        )
+        session = app.start_incremental(
+            source=source,
+            objective="export only proposal evidence",
+            principal="operator",
+            command_id="session-subset-proposal",
+            now=self.now,
+        )
+        manifests = []
+        version = session.version
+        for index, fixture_id in enumerate(("catalog-home", "catalog-page-2")):
+            session = app.explore_fixture_incremental(
+                session_id=session.session_id,
+                principal="operator",
+                command_id=f"capture-{index}",
+                idempotency_key=f"capture-key-{index}",
+                fingerprint=f"capture-fingerprint-{index}",
+                expected_version=version,
+                fixture_id=fixture_id,
+                now=self.now,
+            )
+            version = session.version
+            manifests.append(session.manifests[-1].manifest_id)
+
+        session = app.record_finding_incremental(
+            session_id=session.session_id,
+            principal="operator",
+            command_id="finding-subset",
+            idempotency_key="finding-subset-key",
+            fingerprint="finding-subset-fingerprint",
+            expected_version=version,
+            statement="The catalog home page links to its second page.",
+            epistemic_status="observation",
+            confidence=1.0,
+            manifest_ids=(manifests[0],),
+            verification_note="Observed in the retained fixture bytes.",
+            now=self.now,
+        )
+        first_finding_id = session.findings[0].finding_id
+        session = app.record_finding_incremental(
+            session_id=session.session_id,
+            principal="operator",
+            command_id="finding-cross-page",
+            idempotency_key="finding-cross-page-key",
+            fingerprint="finding-cross-page-fingerprint",
+            expected_version=session.version,
+            statement="The two captured pages form a connected catalog.",
+            epistemic_status="observation",
+            confidence=1.0,
+            manifest_ids=tuple(manifests),
+            verification_note="The relationship is supported by both retained pages.",
+            now=self.now,
+        )
+        commands_before_invalid_proposal = dict(repository.commands)
+        with self.assertRaises(IntegrityError):
+            app.submit_proposal_incremental(
+                session_id=session.session_id,
+                principal="operator",
+                expected_version=session.version,
+                command_id="proposal-incomplete-evidence",
+                idempotency_key="proposal-incomplete-evidence-key",
+                fingerprint="proposal-incomplete-evidence-fingerprint",
+                summary="Submit a finding without all of its evidence.",
+                finding_ids=(session.findings[-1].finding_id,),
+                manifest_ids=(manifests[0],),
+                assumptions=(),
+                risks=(),
+                required_capabilities=("http.fetch",),
+                now=self.now,
+            )
+        self.assertEqual(commands_before_invalid_proposal, repository.commands)
+
+        session = app.submit_proposal_incremental(
+            session_id=session.session_id,
+            principal="operator",
+            expected_version=session.version,
+            command_id="proposal-subset",
+            idempotency_key="proposal-subset-key",
+            fingerprint="proposal-subset-fingerprint",
+            summary="Capture the catalog home page.",
+            finding_ids=(first_finding_id,),
+            manifest_ids=(manifests[0],),
+            assumptions=(),
+            risks=(),
+            required_capabilities=("http.fetch",),
+            now=self.now,
+        )
+
+        transcript = app.export_transcript(session.session_id, "operator", self.now)
+        validate_transcript(transcript)
+
+        self.assertEqual(2, len(repository.get_session(session.session_id).manifests))
+        self.assertEqual(1, len(transcript["pages"]))
+        self.assertEqual(1, len(transcript["evidence"]))
+        self.assertEqual(
+            {manifests[0]},
+            {item["manifest_id"] for item in transcript["evidence"]},
+        )
+        self.assertEqual(
+            [first_finding_id],
+            [item["finding_id"] for item in transcript["findings"]],
+        )
 
     def test_start_denials_do_not_persist_sessions_or_receipts(self):
         for policy_decision, principal, source, error_type in (

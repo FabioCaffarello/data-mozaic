@@ -71,6 +71,7 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                         "uv",
                         "pip",
                         "install",
+                        "--offline",
                         "--python",
                         str(python),
                         str(distribution),

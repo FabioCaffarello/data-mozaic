@@ -371,6 +371,14 @@ class ScoutSession:
     ):
         self._state(State.EXPLORING)
         self._policy(decision, now)
+        finding_ids = set(proposal.finding_ids)
+        finding_manifest_ids = {
+            manifest_id
+            for finding in self.findings
+            if finding.finding_id in finding_ids
+            for manifest_id in finding.manifest_ids
+        }
+        proposal_manifest_ids = set(proposal.manifest_ids)
         if (
             self.proposal is not None
             or proposal.session_id != self.session_id
@@ -378,15 +386,9 @@ class ScoutSession:
             or not proposal.summary.strip()
             or not proposal.finding_ids
             or not proposal.manifest_ids
-            or not set(proposal.finding_ids) <= {f.finding_id for f in self.findings}
-            or not set(proposal.manifest_ids) <= {m.manifest_id for m in self.manifests}
-            or not set(proposal.manifest_ids)
-            <= {
-                m
-                for f in self.findings
-                if f.finding_id in proposal.finding_ids
-                for m in f.manifest_ids
-            }
+            or not finding_ids <= {f.finding_id for f in self.findings}
+            or not proposal_manifest_ids <= {m.manifest_id for m in self.manifests}
+            or not finding_manifest_ids <= proposal_manifest_ids
         ):
             raise IntegrityError("invalid proposal")
         self.proposal = proposal
