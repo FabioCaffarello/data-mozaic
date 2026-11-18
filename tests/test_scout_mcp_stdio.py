@@ -80,15 +80,23 @@ class ScoutMCPStdioTests(unittest.TestCase):
                     "authorization_denied",
                 )
 
-                started = await client.call_tool(
-                    "scout_start",
-                    {
-                        "source_id": "catalog-test",
-                        "revision": "revision-1",
-                        "objective": "inspect the registered catalog fixture",
-                    },
+                start_args = {
+                    "source_id": "catalog-test",
+                    "revision": "revision-1",
+                    "objective": "inspect the registered catalog fixture",
+                }
+                concurrent_starts = await asyncio.gather(
+                    client.call_tool("scout_start", start_args),
+                    client.call_tool("scout_start", start_args),
                 )
-                start_value = json.loads(started.content[0].text)
+                start_values = [
+                    json.loads(result.content[0].text) for result in concurrent_starts
+                ]
+                self.assertTrue(all(result["ok"] for result in start_values))
+                self.assertEqual(
+                    start_values[0]["session_id"], start_values[1]["session_id"]
+                )
+                start_value = start_values[0]
                 self.assertTrue(start_value["ok"])
                 session_id = start_value["session_id"]
                 session_version = start_value["version"]
