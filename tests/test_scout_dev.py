@@ -14,6 +14,7 @@ from tooling.scout_dev import (
     LOCAL_PRINCIPAL,
     SINGLE_SOURCE,
     _authorize_single_fixture,
+    _codex_exec_command,
     _database_check,
     _diagnostics,
     _fixture_stack_check,
@@ -24,6 +25,20 @@ from tooling.scout_dev import (
 
 
 class ScoutDevBootstrapTests(unittest.TestCase):
+    def test_codex_exec_command_uses_cli_compatible_workspace_write_approval(self):
+        command = _codex_exec_command(
+            Path("/checkout with spaces"),
+            Path("/private artifacts"),
+            Path("/private artifacts/final.md"),
+            "Use the skill.",
+        )
+        self.assertIn("--approve-for-me", command)
+        self.assertNotIn("--sandbox", command)
+        self.assertEqual(
+            ["--cd", "/checkout with spaces"],
+            command[command.index("--cd") : command.index("--cd") + 2],
+        )
+
     def make_checkout(self, root: Path) -> Path:
         root.mkdir(parents=True)
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)

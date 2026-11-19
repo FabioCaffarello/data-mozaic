@@ -862,6 +862,25 @@ def _status(args) -> int:
     return 0 if report["ready"] else 1
 
 
+def _codex_exec_command(
+    root: Path, artifact_root: Path, final_message: Path, prompt: str
+) -> list[str]:
+    return [
+        "codex",
+        "exec",
+        "--json",
+        # This CLI option itself selects automatic review with workspace-write.
+        "--approve-for-me",
+        "--cd",
+        str(root),
+        "--add-dir",
+        str(artifact_root),
+        "--output-last-message",
+        str(final_message),
+        prompt,
+    ]
+
+
 def _acceptance(args) -> int:
     report = _diagnostics(ROOT, *SINGLE_SOURCE)
     if not report["ready"]:
@@ -910,21 +929,7 @@ def _acceptance(args) -> int:
     )
     child_env = os.environ.copy()
     child_env.update(_read_env(ROOT / ".env"))
-    command = [
-        "codex",
-        "exec",
-        "--json",
-        "--approve-for-me",
-        "--sandbox",
-        "workspace-write",
-        "--cd",
-        str(ROOT),
-        "--add-dir",
-        str(artifact_root),
-        "--output-last-message",
-        str(final_message),
-        prompt,
-    ]
+    command = _codex_exec_command(ROOT, artifact_root, final_message, prompt)
     with event_log.open("w", encoding="utf-8") as stream:
         os.chmod(event_log, 0o600)
         process = subprocess.Popen(
