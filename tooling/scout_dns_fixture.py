@@ -8,6 +8,7 @@ import json
 import socketserver
 import struct
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -41,7 +42,8 @@ class DNSState:
     def __init__(self):
         self.lock = threading.Lock()
         self.zones: dict[str, dict] = {}
-        self.queries: list[dict[str, str]] = []
+        self.queries: list[dict] = []
+        self.responses: list[dict] = []
 
     def configure(self, zones: dict[str, dict], *, reset_queries: bool = True) -> None:
         with self.lock:
@@ -50,18 +52,30 @@ class DNSState:
             }
             if reset_queries:
                 self.queries.clear()
+                self.responses.clear()
 
     def resolve(
-        self, name: str, qtype: int
+        self, name: str, qtype: int, transaction_id: int
     ) -> tuple[list[tuple[int, bytes]], int, int]:
         qtype_name = {1: "A", 28: "AAAA"}.get(qtype, str(qtype))
         with self.lock:
-            self.queries.append({"name": name, "type": qtype_name})
+            query = {
+                "id": transaction_id,
+                "name": name,
+                "type": qtype_name,
+                "ordinal": len(self.queries) + 1,
+                "time_ns": time.time_ns(),
+            }
+            self.queries.append(query)
             zone = self.zones.get(name)
             if zone is None:
-                return [], 3, 0
+                answers, rcode, ttl = [], 3, 0
+                self._record_response(query, rcode, answers, ttl)
+                return answers, rcode, ttl
             if zone.get("drop"):
-                return [], -1, 0
+                answers, rcode, ttl = [], -1, 0
+                self._record_response(query, rcode, answers, ttl, reply_sent=False)
+                return answers, rcode, ttl
             ttl = max(0, min(int(zone.get("ttl", 30)), 300))
             rcode = int(zone.get("rcode", 0))
             answers = []
@@ -84,7 +98,33 @@ class DNSState:
             next_zone = zone.pop("next", None) if qtype_name == "A" else None
             if next_zone is not None:
                 self.zones[name] = next_zone
+            self._record_response(query, rcode, answers, ttl)
             return answers, rcode, ttl
+
+    def _record_response(self, query, rcode, answers, ttl, *, reply_sent=True):
+        decoded_answers = []
+        for answer_type, value in answers:
+            if answer_type == 5:
+                decoded_answers.append(
+                    {"type": "CNAME", "value": _read_name(value, 0)[0]}
+                )
+            else:
+                decoded_answers.append(
+                    {
+                        "type": {1: "A", 28: "AAAA"}.get(answer_type, str(answer_type)),
+                        "value": str(ipaddress.ip_address(value)),
+                    }
+                )
+        self.responses.append(
+            query
+            | {
+                "rcode": rcode,
+                "answers": decoded_answers,
+                "ttl": ttl,
+                "reply_sent": reply_sent,
+                "response_time_ns": time.time_ns(),
+            }
+        )
 
 
 STATE = DNSState()
@@ -100,11 +140,12 @@ class DNSHandler(socketserver.BaseRequestHandler):
             qtype, qclass = struct.unpack_from("!HH", packet, offset)
         except (IndexError, struct.error, UnicodeDecodeError):
             return
+        transaction_id = struct.unpack_from("!H", packet, 0)[0]
         question_end = offset + 4
         if qclass != 1:
             rcode, answers, ttl = 4, [], 0
         else:
-            answers, rcode, ttl = STATE.resolve(name, qtype)
+            answers, rcode, ttl = STATE.resolve(name, qtype, transaction_id)
             if rcode < 0:
                 return
         question = packet[12:question_end]
@@ -159,7 +200,13 @@ class ControlHandler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True})
         if self.path == "/state":
             with STATE.lock:
-                return self._send(200, {"queries": list(STATE.queries)})
+                return self._send(
+                    200,
+                    {
+                        "queries": list(STATE.queries),
+                        "responses": list(STATE.responses),
+                    },
+                )
         return self._send(404, {"error": "not_found"})
 
     def do_POST(self):

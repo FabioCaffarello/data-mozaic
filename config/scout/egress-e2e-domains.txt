@@ -10,3 +10,4 @@ unavailable.fixture.test
 dns-drop.fixture.test
 special.fixture.test
 blocked-target.test
+dns-recovery.fixture.test

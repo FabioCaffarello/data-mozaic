@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -73,6 +74,12 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
             os.environ["SCOUT_HTTP_E2E_DNS_CONTROL_URL"] + "/state", timeout=3
         ) as response:
             return json.load(response)
+
+    @staticmethod
+    def has_dns_query(queries, name, qtype):
+        return any(
+            query["name"] == name and query["type"] == qtype for query in queries
+        )
 
     def test_authorized_https_mcp_custody_transcript_and_restart_replay(self):
         async def scenario():
@@ -322,7 +329,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
             positive = asyncio.run(fetch("single.fixture.test"))
         self.assertEqual(positive.status, 200)
         questions = self.dns_state()["queries"]
-        self.assertIn({"name": "single.fixture.test", "type": "A"}, questions)
+        self.assertTrue(self.has_dns_query(questions, "single.fixture.test", "A"))
 
         self.configure_dns(
             {
@@ -342,7 +349,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
             cname = asyncio.run(fetch("cname.fixture.test"))
         self.assertEqual(cname.status, 200)
         cname_questions = self.dns_state()["queries"]
-        self.assertIn({"name": "cname.fixture.test", "type": "A"}, cname_questions)
+        self.assertTrue(self.has_dns_query(cname_questions, "cname.fixture.test", "A"))
 
         cases = (
             (
@@ -397,12 +404,12 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
         ):
             rebound = asyncio.run(fetch("rebinding.fixture.test"))
         self.assertEqual(rebound.status, 200)
-        self.assertEqual(
-            self.dns_state()["queries"].count(
-                {"name": "rebinding.fixture.test", "type": "A"}
-            ),
-            1,
-        )
+        rebound_queries = [
+            query
+            for query in self.dns_state()["queries"]
+            if query["name"] == "rebinding.fixture.test" and query["type"] == "A"
+        ]
+        self.assertEqual(len(rebound_queries), 1)
 
         self.configure_dns(
             {"unavailable.fixture.test": {"rcode": 2, "A": [], "AAAA": []}}
@@ -413,10 +420,217 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
         self.configure_dns({"dns-drop.fixture.test": {"drop": True}})
         with self.assertRaises((aiohttp.ClientError, TimeoutError)):
             asyncio.run(fetch("dns-drop.fixture.test"))
-        self.assertIn(
-            {"name": "dns-drop.fixture.test", "type": "A"},
-            self.dns_state()["queries"],
+        self.assertTrue(
+            self.has_dns_query(
+                self.dns_state()["queries"], "dns-drop.fixture.test", "A"
+            )
         )
+
+    def test_mcp_dns_failure_then_forbidden_recovery_and_allowed_control(self):
+        async def scenario():
+            source_id = "dns-recovery-source"
+            revision = "dns-recovery-revision-1"
+            principal = "dns-recovery-reviewer"
+            recovery_host = "dns-recovery.fixture.test"
+            policy_path = Path(os.environ["SCOUT_HTTP_E2E_TEMP"]) / "dns-policy.json"
+            custody_root = Path(os.environ["SCOUT_HTTP_E2E_TEMP"]) / "dns-custody"
+            limits = {
+                "max_requests": 4,
+                "max_duration_seconds": 60,
+                "max_response_bytes": 32768,
+            }
+            source_values = []
+            approval_values = []
+            for current_source, current_revision, hostname in (
+                (source_id, revision, recovery_host),
+                (
+                    "dns-positive-control",
+                    "dns-positive-revision-1",
+                    "catalog.fixture.test",
+                ),
+            ):
+                grant = {
+                    "origin": f"https://{hostname}",
+                    "path_prefixes": ["/docs"],
+                }
+                source_values.append(
+                    {
+                        "source_id": current_source,
+                        "revision": current_revision,
+                        "grants": [grant],
+                        "limits": limits,
+                    }
+                )
+                approval_values.append(
+                    {
+                        "principal": principal,
+                        "source_id": current_source,
+                        "revision": current_revision,
+                        "grants": [grant],
+                        "expires_at": (
+                            datetime.now(UTC) + timedelta(hours=1)
+                        ).isoformat(),
+                        "limits": limits,
+                    }
+                )
+            policy_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "sources": source_values,
+                        "approvals": approval_values,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PYTHONPATH": str(ROOT / "apps" / "scout"),
+                    "SCOUT_DATABASE_URL": self.dsn,
+                    "SCOUT_LOCAL_PRINCIPAL": principal,
+                    "SCOUT_HOST_POLICY_FILE": str(policy_path),
+                    "SCOUT_EVIDENCE_ROOT": str(custody_root),
+                    "SCOUT_EGRESS_PROXY": os.environ["SCOUT_HTTP_E2E_PROXY_URL"],
+                    "SSL_CERT_FILE": os.environ["SCOUT_HTTP_E2E_CA_FILE"],
+                }
+            )
+            params = StdioServerParameters(
+                command=sys.executable,
+                args=["-m", "scout.tool_host"],
+                env=env,
+            )
+
+            async with (
+                stdio_client(params) as (read, write),
+                ClientSession(read, write) as client,
+            ):
+                await client.initialize()
+
+                async def new_session(current_source, current_revision, objective):
+                    value = await client.call_tool(
+                        "scout_start",
+                        {
+                            "source_id": current_source,
+                            "revision": current_revision,
+                            "objective": objective,
+                        },
+                    )
+                    result = json.loads(value.content[0].text)
+                    self.assertTrue(result["ok"], result)
+                    return result["session_id"]
+
+                self.configure_dns(
+                    {
+                        recovery_host: {
+                            "rcode": 2,
+                            "A": [],
+                            "ttl": 0,
+                            "next": {"A": ["172.30.91.11"], "ttl": 0},
+                        }
+                    }
+                )
+                failure_session = await new_session(
+                    source_id, revision, "DNS failure then controlled recovery"
+                )
+                failure_started_ns = time.time_ns()
+                failure_result = await client.call_tool(
+                    "scout_fetch",
+                    {
+                        "session_id": failure_session,
+                        "expected_version": 0,
+                        "url": f"https://{recovery_host}/docs/page",
+                    },
+                )
+                failure_finished_ns = time.time_ns()
+                failure_value = json.loads(failure_result.content[0].text)
+                self.assertFalse(failure_value["ok"], failure_value)
+                self.assertEqual(failure_value["error"]["code"], "policy_denied")
+                first_operation_dns = self.dns_state()
+                first_operation_responses = [
+                    item
+                    for item in first_operation_dns["responses"]
+                    if item["name"] == recovery_host
+                ]
+                first_a = [
+                    item for item in first_operation_responses if item["type"] == "A"
+                ]
+                self.assertTrue(first_a, first_operation_dns)
+                self.assertEqual(first_a[0]["rcode"], 2, first_a)
+                self.assertTrue(
+                    any(
+                        item["type"] == "A"
+                        and item["rcode"] == 0
+                        and item["ordinal"] > first_a[0]["ordinal"]
+                        and any(
+                            answer.get("value") == "172.30.91.11"
+                            for answer in item["answers"]
+                        )
+                        for item in first_operation_responses
+                    ),
+                    first_operation_dns,
+                )
+                first_operation = {
+                    "session_id": failure_session,
+                    "started_ns": failure_started_ns,
+                    "finished_ns": failure_finished_ns,
+                    "mcp_result": {
+                        "ok": failure_value["ok"],
+                        "error": failure_value.get("error"),
+                    },
+                    "dns_queries": first_operation_dns["queries"],
+                    "dns_responses": first_operation_responses,
+                }
+
+                self.configure_dns(
+                    {
+                        "catalog.fixture.test": {
+                            "A": ["172.30.91.10"],
+                            "ttl": 60,
+                        }
+                    }
+                )
+                positive_session = await new_session(
+                    "dns-positive-control",
+                    "dns-positive-revision-1",
+                    "Independent authorized operation after DNS recovery",
+                )
+                positive_started_ns = time.time_ns()
+                positive_result = await client.call_tool(
+                    "scout_fetch",
+                    {
+                        "session_id": positive_session,
+                        "expected_version": 0,
+                        "url": "https://catalog.fixture.test/docs/page",
+                    },
+                )
+                positive_finished_ns = time.time_ns()
+                positive_value = json.loads(positive_result.content[0].text)
+                self.assertTrue(positive_value["ok"], positive_value)
+                self.assertEqual(positive_value["status"], 200)
+                positive_dns = self.dns_state()
+
+            evidence = {
+                "recovery_host": recovery_host,
+                "first_operation": first_operation,
+                "positive_control": {
+                    "session_id": positive_session,
+                    "started_ns": positive_started_ns,
+                    "finished_ns": positive_finished_ns,
+                    "mcp_result": {
+                        "ok": positive_value["ok"],
+                        "status": positive_value["status"],
+                    },
+                    "dns_queries": positive_dns["queries"],
+                    "dns_responses": positive_dns["responses"],
+                },
+            }
+            evidence_path = (
+                Path(os.environ["SCOUT_HTTP_E2E_TEMP"]) / "dns-recovery-evidence.json"
+            )
+            evidence_path.write_text(json.dumps(evidence, indent=2), encoding="utf-8")
+
+        asyncio.run(scenario())
 
     def test_proxy_denies_private_destination_tls_failure_and_unavailable_proxy(self):
         async def scenario():

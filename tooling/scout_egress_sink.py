@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import argparse
+import json
 import socketserver
+import time
 
 
 class Handler(socketserver.BaseRequestHandler):
     def handle(self):
-        print("egress-sink.accept", flush=True)
+        print(
+            json.dumps(
+                {
+                    "event": "egress-sink.accept",
+                    "peer": self.request.getpeername(),
+                    "time_ns": time.time_ns(),
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
         self.request.settimeout(0.25)
         try:
             self.request.recv(1024)

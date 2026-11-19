@@ -157,3 +157,60 @@ O fixture inclui conteúdo externo com texto dirigido a agente e um segredo sent
 ### Comandos executados e estado do gate
 
 `make db-status`, `make db-up`, `make db-migrate`, `make test-integration` e `make test-recovery` passaram; ambos os gates PostgreSQL executaram 21 testes sem skips. `make scout-http-e2e` e `make scout-dns-adversarial-check` passaram com 3 testes, incluindo TTL zero/rebinding, SERVFAIL e DNS sem resposta; peer/sink estão evidenciados. `make scout-sandbox-check` passou para o worker probe. `make ci` e `make check` passaram com 97 testes e 24 skips esperados (os gates obrigatórios foram executados separadamente). `uv lock --check` passou dentro dos dois alvos. No momento da publicação, o GitHub Actions do commit `1dbe57741d4d263cd04ddcae83af9465126466f7` passou ([check remoto](https://github.com/FabioCaffarello/data-mozaic/actions/runs/44548373799)); commits posteriores precisam de seu próprio check. O restante deste assessment registra evidência local, não integração produtiva de BC01/BC06/BC11.
+
+## Fechamento PR8-REV-001 e PR8-REV-002
+
+Data da revisão: 2026-11-19. HEAD de entrada `05f87d05e2a709c9a747dc4db87a77009a94d193`; implementação local posterior a esse SHA, ainda aguardando seu próprio CI remoto e revisão. Esta seção substitui a conclusão anterior de que os gates críticos estavam apenas separados localmente.
+
+### PR8-REV-001 — Quality Gate e Integration Security Gate
+
+Causa-raiz: o workflow anterior executava apenas `make ci`; o discovery geral reportava como skips os 21 testes PostgreSQL e os 3 testes E2E porque não iniciava banco/Docker nem configurava a DSN. O check podia ficar verde sem executar recovery, MCP/HTTPS ou DNS real.
+
+O workflow foi dividido em `Quality Gate` (`make ci`, lint, contratos, arquitetura, packaging e testes rápidos) e `Integration Security Gate` (runner Linux, Docker Compose, PostgreSQL Compose 18.4, migrations, testes PostgreSQL/recovery, HTTP/MCP, DNS/Squid e sandbox). O segundo job tem timeout de 30 minutos e cleanup `if: always()` do perfil E2E e PostgreSQL, sem remover volumes. Usa somente credenciais sintéticas locais, CA/DNS/HTTPS fixtures; não requer secrets produtivos ou rede pública. A action `setup-uv` e checkout usam SHA fixo, dependências Python usam `uv.lock`, Squid usa digest fixado no Compose atual e PostgreSQL conserva a tag `18.4` já adotada pelo projeto.
+
+`make test-integration` agora exige `SCOUT_DATABASE_URL` não vazia; `tooling/run_postgres_integration.py` também exige DSN, descobre pelo menos um teste e retorna falha se houver qualquer skip. Isso impede sucesso por ausência de infraestrutura ou por teste obrigatório ignorado. O runner E2E seleciona explicitamente os métodos, confere `testsRun` contra a seleção e exige `result.skipped == []`; falha em import/setup, Docker, banco, proxy, assertions ou cleanup retorna erro ao step. `scout-http-e2e` e `scout-dns-adversarial-check` são seleções distintas no runner compartilhado: HTTP executa 2 testes; DNS executa 2 outros testes. `test-recovery` continua alias compatível para o mesmo conjunto de 21 testes de `test-integration`; não é uma suíte adicional e o job não conta o mesmo conjunto duas vezes.
+
+Comandos locais de reprodução do gate:
+
+```sh
+make db-up
+make db-status
+make db-migrate
+make test-integration
+make scout-http-e2e
+make scout-dns-adversarial-check
+make scout-sandbox-check
+make db-down
+```
+
+O job remoto ainda não foi executado nesta seção: precisa rodar após publicar o novo HEAD. Consulta read-only à API de branch protection retornou `404 Branch not protected`; a API de rulesets retornou lista vazia. A configuração necessária é manual no mantenedor: criar proteção/ruleset de `main`, exigir os checks atuais antes do merge, incluindo **Integration Security Gate** (job ID `integration-security`) e **Quality Gate**, e impedir merge de Draft. Não foi feita alteração automática de branch protection. Sem essa configuração, os checks passam mas não são enforcement obrigatório do repositório.
+
+### PR8-REV-002 — falha DNS seguida por IP proibido
+
+Causa-raiz do finding era falta de evidência por operação: o teste anterior via apenas exceção/status de erro e o DNS fixture não preservava IDs/respostas correlacionáveis. O código do Squid mostra que a ACL `dst` avalia os endereços em cache; no runtime 7.7 a sequência abaixo foi exercitada pelo mesmo `scout_fetch` MCP, com hostname sintético dedicado e sem tráfego concorrente para essa origem:
+
+| Ordem | DNS ID | Consulta/resposta | Evidência |
+|---|---:|---|---|
+| 1 | 12812 | `A dns-recovery.fixture.test`, `SERVFAIL` (rcode 2), sem endereço | Evento DNS ordinal 1 |
+| 2 | 45036 | `AAAA dns-recovery.fixture.test`, `NOERROR`, sem endereço | Evento DNS ordinal 2 |
+| 3 | 12812 | nova `A`, `NOERROR`, endereço `172.30.91.11` (sink privado proibido) | Evento DNS ordinal 3; Squid repetiu o ID DNS A e o fixture também registra ordinais |
+
+Na resposta MCP da operação o resultado foi `policy_denied`. O access log Squid da mesma janela/host identificou `master_xaction=74`, peer `-`, `HIER_NONE`, `TCP_DENIED/403 CONNECT`; não houve peer selecionado nem accept no sink. A decisão não depende somente do 403: o fixture de sink recebeu zero conexões e o log de conexão não mostra `172.30.91.11`. A fixture registra os IDs e as respostas; o log Squid agora inclui epoch, `master_xaction`, hostname, peer efetivo, hierarquia, status e método.
+
+Controle positivo após a recuperação: uma nova operação MCP, com source/revision e grant próprios para `catalog.fixture.test`, completou HTTPS 200. Squid registrou `master_xaction=76`, peer `172.30.91.10`, `HIER_DIRECT`, `TCP_TUNNEL/200 CONNECT`; fixture recebeu um GET `/docs/page`. O cache log do container durante a mesma execução indicou **Squid 7.7**. A imagem do serviço permanece `ubuntu/squid:7.2-26.04_edge@sha256:6a252a42875d08bbb9dae4ab70a041afd4f8b530eaa0226102d1816309eef8b5`; o runner exige versão runtime 7.7 para evitar que atualização de tag silenciosamente altere a semântica validada.
+
+O ensaio passou sem mudança de ACL de domínio: quando a primeira avaliação DNS falha, Squid realizou nova consulta A na mesma transação; a resposta privada foi negada antes de abrir o socket. Nenhuma correção adicional na política de egress foi necessária para este caso reproduzido; a correção aqui é o harness com observabilidade e regressão que falha se ID/resposta, `master_xaction`, peer, MCP result, teste positivo ou sink não corresponderem às condições esperadas.
+
+### Resultado local desta execução
+
+- `make db-up`, `make db-status`, `make db-migrate`: passaram com PostgreSQL Compose 18.4 local.
+- `make test-integration`: 21 testes PostgreSQL passaram, zero skips.
+- `make test-recovery`: 21 testes passaram, mas é alias que repete exatamente a suite anterior; não contar como 42 cenários distintos.
+- `make scout-http-e2e`: 2 testes passaram, zero skips; um GET, HTTPS/MCP, custody, transcript e replay sem segundo GET.
+- `make scout-dns-adversarial-check`: 2 testes passaram, zero skips; inclui a recuperação DNS na mesma operação MCP, sequência acima, peer deny e controle positivo.
+- A configuração efêmera confirmou `Starting Squid Cache version 7.7`; Squid é a imagem digest-pinned declarada no Compose.
+- `make ci` e `make check`: continuam sendo Quality Gate; seus 25 skips (21 PostgreSQL + 4 E2E no discovery geral) são esperados e não substituem Integration Security Gate.
+- `make scout-sandbox-check`: verifica somente o worker probe, não o MCP Host ou o processo Codex.
+- Imagens DNS/HTTPS fixture e sink usam rede de teste privada controlada; nenhuma conexão foi feita a serviços externos.
+
+Estado de governança: ADR 016 segue **Proposed**, sem decisão Accepted. Os resultados aqui são locais e não certificam integrações produtivas de BC01/BC06/BC11, firewall independente no egress de Squid, isolamento global do Codex ou branch protection. Revisão de merge permanece bloqueada até o novo check remoto passar e a proteção de `main` exigir os dois gates.
