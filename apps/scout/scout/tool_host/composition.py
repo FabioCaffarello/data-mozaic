@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
 
 from ..adapters.fixtures import FixtureExplorer
 from ..adapters.local_custody import LocalFileEvidenceCustody
-from ..adapters.postgres.repository import PostgresScoutSessionRepository
+from ..adapters.postgres.repository import (
+    PostgresNavigationBudgetLedger,
+    PostgresScoutSessionRepository,
+)
 from ..application import ScoutApplication
 from ..domain import AuthorizationError, PolicyDecisionRef, ScoutScope, SourceRef
-from ..tools.policy import LocalAuthorizationStore
+from ..tools.discovery import HTTPDiscoveryTool
+from ..tools.policy import LocalAuthorizationStore, ReloadingAuthorizationStore
+from ..tools.ports import TrustedToolContext
+from ..tools.transport import AiohttpSquidTransport
 from .server import create_server
+
+_LOG = logging.getLogger(__name__)
 
 
 class _LocalSourceLookup:
@@ -88,11 +97,51 @@ def build_server():
             "SCOUT_EVIDENCE_ROOT must be absolute and outside the checkout"
         )
     custody = LocalFileEvidenceCustody(evidence_root)
+    repository = PostgresScoutSessionRepository(dsn)
+
+    def http_discovery_factory(caller: str, session_id: str, call_id: str):
+        class Context:
+            def current(self):
+                return TrustedToolContext(caller, session_id, call_id)
+
+        class Clock:
+            def now(self):
+                return datetime.now().astimezone()
+
+        class NoEvidence:
+            def store(self, *args, **kwargs):
+                raise RuntimeError("HTTP evidence is persisted by BC14 after fetch")
+
+        class Trace:
+            def append(self, trace_session_id, event_type, fields, at):
+                if trace_session_id != session_id:
+                    raise AuthorizationError("trace session identity changed")
+                _LOG.info(
+                    "scout.http.trace event=%s fields=%s",
+                    event_type,
+                    fields,
+                    extra={"scout_session_id": session_id},
+                )
+
+        return HTTPDiscoveryTool(
+            Context(),
+            ReloadingAuthorizationStore(policy_path),
+            PostgresNavigationBudgetLedger(dsn),
+            NoEvidence(),
+            Trace(),
+            Clock(),
+            AiohttpSquidTransport(
+                os.environ.get("SCOUT_EGRESS_PROXY", "http://127.0.0.1:3128")
+            ),
+            preserve_evidence=False,
+        )
+
     app = ScoutApplication(
         _LocalSourceLookup(policy),
         _LocalPolicyDecision(policy),
-        PostgresScoutSessionRepository(dsn),
+        repository,
         custody,
         FixtureExplorer(),
+        http_discovery_factory,
     )
     return create_server(app, principal)

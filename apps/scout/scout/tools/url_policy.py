@@ -20,6 +20,9 @@ _SECRET_QUERY_KEY = re.compile(
     r"(?:^|[_-])(?:auth|credential|key|password|secret|session|token)(?:$|[_-])",
     re.IGNORECASE,
 )
+_AMBIGUOUS_NUMERIC_HOST = re.compile(
+    r"(?:0[xX][0-9a-fA-F]+|[0-9]+)(?:\.(?:0[xX][0-9a-fA-F]+|[0-9]+))*\Z"
+)
 _PATH_SAFE = "/:@!$&'()*+,;=-._~"
 _QUERY_SAFE = "/?:@!$&'()*+,;=-._~"
 
@@ -79,6 +82,8 @@ def normalize_url(value: str) -> NormalizedURL:
     try:
         address = ipaddress.ip_address(raw_host)
     except ValueError:
+        if _AMBIGUOUS_NUMERIC_HOST.fullmatch(raw_host):
+            raise TargetRejected("non-canonical numeric host is ambiguous")
         try:
             host = raw_host.rstrip(".").encode("idna").decode("ascii").lower()
         except UnicodeError as error:
@@ -95,6 +100,8 @@ def normalize_url(value: str) -> NormalizedURL:
     else:
         if "%" in raw_host:
             raise TargetRejected("scoped IP literals are not allowed")
+        if address.version == 6 and address.ipv4_mapped is not None:
+            raise TargetRejected("IPv4-mapped IPv6 literals are ambiguous")
         if not address.is_global:
             raise TargetRejected("non-public IP literals are prohibited")
         host = address.compressed

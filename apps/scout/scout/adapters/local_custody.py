@@ -183,3 +183,27 @@ class LocalFileEvidenceCustody:
             and len(body) == artifact.size_bytes
             and hashlib.sha256(body).hexdigest() == artifact.sha256
         )
+
+    def read(self, artifact: ArtifactRef) -> bytes | None:
+        """Read bytes only while the exact custody receipt remains available."""
+        receipt = self.lookup(artifact.artifact_id)
+        if receipt is None:
+            return None
+        if receipt != artifact or receipt.custody_status != "available":
+            raise IntegrityError("custody identity or retention state changed")
+        root = self._root()
+        object_path = root / "objects" / artifact.sha256
+        if object_path.is_symlink():
+            raise IntegrityError("custody object cannot be a symlink")
+        try:
+            body = object_path.read_bytes()
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            raise IntegrityError("custody object is unavailable") from error
+        if (
+            len(body) != artifact.size_bytes
+            or hashlib.sha256(body).hexdigest() != artifact.sha256
+        ):
+            raise IntegrityError("custody object failed integrity verification")
+        return body

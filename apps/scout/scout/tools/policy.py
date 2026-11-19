@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -83,6 +84,7 @@ class EffectiveScope:
     max_requests: int
     max_duration_seconds: int
     max_response_bytes: int
+    policy_revision_sha256: str | None = None
 
     def __post_init__(self):
         if not self.principal or not self.source.source_id or not self.source.revision:
@@ -125,6 +127,7 @@ class EffectiveScope:
             min(self.max_requests, other.max_requests),
             min(self.max_duration_seconds, other.max_duration_seconds),
             min(self.max_response_bytes, other.max_response_bytes),
+            other.policy_revision_sha256,
         )
 
     def authorize_url(self, url: NormalizedURL, now: datetime) -> None:
@@ -199,20 +202,28 @@ class LocalAuthorizationStore:
         self,
         sources: tuple[RegisteredSource, ...],
         approvals: tuple[ApprovedScope, ...],
+        *,
+        policy_revision_sha256: str | None = None,
     ):
         self._sources = {item.source: item for item in sources}
         self._approvals = {(item.principal, item.source): item for item in approvals}
+        self._policy_revision_sha256 = policy_revision_sha256
         if len(self._sources) != len(sources) or len(self._approvals) != len(approvals):
             raise ValueError("duplicate source registration or approval")
 
     @classmethod
     def from_file(cls, path: Path) -> LocalAuthorizationStore:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        content = path.read_bytes()
+        raw = json.loads(content)
         if raw.get("version") != 1:
             raise ValueError("unsupported authoring policy version")
         sources = tuple(_registered_source(item) for item in raw.get("sources", []))
         approvals = tuple(_approved_scope(item) for item in raw.get("approvals", []))
-        return cls(sources, approvals)
+        return cls(
+            sources,
+            approvals,
+            policy_revision_sha256=hashlib.sha256(content).hexdigest(),
+        )
 
     def authorize(
         self, principal: str, source: SourceRef, now: datetime
@@ -227,7 +238,10 @@ class LocalAuthorizationStore:
             )
         if approval.expires_at <= now:
             raise AuthorizationError("navigation approval expired")
-        return effective_scope(registered, approval)
+        return replace(
+            effective_scope(registered, approval),
+            policy_revision_sha256=self._policy_revision_sha256,
+        )
 
     def registered_source(self, source: SourceRef) -> RegisteredSource | None:
         """Expose configured BC01 reference metadata to local composition."""

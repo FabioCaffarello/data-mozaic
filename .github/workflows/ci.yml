@@ -9,8 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  checks:
-    runs-on: ubuntu-latest
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -25,3 +26,59 @@ jobs:
           version: "0.9.8"
       - name: Run repository checks
         run: make ci
+
+  integration-security:
+    name: Integration Security Gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SCOUT_HTTP_E2E_PROJECT: scout-http-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.9.8"
+      - name: Install locked project dependencies
+        run: make sync
+      - name: Configure synthetic local PostgreSQL credentials
+        run: |
+          cat > .env <<'EOF'
+          POSTGRES_USER=scout
+          POSTGRES_PASSWORD=scout_ci_only
+          POSTGRES_DB=scout_dev
+          SCOUT_POSTGRES_PORT=55432
+          SCOUT_DATABASE_URL=postgresql://scout:scout_ci_only@127.0.0.1:55432/scout_dev
+          EOF
+      - name: Start Compose PostgreSQL and verify migrations
+        run: |
+          make db-up
+          make db-status
+          make db-migrate
+      - name: PostgreSQL integration and recovery tests
+        run: make test-integration
+      - name: Official MCP client and controlled HTTPS fixture
+        run: make scout-http-e2e
+      - name: Squid DNS adversarial and connection-time tests
+        run: make scout-dns-adversarial-check
+      - name: Worker network sandbox check
+        run: make scout-sandbox-check
+      - name: Stop E2E Compose profile (preserve volumes)
+        if: always()
+        env:
+          SCOUT_HTTP_E2E_CERT_DIR: /tmp/nonexistent-certs
+          SCOUT_HTTP_E2E_SQUID_CONFIG: /tmp/nonexistent-squid.conf
+          SCOUT_HTTP_E2E_PROXY_PORT: "3137"
+          SCOUT_HTTP_E2E_DNS_CONTROL_PORT: "8053"
+        run: |
+          docker compose \
+            --project-name "$SCOUT_HTTP_E2E_PROJECT" \
+            --file deployments/compose/scout-http-e2e.compose.yaml \
+            down --remove-orphans
+      - name: Stop PostgreSQL Compose (preserve volume)
+        if: always()
+        run: |
+          if [ -f .env ]; then
+            make db-down
+          fi

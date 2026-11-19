@@ -1,0 +1,13 @@
+catalog.fixture.test
+single.fixture.test
+cname.fixture.test
+private.fixture.test
+mixed-a.fixture.test
+mixed-aaaa.fixture.test
+rebinding.fixture.test
+retry.fixture.test
+unavailable.fixture.test
+dns-drop.fixture.test
+special.fixture.test
+blocked-target.test
+dns-recovery.fixture.test

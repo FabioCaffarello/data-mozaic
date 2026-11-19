@@ -21,6 +21,10 @@ class IntegrityError(ScoutError):
     pass
 
 
+class EvidenceUnavailableError(ScoutError):
+    """A previously sealed artifact cannot be safely replayed."""
+
+
 class ConflictError(ScoutError):
     pass
 
@@ -152,6 +156,7 @@ class SourceObservation:
     content_type: str | None = None
     title: str | None = None
     links: tuple[str, ...] = ()
+    extraction_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -296,6 +301,7 @@ class ScoutSession:
         decision: PolicyDecisionRef,
         now: datetime,
         elapsed_seconds: int = 1,
+        request_count: int = 1,
     ):
         self._state(State.EXPLORING)
         self._policy(decision, now)
@@ -308,7 +314,8 @@ class ScoutSession:
             raise IntegrityError("invalid observation")
         if (
             elapsed_seconds < 0
-            or self.remaining_requests < 1
+            or request_count < 1
+            or self.remaining_requests < request_count
             or self.remaining_seconds < elapsed_seconds
         ):
             raise IntegrityError("budget exhausted")
@@ -316,7 +323,7 @@ class ScoutSession:
             o.observation_id == observation.observation_id for o in self.observations
         ):
             raise IntegrityError("duplicate observation")
-        self.remaining_requests -= 1
+        self.remaining_requests -= request_count
         self.remaining_seconds -= elapsed_seconds
         self.observations += (observation,)
 

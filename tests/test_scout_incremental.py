@@ -1,11 +1,14 @@
 """Incremental application use cases reuse the BC14 aggregate and repository."""
 
+import asyncio
+import hashlib
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from scout.adapters.fixtures import FixtureExplorer
 from scout.adapters.local_custody import LocalFileEvidenceCustody
@@ -15,6 +18,7 @@ from scout.domain import (
     AuthorizationError,
     ConflictError,
     EvidenceManifest,
+    EvidenceUnavailableError,
     IntegrityError,
     PolicyDecisionRef,
     ScoutScope,
@@ -28,6 +32,11 @@ from scout.fakes import (
     FakeSessionRepository,
     FakeSourceLookup,
 )
+from scout.tools.discovery import (
+    DiscoveryStructureError,
+    reconstruct_text_projection,
+)
+from scout.tools.url_policy import normalize_url
 
 
 class ScoutIncrementalTests(unittest.TestCase):
@@ -76,6 +85,301 @@ class ScoutIncrementalTests(unittest.TestCase):
         )
         with self.assertRaises(IntegrityError):
             self.app.status_incremental(session.session_id, "other", self.now)
+
+    def test_authorized_http_capture_seals_original_bytes_and_budget(self):
+        body = b"<html><title>HTTPS fixture</title><p>untrusted page</p></html>"
+        result = SimpleNamespace(
+            status=200,
+            content_type="text/html",
+            body=body,
+            request_count=1,
+            elapsed_seconds=2,
+            final_url="https://catalog.test/docs/page",
+            completed_at=self.now,
+            title="HTTPS fixture",
+            links=("https://catalog.test/docs/next",),
+            text="HTTPS fixture untrusted page",
+            truncated=False,
+            extraction_version="scout-text-v1",
+        )
+
+        class Discovery:
+            def normalize_target(self, url):
+                return normalize_url(url)
+
+            async def fetch(self, source_id, revision, url):
+                self.request = (source_id, revision, url)
+                return result
+
+            def reconstruct_text(self, content, content_type, version):
+                return reconstruct_text_projection(content, content_type, version)
+
+        discovery = Discovery()
+        self.app.http_discovery_factory = lambda *_: discovery
+        session = self.app.start_incremental(
+            source=self.source,
+            objective="inspect authorized HTTPS content",
+            principal="operator",
+            command_id="http-session",
+            now=self.now,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            self.app.custody = LocalFileEvidenceCustody(Path(temporary).resolve())
+            outcome = asyncio.run(
+                self.app.explore_http_incremental(
+                    session_id=session.session_id,
+                    principal="operator",
+                    command_id="http-command",
+                    idempotency_key="http-key",
+                    fingerprint="http-fingerprint",
+                    expected_version=0,
+                    url="https://catalog.test/docs/page",
+                    now=self.now,
+                )
+            )
+            captured = outcome.session
+            artifact = captured.manifests[0].artifacts[0]
+            self.assertTrue(self.app.custody.verify(artifact))
+            self.assertEqual(artifact.sha256, hashlib.sha256(body).hexdigest())
+            self.assertEqual(artifact.size_bytes, len(body))
+            self.assertEqual(captured.remaining_requests, 3)
+            self.assertEqual(captured.remaining_seconds, 58)
+            self.assertEqual(outcome.text, "HTTPS fixture untrusted page")
+            self.assertEqual(discovery.request[2], "https://catalog.test/docs/page")
+
+    def test_http_replay_reconstructs_text_from_custody_without_refetch(self):
+        body = b"<html><title>Replay</title><p>api_key=private-value</p></html>"
+        result = SimpleNamespace(
+            status=200,
+            content_type="text/html",
+            body=body,
+            request_count=1,
+            elapsed_seconds=1,
+            final_url="https://catalog.test/docs/replay",
+            completed_at=self.now,
+            title="Replay",
+            links=(),
+            text="Replay api_key=[REDACTED]",
+            truncated=False,
+            extraction_version="scout-text-v1",
+        )
+
+        class Discovery:
+            fetches = 0
+
+            def normalize_target(self, url):
+                return normalize_url(url)
+
+            async def fetch(self, source_id, revision, url):
+                self.fetches += 1
+                return result
+
+            def reconstruct_text(self, content, content_type, version):
+                return reconstruct_text_projection(content, content_type, version)
+
+        custody = FakeEvidenceCustody(kind="http_response")
+        self.app.custody = custody
+        discovery = Discovery()
+        self.app.http_discovery_factory = lambda *_: discovery
+        session = self.app.start_incremental(
+            source=self.source,
+            objective="verify deterministic HTTP replay",
+            principal="operator",
+            command_id="replay-session",
+            now=self.now,
+        )
+        args = {
+            "session_id": session.session_id,
+            "principal": "operator",
+            "command_id": "replay-command",
+            "idempotency_key": "replay-key",
+            "fingerprint": "replay-fingerprint",
+            "expected_version": 0,
+            "url": result.final_url,
+            "now": self.now,
+        }
+        first = asyncio.run(self.app.explore_http_incremental(**args))
+        replay = asyncio.run(self.app.explore_http_incremental(**args))
+
+        self.assertEqual(first.text, "Replay api_key=[REDACTED]")
+        self.assertEqual(first.text, replay.text)
+        self.assertEqual(first.truncated, replay.truncated)
+        self.assertEqual(first.session.observations, replay.session.observations)
+        self.assertEqual(first.session.manifests, replay.session.manifests)
+        self.assertEqual(discovery.fetches, 1)
+        self.assertEqual(len(custody.objects), 1)
+        self.assertEqual(len(replay.session.observations), 1)
+        self.assertNotIn("private-value", replay.text)
+        self.assertEqual(replay.session.remaining_requests, 3)
+
+    def test_http_replay_fails_typed_when_custody_bytes_are_unavailable(self):
+        body = b"<p>retained text</p>"
+        result = SimpleNamespace(
+            status=200,
+            content_type="text/html",
+            body=body,
+            request_count=1,
+            elapsed_seconds=1,
+            final_url="https://catalog.test/docs/replay",
+            completed_at=self.now,
+            title=None,
+            links=(),
+            text="retained text",
+            truncated=False,
+            extraction_version="scout-text-v1",
+        )
+
+        class Discovery:
+            def normalize_target(self, url):
+                return normalize_url(url)
+
+            async def fetch(self, *_args):
+                return result
+
+            def reconstruct_text(self, content, content_type, version):
+                return reconstruct_text_projection(content, content_type, version)
+
+        custody = FakeEvidenceCustody(kind="http_response")
+        self.app.custody = custody
+        self.app.http_discovery_factory = lambda *_: Discovery()
+        session = self.app.start_incremental(
+            source=self.source,
+            objective="verify expired custody denial",
+            principal="operator",
+            command_id="retention-session",
+            now=self.now,
+        )
+        args = {
+            "session_id": session.session_id,
+            "principal": "operator",
+            "command_id": "retention-command",
+            "idempotency_key": "retention-key",
+            "fingerprint": "retention-fingerprint",
+            "expected_version": 0,
+            "url": result.final_url,
+            "now": self.now,
+        }
+        asyncio.run(self.app.explore_http_incremental(**args))
+        artifact = next(iter(custody.objects.values()))[0]
+        custody.objects[artifact.artifact_id] = (artifact, b"corrupted bytes")
+        with self.assertRaises(EvidenceUnavailableError):
+            asyncio.run(self.app.explore_http_incremental(**args))
+        custody.objects.clear()
+        with self.assertRaises(EvidenceUnavailableError):
+            asyncio.run(self.app.explore_http_incremental(**args))
+
+    def test_http_replay_reauthorizes_revocation_scope_and_source_revision(self):
+        body = b"<p>authorized retained text</p>"
+        result = SimpleNamespace(
+            status=200,
+            content_type="text/html",
+            body=body,
+            request_count=1,
+            elapsed_seconds=1,
+            final_url="https://catalog.test/docs/replay",
+            completed_at=self.now,
+            title=None,
+            links=(),
+            text="authorized retained text",
+            truncated=False,
+            extraction_version="scout-text-v1",
+        )
+
+        class Discovery:
+            def normalize_target(self, url):
+                return normalize_url(url)
+
+            async def fetch(self, *_args):
+                return result
+
+            def reconstruct_text(self, content, content_type, version):
+                return reconstruct_text_projection(content, content_type, version)
+
+        custody = FakeEvidenceCustody(kind="http_response")
+        self.app.custody = custody
+        self.app.http_discovery_factory = lambda *_: Discovery()
+        session = self.app.start_incremental(
+            source=self.source,
+            objective="verify authorization on HTTP replay",
+            principal="operator",
+            command_id="reauth-session",
+            now=self.now,
+        )
+        args = {
+            "session_id": session.session_id,
+            "principal": "operator",
+            "command_id": "reauth-command",
+            "idempotency_key": "reauth-key",
+            "fingerprint": "reauth-fingerprint",
+            "expected_version": 0,
+            "url": result.final_url,
+            "now": self.now,
+        }
+        asyncio.run(self.app.explore_http_incremental(**args))
+
+        self.app.policy.decision = replace(self.decision, revoked=True)
+        with self.assertRaises(AuthorizationError):
+            asyncio.run(self.app.explore_http_incremental(**args))
+
+        self.app.policy.decision = replace(
+            self.decision,
+            scope=ScoutScope(
+                ("https://catalog.test",), ("/docs/other",), ("GET",), 4, 60
+            ),
+        )
+        with self.assertRaises(AuthorizationError):
+            asyncio.run(self.app.explore_http_incremental(**args))
+
+        self.app.policy.decision = self.decision
+        self.app.sources.sources = {SourceRef("catalog", "revision-4"): self.scope}
+        with self.assertRaises(IntegrityError):
+            asyncio.run(self.app.explore_http_incremental(**args))
+
+    def test_http_text_projection_is_versioned_redacted_and_bounded(self):
+        text, truncated = reconstruct_text_projection(
+            (b"<p>api_key=fixture-secret-value</p>" + b"<p>x</p>" * 10_000),
+            "text/html",
+            "scout-text-v1",
+        )
+        self.assertTrue(truncated)
+        self.assertLessEqual(len(text), 16_000)
+        self.assertNotIn("fixture-secret-value", text)
+        with self.assertRaises(DiscoveryStructureError):
+            reconstruct_text_projection(b"text", "text/plain", "unknown-version")
+
+    def test_http_cancellation_leaves_command_receipt_uncertain(self):
+        class CancelledDiscovery:
+            def normalize_target(self, url):
+                return normalize_url(url)
+
+            async def fetch(self, source_id, revision, url):
+                raise asyncio.CancelledError
+
+        self.app.http_discovery_factory = lambda *_: CancelledDiscovery()
+        session = self.app.start_incremental(
+            source=self.source,
+            objective="cancel authorized HTTP work safely",
+            principal="operator",
+            command_id="http-cancel-session",
+            now=self.now,
+        )
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(
+                self.app.explore_http_incremental(
+                    session_id=session.session_id,
+                    principal="operator",
+                    command_id="http-cancel-command",
+                    idempotency_key="http-cancel-key",
+                    fingerprint="cancel-fingerprint",
+                    expected_version=0,
+                    url="https://catalog.test/docs/page",
+                    now=self.now,
+                )
+            )
+        self.assertEqual(
+            self.repository.commands[("operator", "http-cancel-key")]["status"],
+            "uncertain",
+        )
 
     def test_finding_requires_session_manifest_and_expected_version(self):
         session = self.app.start_incremental(

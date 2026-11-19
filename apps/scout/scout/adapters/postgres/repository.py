@@ -200,6 +200,7 @@ def _scope_document(scope: EffectiveScope) -> dict:
         "max_requests": scope.max_requests,
         "max_duration_seconds": scope.max_duration_seconds,
         "max_response_bytes": scope.max_response_bytes,
+        "policy_revision_sha256": scope.policy_revision_sha256,
     }
 
 
@@ -215,6 +216,7 @@ def _scope_from_document(value: dict) -> EffectiveScope:
         value["max_requests"],
         value["max_duration_seconds"],
         value["max_response_bytes"],
+        value.get("policy_revision_sha256"),
     )
 
 
@@ -261,6 +263,7 @@ def _restore(value: dict[str, Any]) -> ScoutSession:
             item.get("content_type"),
             item.get("title"),
             tuple(item.get("links", ())),
+            item.get("extraction_version"),
         )
         for item in raw["observations"]
     )

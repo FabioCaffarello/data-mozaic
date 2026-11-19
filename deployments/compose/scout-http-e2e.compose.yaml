@@ -1,0 +1,79 @@
+name: data-mozaic-scout-http-e2e
+
+services:
+  squid:
+    image: ubuntu/squid:7.2-26.04_edge@sha256:6a252a42875d08bbb9dae4ab70a041afd4f8b530eaa0226102d1816309eef8b5
+    volumes:
+      - ${SCOUT_HTTP_E2E_SQUID_CONFIG:?Set generated Squid E2E configuration}:/etc/squid/squid.conf:ro
+      - ../../config/scout/egress-e2e-domains.txt:/etc/squid/allowed-domains.txt:ro
+    ports:
+      - "127.0.0.1:${SCOUT_HTTP_E2E_PROXY_PORT:-3137}:3128"
+    depends_on:
+      dns-fixture:
+        condition: service_healthy
+    networks:
+      e2e:
+        ipv4_address: 172.30.91.2
+
+  https-fixture:
+    image: python:3.12-slim
+    volumes:
+      - ../../tooling/scout_https_fixture.py:/fixture.py:ro
+      - ${SCOUT_HTTP_E2E_CERT_DIR:?Set the temporary HTTPS fixture certificate directory}:/certs:ro
+    command:
+      - python
+      - /fixture.py
+      - --certificate
+      - /certs/server.crt
+      - --private-key
+      - /certs/server.key
+    networks:
+      e2e:
+        ipv4_address: 172.30.91.10
+        aliases:
+          - catalog.fixture.test
+
+  dns-fixture:
+    image: python:3.12-slim
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ../../tooling/scout_dns_fixture.py:/dns_fixture.py:ro
+    command: ["python", "/dns_fixture.py"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8053/health', timeout=1)"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+    ports:
+      - "127.0.0.1:${SCOUT_HTTP_E2E_DNS_CONTROL_PORT:-8053}:8053"
+    networks:
+      e2e:
+        ipv4_address: 172.30.91.53
+
+  blocked-sink:
+    image: python:3.12-slim
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ../../tooling/scout_egress_sink.py:/sink.py:ro
+    command: ["python", "/sink.py"]
+    networks:
+      e2e:
+        ipv4_address: 172.30.91.11
+
+networks:
+  e2e:
+    # Host-run official MCP client reaches Squid via the loopback-published port.
+    # Squid's test ACL still allows only the single fixture host/address tuple.
+    internal: false
+    ipam:
+      config:
+        - subnet: 172.30.91.0/24
