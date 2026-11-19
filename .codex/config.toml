@@ -1,0 +1,19 @@
+[mcp_servers.data_mozaic_scout]
+command = "bash"
+args = ["tooling/codex-scout-mcp.sh"]
+enabled = true
+required = true
+enabled_tools = [
+  "scout_preflight",
+  "scout_start",
+  "scout_fetch",
+  "scout_record_finding",
+  "scout_propose",
+  "scout_status",
+  "scout_export_transcript",
+  "scout_export_replay_fixtures",
+]
+env_vars = ["SCOUT_DATABASE_URL"]
+default_tools_approval_mode = "prompt"
+startup_timeout_sec = 30
+tool_timeout_sec = 120

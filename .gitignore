@@ -7,5 +7,6 @@ __pycache__/
 !.env.example
 .local/authoring-policy.json
 .local/scout-egress-domains.txt
+.local/scout-mcp.env
 node_modules/
 target/

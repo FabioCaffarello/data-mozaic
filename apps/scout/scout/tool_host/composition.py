@@ -84,6 +84,12 @@ def build_server():
             str(Path.home() / "Library/Application Support/Data Mozaic/scout-evidence"),
         )
     )
+    artifact_root = Path(
+        os.environ.get(
+            "SCOUT_ARTIFACT_ROOT",
+            str(Path.home() / ".local/share/data-mozaic/scout-artifacts"),
+        )
+    )
     if not principal or not dsn or not policy_path.is_file():
         raise RuntimeError(
             "set SCOUT_LOCAL_PRINCIPAL, SCOUT_DATABASE_URL, and an administrative policy file"
@@ -95,6 +101,12 @@ def build_server():
     ):
         raise RuntimeError(
             "SCOUT_EVIDENCE_ROOT must be absolute and outside the checkout"
+        )
+    if not artifact_root.is_absolute() or artifact_root.resolve().is_relative_to(
+        repo_root
+    ):
+        raise RuntimeError(
+            "SCOUT_ARTIFACT_ROOT must be absolute and outside the checkout"
         )
     custody = LocalFileEvidenceCustody(evidence_root)
     repository = PostgresScoutSessionRepository(dsn)
@@ -144,4 +156,4 @@ def build_server():
         FixtureExplorer(),
         http_discovery_factory,
     )
-    return create_server(app, principal)
+    return create_server(app, principal, artifact_root)

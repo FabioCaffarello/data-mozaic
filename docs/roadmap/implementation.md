@@ -2,7 +2,7 @@
 
 ## Estado atual
 
-Scout S1.6 estabeleceu um fluxo offline durável de authoring para BC14: sessão, autorização, evidências de fixture, findings e `PlaybookProposal`, com PostgreSQL, receipts, reconciliação de custódia e relay independente. PR #4 adicionou adapter HTTP experimental; PR #5 adicionou o gerador BC15 de draft CapturePlaybook e replay por fixtures; PR #6 adicionou uma prova Docker opcional de isolamento de egress para um container worker; PR #7 foi integrado em `main` no merge `bbc5df0` e entregou autoria incremental MCP STDIO com fixtures. Este PR adiciona `scout_fetch` ao host local, compõe o adapter HTTP existente, aplica policy por source/revision, budget PostgreSQL e broker Squid, e registra a resposta final como evidência BC14. A custódia BC06 e política BC11 continuam doubles locais; não há sandbox do processo Codex nem validação de produção. Consulte a [matriz de ameaças HTTP](../architecture/assessments/scout-http-threat-matrix.md) e o [runbook](../operations/scout-authoring-tools.md).
+Scout S1.6 estabeleceu um fluxo offline durável de authoring para BC14: sessão, autorização, evidências de fixture, findings e `PlaybookProposal`, com PostgreSQL, receipts, reconciliação de custódia e relay independente. PR #4 adicionou adapter HTTP experimental; PR #5 adicionou o gerador BC15 de draft CapturePlaybook e replay por fixtures; PR #6 adicionou uma prova Docker opcional de isolamento de egress para um container worker; PR #7 foi integrado em `main` no merge `bbc5df0` e entregou autoria incremental MCP STDIO com fixtures. PR #8 foi integrado no merge `5c3e2b1` e conectou `scout_fetch` ao host local, compondo o adapter HTTP existente com policy por source/revision, budget PostgreSQL e broker Squid. A custódia BC06 e política BC11 continuam doubles locais; não há sandbox do processo Codex nem validação de produção. Consulte a [matriz de ameaças HTTP](../architecture/assessments/scout-http-threat-matrix.md) e o [runbook](../operations/scout-authoring-tools.md).
 
 Os ADRs 001–015 permanecem Proposed salvo aprovação registrada por decisão humana. Merge de código ou CI verde não altera o estado de um ADR.
 
@@ -22,11 +22,15 @@ PR #5 implementou skill local, CLI e artefato separado de CapturePlaybook draft,
 
 O PR #7 está integrado a `main` como `bbc5df0` em 2026-11-18 e seu check remoto passou. O PR adicionou o fluxo hermético MCP client → source/policy local → sessão incremental → fixture catalog registrada → custody de referência e manifest → finding → proposal/outbox → transcript versionado → BC15 CLI draft/validate/replay. O SDK oficial `mcp>=1.30,<2` está travado em 1.30.0 para manter compatibilidade com o handshake legado. Isso não habilitou navegação pública, autenticação corporativa ou isolamento do processo Codex/agente. A API do GitHub não retornou decisões formais de review no momento em que o PR seguinte começou; o merge e o check verde foram confirmados. Consulte [avaliação de fechamento](../architecture/assessments/scout-mcp-pr7-closure.md), [readiness histórico](../architecture/assessments/scout-mcp-host-readiness.md) e [runbook](../operations/scout-authoring-tools.md).
 
-## PR atual — Scout Authorized HTTP Exploration
+## PR #8 integrado — Scout Authorized HTTP Exploration
 
 Conectar somente `scout_fetch` ao host, com URL dentro do source/revision da sessão, redirects por hop, budget cumulativo no ledger PostgreSQL, transporte via proxy e evidência final bruta em custody. Links são retornados para decisão incremental, nunca seguidos automaticamente. Testar negatives de path, redirects, DNS/IP no proxy, timeouts, tamanhos, cancelamento, concorrência, prompt injection, offline e restart/replay. Fixture HTTPS e source pública aprovada exigem broker/configuração de runtime explícitos. Gaps: corpos de redirects não são anexados ao transcript; a shell/rede do agente não está isolada; Playwright e adapters de produção permanecem futuros.
 
-## PR #9 — adapters proprietários e adoção controlada
+## Incremento atual — Codex local e autoria de Playbook
+
+Estender a skill local e a configuração Codex project-scoped para conduzir preflight, sessão, exploração MCP limitada, evidências, findings, proposta, transcript, draft/validate/replay BC15 e resumo de revisão. Adicionar uma exportação BC14 de fixtures que reautoriza a sessão e verifica custody/digest antes de escrever ao artifact root local, sem devolver bytes brutos ao modelo. O E2E HTTPS controlado deve exercitar o pipeline completo e a falha de escopo; distinguir esses testes determinísticos de demonstração real do Codex. Não altera Scout/transcript v1 ou CapturePlaybook draft v1, não promove ACK, não implementa sandbox de agente, Playwright, compilador ou runtime.
+
+## Próximo limite — adapters proprietários e adoção controlada
 
 Integrar somente fontes e approvals fornecidas pelos owners BC01/BC11 e custódia/traces por BC06, com revisão dos contratos de receipts e validação de transcript pelo CLI BC15. Não implementar produção até haver política operacional e gates de egress e sandbox do agente.
 

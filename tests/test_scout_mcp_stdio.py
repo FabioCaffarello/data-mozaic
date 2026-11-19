@@ -68,6 +68,7 @@ class ScoutMCPStdioTests(unittest.TestCase):
                         "scout_propose",
                         "scout_status",
                         "scout_export_transcript",
+                        "scout_export_replay_fixtures",
                     },
                 )
                 schema = by_name["scout_start"].inputSchema

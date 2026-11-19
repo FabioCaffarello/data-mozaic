@@ -45,6 +45,20 @@ class HTTPExplorationOutcome:
     truncated: bool
 
 
+@dataclass(frozen=True)
+class ReplayFixturePage:
+    """Verified BC14 evidence page prepared for local BC15 replay."""
+
+    url: str
+    status: int
+    content_type: str
+    evidence_ref: str
+    artifact_id: str
+    sha256: str
+    size_bytes: int
+    body: bytes
+
+
 class ScoutApplication:
     def __init__(
         self,
@@ -1001,6 +1015,70 @@ class ScoutApplication:
             session.state.value,
         )
         return transcript
+
+    def export_replay_fixtures(
+        self, session_id: str, principal: str, now: datetime
+    ) -> tuple[ReplayFixturePage, ...]:
+        """Return authorized, proposal-scoped custody bytes for offline replay."""
+        transcript = self.export_transcript(session_id, principal, now)
+        session, decision = self.authorized_session(session_id, principal, now)
+        artifact_by_id = {
+            artifact.artifact_id: artifact
+            for manifest in session.manifests
+            if manifest.manifest_id
+            in set(session.proposal.manifest_ids if session.proposal else ())
+            for artifact in manifest.artifacts
+        }
+        observation_by_artifact = {
+            observation.artifact_id: observation for observation in session.observations
+        }
+        pages = []
+        for page in transcript["pages"]:
+            artifact = artifact_by_id.get(page["artifact_id"])
+            observation = observation_by_artifact.get(page["artifact_id"])
+            if (
+                artifact is None
+                or observation is None
+                or observation.url != page["url"]
+                or observation.status is None
+                or observation.content_type is None
+                or artifact.kind != "http_response"
+                or artifact.custody_status != CUSTODY_STATUS_AVAILABLE
+                or artifact.size_bytes is None
+                or artifact.size_bytes > min(decision.max_response_bytes, 2_000_000)
+                or not self.custody.verify(artifact)
+            ):
+                raise EvidenceUnavailableError(
+                    "replay fixture is outside proposal scope or unavailable"
+                )
+            try:
+                body = self.custody.read(artifact)
+            except Exception as error:
+                raise EvidenceUnavailableError(
+                    "replay fixture custody read failed"
+                ) from error
+            if (
+                body is None
+                or len(body) != artifact.size_bytes
+                or hashlib.sha256(body).hexdigest() != artifact.sha256
+                or len(body) > min(decision.max_response_bytes, 2_000_000)
+            ):
+                raise EvidenceUnavailableError(
+                    "replay fixture bytes failed integrity verification"
+                )
+            pages.append(
+                ReplayFixturePage(
+                    url=page["url"],
+                    status=observation.status,
+                    content_type=observation.content_type,
+                    evidence_ref=page["evidence_ref"],
+                    artifact_id=artifact.artifact_id,
+                    sha256=artifact.sha256,
+                    size_bytes=artifact.size_bytes,
+                    body=body,
+                )
+            )
+        return tuple(pages)
 
     def reconcile_custody_intent(self, artifact_id: str) -> str:
         """Resolve an uncertain BC06 write by its durable identity and digest."""

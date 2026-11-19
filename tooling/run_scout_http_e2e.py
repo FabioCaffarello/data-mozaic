@@ -356,7 +356,15 @@ def main() -> int:
                 text=True,
                 capture_output=True,
             ).stdout
-            fixture_hits = logs.count("fixture.request method=GET path=/docs/page")
+            fixture_page_hits = {
+                "/docs/page": logs.count("fixture.request method=GET path=/docs/page"),
+                "/docs/next": logs.count("fixture.request method=GET path=/docs/next"),
+            }
+            expected_fixture_page_hits = (
+                {"/docs/page": 1, "/docs/next": 1}
+                if args.suite == "http"
+                else {"/docs/page": 1, "/docs/next": 0}
+            )
             access_records = [line.split() for line in squid_access.splitlines()]
             squid_version_match = re.search(
                 r"Starting Squid Cache version ([0-9.]+)", squid_cache
@@ -472,7 +480,7 @@ def main() -> int:
             min_denied = 5 if args.suite == "dns" else 0
             if (
                 test_passed
-                and fixture_hits == 1
+                and fixture_page_hits == expected_fixture_page_hits
                 and bool(positive_dns_records)
                 and squid_version == "7.7"
                 and denied_count >= min_denied
@@ -482,7 +490,7 @@ def main() -> int:
                 connection_evidence = " ".join(positive_dns_records[0])
                 print(
                     f"verified: {args.suite} suite passed with {test_result.testsRun} "
-                    f"tests and zero skips on Squid {squid_version}; one /docs/page GET; Squid connected "
+                    f"tests and zero skips on Squid {squid_version}; fixture GETs={fixture_page_hits}; Squid connected "
                     "to fixture IP 172.30.91.10; forbidden sink accepted zero connections"
                 )
                 print(f"connection evidence: {connection_evidence}")
@@ -501,7 +509,7 @@ def main() -> int:
                 print(
                     "e2e evidence check failed: "
                     f"tests_passed={test_passed}, tests_run={test_result.testsRun}, "
-                    f"skips={len(test_result.skipped)}, fixture_hits={fixture_hits}, "
+                    f"skips={len(test_result.skipped)}, fixture_page_hits={fixture_page_hits}, "
                     f"connected_fixture_ip={bool(positive_dns_records)}, "
                     f"squid_version={squid_version}, "
                     f"denied={denied_count}, sink_hits={sink_hits}, "

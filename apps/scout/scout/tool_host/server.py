@@ -5,7 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import re
+import tempfile
 from datetime import UTC, datetime
+from pathlib import Path
 
 import anyio
 from mcp.server import Server
@@ -39,7 +43,76 @@ def command_identity(
     return "cmd-" + slot_digest, f"mcp:{tool_name}:{slot_digest}", fingerprint
 
 
-def create_server(application: ScoutApplication, principal: str) -> Server:
+def _write_replay_fixtures(
+    pages, artifact_root: Path, session_id: str
+) -> tuple[Path, str]:
+    if not artifact_root.is_absolute() or not re.fullmatch(
+        r"[A-Za-z0-9_-]{1,128}", session_id
+    ):
+        raise ValueError("replay fixture output configuration is invalid")
+    if artifact_root.is_symlink():
+        raise ValueError("replay fixture root cannot be a symlink")
+    session_root = artifact_root / session_id
+    fixture_root = session_root / "captured-fixtures"
+    for directory in (artifact_root, session_root, fixture_root):
+        if directory.exists() and directory.is_symlink():
+            raise ValueError("replay fixture directory cannot be a symlink")
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    index_pages = []
+    for page in pages:
+        filename = f"{page.sha256}.body"
+        target = fixture_root / filename
+        if target.exists():
+            if (
+                target.is_symlink()
+                or hashlib.sha256(target.read_bytes()).hexdigest() != page.sha256
+            ):
+                raise ValueError("existing replay fixture failed its digest check")
+        else:
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=".pending-", dir=fixture_root
+            )
+            temporary_path = Path(temporary_name)
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(page.body)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary_path, target)
+            finally:
+                temporary_path.unlink(missing_ok=True)
+        index_pages.append(
+            {
+                "url": page.url,
+                "status": page.status,
+                "content_type": page.content_type,
+                "evidence_ref": page.evidence_ref,
+                "sha256": page.sha256,
+                "body_file": filename,
+            }
+        )
+    rendered = (
+        json.dumps({"pages": index_pages}, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    index_path = fixture_root / "index.json"
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".pending-", dir=fixture_root)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(rendered)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, index_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return fixture_root, hashlib.sha256(rendered).hexdigest()
+
+
+def create_server(
+    application: ScoutApplication,
+    principal: str,
+    artifact_root: Path | None = None,
+) -> Server:
     """Create a tool server bound to launcher-owned local identity and adapters."""
     if not principal:
         raise ValueError("local development principal is required")
@@ -255,6 +328,18 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
                 "additionalProperties": False,
             },
         ),
+        Tool(
+            name="scout_export_replay_fixtures",
+            description="Reauthorize a proposed session and export verified custody bytes to the configured local artifact root for offline BC15 replay; raw bodies are not returned to the model.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string", "minLength": 1, "maxLength": 128}
+                },
+                "required": ["session_id"],
+                "additionalProperties": False,
+            },
+        ),
     ]
     by_name = {tool.name: tool for tool in tools}
 
@@ -289,6 +374,8 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
                     "path_prefixes": list(effective.path_prefixes),
                     "methods": list(effective.methods),
                     "max_requests": effective.max_requests,
+                    "max_pages": min(effective.max_requests, 20),
+                    "max_response_bytes": decision.max_response_bytes,
                     "max_duration_seconds": effective.max_duration_seconds,
                     "approval_expires_at": decision.expires_at.isoformat(),
                 }
@@ -446,6 +533,30 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
                     "ok": True,
                     "transcript_json": rendered,
                     "sha256": hashlib.sha256(encoded).hexdigest(),
+                }
+            if name == "scout_export_replay_fixtures":
+                if artifact_root is None:
+                    raise ValueError("SCOUT_ARTIFACT_ROOT is not configured")
+                pages = application.export_replay_fixtures(
+                    arguments["session_id"], principal, now()
+                )
+                fixture_root, index_sha256 = _write_replay_fixtures(
+                    pages, artifact_root, arguments["session_id"]
+                )
+                return {
+                    "ok": True,
+                    "session_id": arguments["session_id"],
+                    "fixtures_dir": str(fixture_root),
+                    "index_sha256": index_sha256,
+                    "pages": [
+                        {
+                            "url": page.url,
+                            "evidence_ref": page.evidence_ref,
+                            "sha256": page.sha256,
+                            "size_bytes": page.size_bytes,
+                        }
+                        for page in pages
+                    ],
                 }
             return {"ok": False, "error": {"code": "unknown_tool"}}
         except Exception as error:  # noqa: BLE001 - adapter returns typed tool failures
