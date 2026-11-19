@@ -1,4 +1,4 @@
-.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check
+.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance
 
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 
@@ -90,3 +90,16 @@ scout-http-e2e:
 scout-dns-adversarial-check:
 	$(require_env)
 	@set -a; . ./.env; set +a; uv run --locked python tooling/run_scout_http_e2e.py --suite dns
+
+scout-dev-setup:
+	python3 tooling/scout_dev.py setup
+
+scout-dev-status:
+	python3 tooling/scout_dev.py status
+
+scout-dev-authorize-single-fixture:
+	python3 tooling/scout_dev.py authorize-single-fixture
+
+scout-authoring-acceptance:
+	@test -x .venv/bin/python || { echo 'Run make scout-dev-setup first.'; exit 2; }
+	.venv/bin/python tooling/scout_dev.py accept-single-fixture
