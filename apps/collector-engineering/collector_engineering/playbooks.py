@@ -7,6 +7,9 @@ import ipaddress
 import json
 import os
 import re
+import secrets
+import stat
+import sys
 import unicodedata
 from html.parser import HTMLParser
 from importlib.resources import files
@@ -33,6 +36,12 @@ TRANSCRIPT_SCHEMAS = {
 
 class PlaybookError(ValueError):
     """Input cannot safely produce or validate a playbook draft."""
+
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - platform-specific fail-closed path
+    _fcntl = None
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -585,6 +594,392 @@ class _LinkParser(HTMLParser):
             self.links.append(href)
 
 
+def _require_descriptor_output_support() -> None:
+    required_flags = ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK")
+    required_functions = (os.open, os.mkdir, os.link, os.unlink, os.stat)
+    if (
+        _fcntl is None
+        or any(not hasattr(os, name) for name in required_flags)
+        or any(function not in os.supports_dir_fd for function in required_functions)
+        or os.link not in os.supports_follow_symlinks
+    ):
+        raise PlaybookError(
+            "secure raw output requires POSIX dir_fd, O_NOFOLLOW, O_DIRECTORY, "
+            "hard-link publication, and flock support"
+        )
+
+
+def _check_private_directory(descriptor: int, label: str) -> os.stat_result:
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_mode & 0o077
+        or metadata.st_mode & 0o700 != 0o700
+    ):
+        raise PlaybookError(f"{label} must be an owner-only directory")
+    return metadata
+
+
+def _check_output_parent_directory(descriptor: int) -> None:
+    metadata = os.fstat(descriptor)
+    shared_sticky = bool(metadata.st_mode & stat.S_ISVTX)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid not in {0, os.geteuid()}
+        or (metadata.st_mode & 0o022 and not shared_sticky)
+    ):
+        raise PlaybookError(
+            "raw output ancestors must be root/user-owned and not group/world writable"
+        )
+
+
+def _open_child_directory(parent: int, name: str, *, create: bool) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        return os.open(name, flags, dir_fd=parent)
+    except FileNotFoundError:
+        if not create:
+            raise
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent)
+        except FileExistsError:
+            pass
+        os.fsync(parent)
+        return os.open(name, flags, dir_fd=parent)
+
+
+def _open_private_output_root(path: Path) -> tuple[int, int, str]:
+    if ".." in path.parts:
+        raise PlaybookError("raw output root cannot contain parent traversal")
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    # macOS exposes the system temporary roots through root-owned /tmp and /var
+    # symlink aliases. Normalize only those OS aliases; never resolve an
+    # application-selected path component that could be replaced by its caller.
+    if sys.platform == "darwin" and len(absolute.parts) > 1:
+        if absolute.parts[1] == "tmp":
+            absolute = Path("/private/tmp", *absolute.parts[2:])
+        elif absolute.parts[1] == "var":
+            absolute = Path("/private/var", *absolute.parts[2:])
+    components = absolute.parts[1:]
+    if not components:
+        raise PlaybookError("filesystem root cannot be used as raw output root")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open("/", flags)
+    root_parent = None
+    try:
+        _check_output_parent_directory(descriptor)
+        for index, component in enumerate(components):
+            if index == len(components) - 1:
+                root_parent = os.dup(descriptor)
+            child = _open_child_directory(descriptor, component, create=True)
+            try:
+                if index == len(components) - 1:
+                    _check_private_directory(child, "raw output root")
+                else:
+                    _check_output_parent_directory(child)
+                descriptor_to_close = descriptor
+                descriptor = child
+                child = -1
+                os.close(descriptor_to_close)
+                if index == len(components) - 1:
+                    return root_parent, descriptor, component
+            finally:
+                if child >= 0:
+                    os.close(child)
+    except BaseException:
+        os.close(descriptor)
+        if root_parent is not None:
+            os.close(root_parent)
+        raise
+    raise PlaybookError("raw output root path could not be opened")
+
+
+def _read_private_file_at(
+    directory: int, name: str, *, expected_size: int | None = None
+) -> bytes:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(name, flags, dir_fd=directory)
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o077
+            or metadata.st_nlink != 1
+            or (expected_size is not None and metadata.st_size != expected_size)
+        ):
+            raise PlaybookError("raw output file has unsafe type, mode, or size")
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if expected_size is not None and total > expected_size:
+                raise PlaybookError("raw output grew while it was being verified")
+        content = b"".join(chunks)
+        if expected_size is not None and len(content) != expected_size:
+            raise PlaybookError("raw output changed while it was being verified")
+        return content
+    finally:
+        os.close(descriptor)
+
+
+class _PrivateRawOutput:
+    """Descriptor-relative, private and idempotent BC15 replay publication."""
+
+    def __init__(self, output_root: Path):
+        self.output_root = output_root
+        self.root_parent_fd: int | None = None
+        self.root_fd: int | None = None
+        self.root_name: str | None = None
+        self.raw_fd: int | None = None
+        self.lock_fd: int | None = None
+
+    def __enter__(self):
+        _require_descriptor_output_support()
+        try:
+            self.root_parent_fd, self.root_fd, self.root_name = (
+                _open_private_output_root(self.output_root)
+            )
+            self.lock_fd = self._open_lock()
+            _fcntl.flock(self.lock_fd, _fcntl.LOCK_EX)
+            self._verify_root_name()
+            self.raw_fd = _open_child_directory(self.root_fd, "raw", create=True)
+            _check_private_directory(self.raw_fd, "raw output directory")
+            self._verify_raw_name()
+            self._remove_stale_pending_files()
+            return self
+        except BaseException as error:
+            self.close()
+            if isinstance(error, PlaybookError):
+                raise
+            if isinstance(error, (OSError, ValueError)):
+                raise PlaybookError(
+                    "cannot establish a secure raw output directory"
+                ) from error
+            raise
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
+
+    def close(self) -> None:
+        first_error = None
+        if self.raw_fd is not None:
+            descriptor = self.raw_fd
+            self.raw_fd = None
+            try:
+                os.close(descriptor)
+            except OSError as error:  # pragma: no cover - close failure is platform I/O
+                first_error = error
+        if self.lock_fd is not None:
+            descriptor = self.lock_fd
+            self.lock_fd = None
+            try:
+                if _fcntl is not None:
+                    _fcntl.flock(descriptor, _fcntl.LOCK_UN)
+            except OSError as error:  # pragma: no cover - close failure is platform I/O
+                first_error = first_error or error
+            try:
+                os.close(descriptor)
+            except OSError as error:  # pragma: no cover - close failure is platform I/O
+                first_error = first_error or error
+        if self.root_fd is not None:
+            descriptor = self.root_fd
+            self.root_fd = None
+            try:
+                os.close(descriptor)
+            except OSError as error:  # pragma: no cover - close failure is platform I/O
+                first_error = first_error or error
+        if self.root_parent_fd is not None:
+            descriptor = self.root_parent_fd
+            self.root_parent_fd = None
+            try:
+                os.close(descriptor)
+            except OSError as error:  # pragma: no cover - close failure is platform I/O
+                first_error = first_error or error
+        if first_error is not None:
+            raise PlaybookError(
+                "could not close secure raw output descriptors"
+            ) from first_error
+
+    def _open_lock(self) -> int:
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        try:
+            descriptor = os.open(".replay.lock", flags, 0o600, dir_fd=self.root_fd)
+        except FileExistsError:
+            descriptor = os.open(
+                ".replay.lock",
+                os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=self.root_fd,
+            )
+        try:
+            metadata = os.fstat(descriptor)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o077
+            or metadata.st_mode & 0o600 != 0o600
+            or metadata.st_nlink != 1
+        ):
+            os.close(descriptor)
+            raise PlaybookError("raw output lock has unsafe ownership, mode, or type")
+        return descriptor
+
+    def _verify_root_name(self) -> None:
+        metadata = os.stat(
+            self.root_name, dir_fd=self.root_parent_fd, follow_symlinks=False
+        )
+        opened = os.fstat(self.root_fd)
+        if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != (
+            opened.st_dev,
+            opened.st_ino,
+        ):
+            raise PlaybookError("raw output root changed during replay")
+        _check_private_directory(self.root_fd, "raw output root")
+
+    def _verify_raw_name(self) -> None:
+        self._verify_root_name()
+        metadata = os.stat("raw", dir_fd=self.root_fd, follow_symlinks=False)
+        opened = os.fstat(self.raw_fd)
+        if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != (
+            opened.st_dev,
+            opened.st_ino,
+        ):
+            raise PlaybookError("raw output directory changed during replay")
+
+    def _remove_stale_pending_files(self) -> None:
+        for name in os.listdir(self.raw_fd):
+            if not name.startswith(".pending-"):
+                continue
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=self.raw_fd,
+            )
+            try:
+                metadata = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != os.geteuid()
+                    or metadata.st_mode & 0o077
+                    or metadata.st_nlink != 1
+                ):
+                    raise PlaybookError("stale raw output temporary is unsafe")
+            finally:
+                os.close(descriptor)
+            os.unlink(name, dir_fd=self.raw_fd)
+            os.fsync(self.raw_fd)
+
+    def _publish_bytes(self, name: str, content: bytes) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,200}", name):
+            raise PlaybookError("raw output filename is invalid")
+        try:
+            existing = _read_private_file_at(
+                self.raw_fd, name, expected_size=len(content)
+            )
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            if (
+                existing != content
+                or hashlib.sha256(existing).digest() != hashlib.sha256(content).digest()
+            ):
+                raise PlaybookError("existing raw output differs from replay bytes")
+            return name
+
+        temporary = ".pending-" + secrets.token_hex(16)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=self.raw_fd)
+        try:
+            view = memoryview(content)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("short write while publishing raw output")
+                view = view[written:]
+            os.fsync(descriptor)
+        except BaseException:
+            os.close(descriptor)
+            descriptor = -1
+            try:
+                os.unlink(temporary, dir_fd=self.raw_fd)
+                os.fsync(self.raw_fd)
+            except FileNotFoundError:
+                pass
+            raise
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+        try:
+            verified = _read_private_file_at(
+                self.raw_fd, temporary, expected_size=len(content)
+            )
+            if (
+                verified != content
+                or hashlib.sha256(verified).digest() != hashlib.sha256(content).digest()
+            ):
+                raise PlaybookError("staged raw output failed integrity verification")
+            try:
+                os.link(
+                    temporary,
+                    name,
+                    src_dir_fd=self.raw_fd,
+                    dst_dir_fd=self.raw_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                existing = _read_private_file_at(
+                    self.raw_fd, name, expected_size=len(content)
+                )
+                if existing != content:
+                    raise PlaybookError(
+                        "concurrent raw output differs from replay bytes"
+                    )
+            os.fsync(self.raw_fd)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=self.raw_fd)
+                os.fsync(self.raw_fd)
+            except FileNotFoundError:
+                pass
+        final = _read_private_file_at(self.raw_fd, name, expected_size=len(content))
+        if (
+            final != content
+            or hashlib.sha256(final).digest() != hashlib.sha256(content).digest()
+        ):
+            raise PlaybookError("published raw output failed integrity verification")
+        return name
+
+    def publish_body(self, name: str, body: bytes) -> None:
+        self._publish_bytes(name, body)
+
+    def publish_manifest(self, content: bytes) -> str:
+        self._verify_raw_name()
+        name = self._publish_bytes("index.json", content)
+        self._verify_raw_name()
+        return name
+
+    def read_file(self, name: str, *, expected_size: int | None = None) -> bytes:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,200}", name):
+            raise PlaybookError("raw output filename is invalid")
+        self._verify_raw_name()
+        return _read_private_file_at(self.raw_fd, name, expected_size=expected_size)
+
+
 def replay(playbook: dict, fixture_root: Path, output_root: Path) -> dict:
     """Replay declared steps against captured bodies and publish raw outputs offline."""
     errors = validate_playbook(playbook)
@@ -758,6 +1153,8 @@ def replay(playbook: dict, fixture_root: Path, output_root: Path) -> dict:
         raw_bodies[effective_url] = body
         return True
 
+    raw_outputs = []
+    raw_manifest = None
     for step in playbook["steps"]:
         action = step["action"]
         if action == "http.fetch":
@@ -784,45 +1181,45 @@ def replay(playbook: dict, fixture_root: Path, output_root: Path) -> dict:
                 )
             discovered_queue = discovered[: step["max_links"]]
         elif action == "output.raw":
-            output_directory = output_root / "raw"
-            output_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-            raw_outputs = []
-            for sequence, result in enumerate(results, start=1):
-                body = raw_bodies[result["url"]]
-                filename = f"{sequence:04d}-{result['sha256']}.body"
-                path = output_directory / filename
-                if path.exists():
-                    if path.is_symlink() or path.read_bytes() != body:
-                        failures.append(
+            try:
+                with _PrivateRawOutput(output_root) as publisher:
+                    for sequence, result in enumerate(results, start=1):
+                        body = raw_bodies[result["url"]]
+                        filename = f"{sequence:04d}-{result['sha256']}.body"
+                        publisher.publish_body(filename, body)
+                        raw_outputs.append(
                             {
-                                "step_id": step["id"],
                                 "url": result["url"],
-                                "reason": "existing raw output differs",
+                                "evidence_ref": result["evidence_ref"],
+                                "body_file": str(Path("raw") / filename),
+                                "bytes": len(body),
+                                "sha256": result["sha256"],
                             }
                         )
-                        continue
-                else:
-                    descriptor = os.open(
-                        path,
-                        os.O_WRONLY
-                        | os.O_CREAT
-                        | os.O_EXCL
-                        | getattr(os, "O_NOFOLLOW", 0),
-                        0o600,
-                    )
-                    with os.fdopen(descriptor, "wb") as stream:
-                        stream.write(body)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                raw_outputs.append(
-                    {
-                        "url": result["url"],
-                        "evidence_ref": result["evidence_ref"],
-                        "body_file": str(Path("raw") / filename),
-                        "bytes": len(body),
-                        "sha256": result["sha256"],
+                    manifest = {
+                        "complete": True,
+                        "playbook_id": playbook["playbook_id"],
+                        "outputs": raw_outputs,
                     }
-                )
+                    manifest_bytes = (
+                        json.dumps(
+                            manifest,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    ).encode("utf-8")
+                    manifest_name = publisher.publish_manifest(manifest_bytes)
+                    raw_manifest = {
+                        "complete": True,
+                        "path": str(Path("raw") / manifest_name),
+                        "sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+                    }
+            except (OSError, ValueError) as error:
+                if isinstance(error, PlaybookError):
+                    raise
+                raise PlaybookError("raw output publication failed securely") from error
     replay_pages = [
         {key: value for key, value in result.items() if key != "_body"}
         for result in results
@@ -832,7 +1229,8 @@ def replay(playbook: dict, fixture_root: Path, output_root: Path) -> dict:
         "state": "failed" if failures else "passed",
         "replayed_pages": replay_pages,
         "requests_used": requests_used,
-        "raw_outputs": raw_outputs if "raw_outputs" in locals() else [],
+        "raw_outputs": raw_outputs,
+        "raw_manifest": raw_manifest,
         "failures": failures,
     }
 
@@ -893,6 +1291,30 @@ def accept_acquisition(
     pages = {page.get("url"): page for page in report["replayed_pages"]}
     transcript_pages = {page.get("url"): page for page in transcript.get("pages", [])}
     raw_outputs = {item.get("url"): item for item in report.get("raw_outputs", [])}
+    raw_manifest_ref = report.get("raw_manifest")
+    if (
+        not isinstance(raw_manifest_ref, dict)
+        or raw_manifest_ref.get("complete") is not True
+        or raw_manifest_ref.get("path") != "raw/index.json"
+    ):
+        failures.append("replay did not publish a complete raw output manifest")
+    else:
+        try:
+            with _PrivateRawOutput(output_root) as publisher:
+                manifest_bytes = publisher.read_file("index.json")
+            if hashlib.sha256(manifest_bytes).hexdigest() != raw_manifest_ref.get(
+                "sha256"
+            ):
+                failures.append("raw output manifest digest differs from replay")
+            manifest = json.loads(manifest_bytes)
+            if (
+                manifest.get("complete") is not True
+                or manifest.get("playbook_id") != playbook.get("playbook_id")
+                or manifest.get("outputs") != report.get("raw_outputs")
+            ):
+                failures.append("raw output manifest is incomplete or inconsistent")
+        except (OSError, PlaybookError, json.JSONDecodeError):
+            failures.append("raw output manifest is unavailable or invalid")
     required_pages = expectations.get("required_pages")
     if not isinstance(required_pages, list) or not required_pages:
         failures.append("independent expectations must require at least one page")
@@ -949,13 +1371,14 @@ def accept_acquisition(
         if raw is None:
             failures.append(f"raw output was not produced for {url}")
             continue
-        raw_path = (output_root / raw["body_file"]).resolve()
-        if output_root.resolve() not in raw_path.parents:
-            failures.append(f"raw output path escaped its output directory for {url}")
+        raw_name = raw.get("body_file", "")
+        if not raw_name.startswith("raw/") or raw_name.count("/") != 1:
+            failures.append(f"raw output path is invalid for {url}")
             continue
         try:
-            body = raw_path.read_bytes()
-        except OSError:
+            with _PrivateRawOutput(output_root) as publisher:
+                body = publisher.read_file(raw_name.removeprefix("raw/"))
+        except (OSError, PlaybookError):
             failures.append(f"raw output is unavailable for {url}")
             continue
         if hashlib.sha256(body).hexdigest() != expected.get("sha256"):

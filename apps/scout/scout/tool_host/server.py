@@ -219,9 +219,15 @@ def _write_replay_fixtures(
                 body_fd = existing_fd
             metadata = os.fstat(body_fd)
             existing = b""
-            while chunk := os.read(body_fd, 1024 * 1024):
-                existing += chunk
-            os.close(body_fd)
+            try:
+                while chunk := os.read(body_fd, 1024 * 1024):
+                    existing += chunk
+            except OSError as error:
+                raise ValueError(
+                    "existing replay fixture could not be verified"
+                ) from error
+            finally:
+                os.close(body_fd)
             if (
                 not stat.S_ISREG(metadata.st_mode)
                 or metadata.st_uid != os.geteuid()

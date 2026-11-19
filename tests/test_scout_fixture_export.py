@@ -120,6 +120,48 @@ class ReplayFixtureExportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ownership, mode or digest"):
                 _write_replay_fixtures([self.page()], root, "session-1")
 
+    def test_read_io_error_closes_descriptor_and_does_not_publish_index(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve() / "private"
+            root.mkdir(mode=0o700)
+            fixture_root, _ = _write_replay_fixtures([self.page()], root, "session-1")
+            index_path = fixture_root / "index.json"
+            index_path.unlink()
+            body_path = fixture_root / f"{self.page().sha256}.body"
+            original_body = body_path.read_bytes()
+            body_inode = body_path.stat().st_ino
+            real_read = os.read
+            real_close = os.close
+            opened_for_failed_read = []
+            closed = []
+
+            def fail_body_read(descriptor, size):
+                if os.fstat(descriptor).st_ino == body_inode:
+                    opened_for_failed_read.append(descriptor)
+                    raise OSError("injected fixture read failure")
+                return real_read(descriptor, size)
+
+            def track_close(descriptor):
+                if descriptor in opened_for_failed_read:
+                    closed.append(descriptor)
+                return real_close(descriptor)
+
+            with (
+                mock.patch("scout.tool_host.server.os.read", fail_body_read),
+                mock.patch("scout.tool_host.server.os.close", track_close),
+                self.assertRaisesRegex(
+                    ValueError, "existing replay fixture could not be verified"
+                ),
+            ):
+                _write_replay_fixtures([self.page()], root, "session-1")
+
+            self.assertEqual(1, len(opened_for_failed_read))
+            self.assertEqual(opened_for_failed_read, closed)
+            with self.assertRaises(OSError):
+                os.fstat(opened_for_failed_read[0])
+            self.assertFalse(index_path.exists())
+            self.assertEqual(original_body, body_path.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()
