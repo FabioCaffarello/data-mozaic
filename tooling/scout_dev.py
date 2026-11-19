@@ -168,6 +168,14 @@ def _runtime_home(root: Path) -> Path:
 
 def _artifact_home(root: Path) -> Path:
     identity = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:12]
+    base = Path(tempfile.gettempdir()).resolve(strict=True)
+    base = base / f"data-mozaic-scout-artifacts-{os.geteuid()}"
+    return base / identity
+
+
+def _legacy_artifact_home(root: Path) -> Path:
+    """Return the pre-canonical setup path for narrowly scoped local migration."""
+    identity = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:12]
     base = Path(tempfile.gettempdir()) / f"data-mozaic-scout-artifacts-{os.geteuid()}"
     return base / identity
 
@@ -221,12 +229,17 @@ def _prepare_local_files(root: Path, runtime: Path, proxy_url: str) -> dict:
             "SSL_CERT_FILE": str(runtime / "certs/ca.crt"),
         }
         if any(current.get(key) != value for key, value in expected.items()):
-            generated_previous = expected | {
-                "SCOUT_ARTIFACT_ROOT": str(runtime / "artifacts")
-            }
-            if principal == LOCAL_PRINCIPAL and all(
-                current.get(key) == value for key, value in generated_previous.items()
-            ):
+            previous_roots = (runtime / "artifacts", _legacy_artifact_home(root))
+            managed_previous = any(
+                all(
+                    current.get(key) == value
+                    for key, value in (
+                        expected | {"SCOUT_ARTIFACT_ROOT": str(previous_root)}
+                    ).items()
+                )
+                for previous_root in previous_roots
+            )
+            if principal == LOCAL_PRINCIPAL and managed_previous:
                 _rewrite_managed_env_values(
                     env_path, {"SCOUT_ARTIFACT_ROOT": str(artifact_root)}
                 )

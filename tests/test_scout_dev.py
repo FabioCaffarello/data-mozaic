@@ -20,6 +20,7 @@ from tooling.scout_dev import (
     _database_check,
     _diagnostics,
     _fixture_stack_check,
+    _legacy_artifact_home,
     _looks_like_direct_network_command,
     _migrate_managed_proxy_url,
     _prepare_local_files,
@@ -182,6 +183,9 @@ class ScoutDevBootstrapTests(unittest.TestCase):
                 "tooling.scout_dev.tempfile.gettempdir", return_value=temporary
             ):
                 artifact_root = _artifact_home(root)
+                legacy_artifact_root = _legacy_artifact_home(root)
+                canonical_temp = Path(temporary).resolve()
+            self.assertTrue(artifact_root.is_relative_to(canonical_temp))
             self.assertEqual(
                 str(artifact_root),
                 _read_env(mcp_env_path)["SCOUT_ARTIFACT_ROOT"],
@@ -196,6 +200,15 @@ class ScoutDevBootstrapTests(unittest.TestCase):
             with mock.patch(
                 "tooling.scout_dev.tempfile.gettempdir", return_value=temporary
             ):
+                _prepare_local_files(root, runtime, "http://127.0.0.1:3137")
+                migrated_env = mcp_env_path.read_bytes()
+                mcp_env_path.write_bytes(
+                    migrated_env.replace(
+                        str(artifact_root).encode(),
+                        str(legacy_artifact_root).encode(),
+                    )
+                )
+                mcp_env_path.chmod(0o600)
                 _prepare_local_files(root, runtime, "http://127.0.0.1:3137")
 
             self.assertEqual(original_policy, policy_path.read_bytes())
