@@ -157,6 +157,10 @@ class SourceObservation:
     title: str | None = None
     links: tuple[str, ...] = ()
     extraction_version: str | None = None
+    requested_url: str | None = None
+    exploration_sequence: int | None = None
+    discovered_from_observation_ids: tuple[str, ...] = ()
+    request_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -220,6 +224,8 @@ class ScoutSession:
     findings: tuple[DiscoveryFinding, ...] = field(default_factory=tuple)
     proposal: PlaybookProposal | None = None
     handoff_result: str | None = None
+    start_requested_url: str | None = None
+    start_effective_url: str | None = None
 
     def __setattr__(self, name, value):
         if (
@@ -312,9 +318,43 @@ class ScoutSession:
             or not observation.artifact_id
         ):
             raise IntegrityError("invalid observation")
+        http_observations = tuple(
+            item for item in self.observations if item.exploration_sequence is not None
+        )
+        if observation.exploration_sequence is not None:
+            if (
+                observation.exploration_sequence != len(http_observations) + 1
+                or not observation.requested_url
+                or not observation.url
+                or observation.exploration_sequence == 1
+                and (
+                    self.start_requested_url is not None
+                    or self.start_effective_url is not None
+                )
+                or observation.exploration_sequence > 1
+                and (
+                    self.start_requested_url is None or self.start_effective_url is None
+                )
+            ):
+                raise IntegrityError("HTTP observation sequence is inconsistent")
+            if observation.exploration_sequence == 1:
+                self.start_requested_url = observation.requested_url
+                self.start_effective_url = observation.url
+            expected_parents = tuple(
+                item.observation_id
+                for item in sorted(
+                    http_observations, key=lambda item: item.exploration_sequence or 0
+                )
+                if observation.requested_url in item.links
+            )
+            if observation.discovered_from_observation_ids != expected_parents:
+                raise IntegrityError("observation discovery relation is inconsistent")
+        elif observation.requested_url or observation.discovered_from_observation_ids:
+            raise IntegrityError("non-HTTP observation has HTTP navigation metadata")
         if (
             elapsed_seconds < 0
             or request_count < 1
+            or observation.request_count != request_count
             or self.remaining_requests < request_count
             or self.remaining_seconds < elapsed_seconds
         ):

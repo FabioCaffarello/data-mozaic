@@ -244,6 +244,7 @@ def main() -> int:
     port = _test_proxy_port()
     dns_control_port = _free_loopback_port()
     with tempfile.TemporaryDirectory(prefix="scout-http-e2e-") as temporary:
+        temporary = str(Path(temporary).resolve())
         cert_dir = Path(temporary) / "certs"
         cert_dir.mkdir()
         _make_certificates(cert_dir)

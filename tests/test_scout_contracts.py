@@ -52,6 +52,27 @@ class ScoutContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "evidence reference mismatch"):
             validate_transcript(invented_ref)
 
+    def test_transcript_v2_navigation_sequence_and_relations(self):
+        root = Path(__file__).resolve().parents[1]
+        v2 = root / "contracts/scout/transcript/draft/v2"
+        schema = read(v2 / "ScoutSessionTranscript.schema.json")
+        Draft202012Validator.check_schema(schema)
+        payload = read(v2 / "fixtures/valid/multipage.json")
+        validate_transcript(payload)
+        reordered_ids = copy.deepcopy(payload)
+        reordered_ids["pages"][0]["observation_id"] = "z-start"
+        reordered_ids["pages"][1]["observation_id"] = "a-next"
+        reordered_ids["pages"][1]["discovered_from_observation_ids"] = ["z-start"]
+        validate_transcript(reordered_ids)
+        wrong_sequence = copy.deepcopy(payload)
+        wrong_sequence["pages"][1]["sequence"] = 1
+        with self.assertRaisesRegex(ValueError, "navigation sequence"):
+            validate_transcript(wrong_sequence)
+        wrong_relation = copy.deepcopy(payload)
+        wrong_relation["pages"][1]["discovered_from_observation_ids"] = []
+        with self.assertRaisesRegex(ValueError, "discovery relation"):
+            validate_transcript(wrong_relation)
+
     def test_security_and_evidence_constraints(self):
         cases = [
             ("ScoutRequest", lambda p: p["requested_scope"].update(methods=["POST"])),

@@ -221,7 +221,7 @@ class ScoutMCPStdioTests(unittest.TestCase):
                 fixture_dir = artifact_root / "fixtures"
                 fixture_dir.mkdir()
                 source_fixtures = ROOT / "apps/scout/scout/fixtures/mcp-catalog"
-                index = {"pages": []}
+                index = {"complete": True, "pages": []}
                 for page, fixture_id, filename in zip(
                     transcript["pages"],
                     ("catalog-home", "catalog-page-2"),
@@ -233,6 +233,10 @@ class ScoutMCPStdioTests(unittest.TestCase):
                     index["pages"].append(
                         {
                             "url": page["url"],
+                            "requested_url": page["requested_url"],
+                            "effective_url": page["url"],
+                            "sequence": page["sequence"],
+                            "request_count": page["request_count"],
                             "status": 200,
                             "evidence_ref": page["evidence_ref"],
                             "body_file": filename,
@@ -250,6 +254,8 @@ class ScoutMCPStdioTests(unittest.TestCase):
                             str(draft_path),
                             "--fixtures",
                             str(fixture_dir),
+                            "--output",
+                            str(artifact_root / "replay-output"),
                             "--report",
                             str(artifact_root / "replay.json"),
                         ]

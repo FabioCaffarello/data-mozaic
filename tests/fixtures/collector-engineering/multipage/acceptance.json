@@ -1,0 +1,39 @@
+{
+  "expectation_schema": "capture-acquisition-expectations/v1",
+  "source": {
+    "source_id": "catalog-test",
+    "revision": "revision-1"
+  },
+  "start": {
+    "requested_url": "https://catalog.test/",
+    "effective_url": "https://catalog.test/"
+  },
+  "required_pages": [
+    {
+      "effective_url": "https://catalog.test/",
+      "evidence_ref": "evidence-page-1",
+      "sha256": "f7e40f48346cf6021f75329a44f4fe9e51c33169f56289514c649a8c0f80fd74",
+      "size_bytes": 136,
+      "contains": [
+        "data-id=\"r-101\""
+      ]
+    },
+    {
+      "effective_url": "https://catalog.test/items/page-2",
+      "evidence_ref": "evidence-page-2",
+      "sha256": "fd07cffcad81f5a0d454fb3e916a1cf18f56244f806e196f5be17a5c8375bee2",
+      "size_bytes": 104,
+      "contains": [
+        "data-id=\"r-102\""
+      ]
+    }
+  ],
+  "required_links": [
+    {
+      "from_effective_url": "https://catalog.test/",
+      "to_requested_url": "https://catalog.test/items/page-2"
+    }
+  ],
+  "max_requests": 5,
+  "max_pages": 3
+}

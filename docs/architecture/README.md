@@ -35,5 +35,7 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 
 27. [Scout Codex playbook authoring — pre-implementation assessment](assessments/scout-codex-authoring-pre-implementation.md)
 28. [Scout Codex local authoring — implementation evidence](assessments/scout-codex-authoring.md)
+29. [Scout transcript draft v2 — navigation identity and BC15 compatibility](../../contracts/scout/transcript/draft/v2/README.md)
+30. [Scout Codex functional remediation — independent acceptance](assessments/scout-codex-functional-remediation.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.

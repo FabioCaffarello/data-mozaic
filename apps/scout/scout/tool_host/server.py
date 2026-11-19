@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import logging
 import os
 import re
-import tempfile
+import secrets
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -50,62 +52,262 @@ def _write_replay_fixtures(
         r"[A-Za-z0-9_-]{1,128}", session_id
     ):
         raise ValueError("replay fixture output configuration is invalid")
-    if artifact_root.is_symlink():
-        raise ValueError("replay fixture root cannot be a symlink")
-    session_root = artifact_root / session_id
-    fixture_root = session_root / "captured-fixtures"
-    for directory in (artifact_root, session_root, fixture_root):
-        if directory.exists() and directory.is_symlink():
-            raise ValueError("replay fixture directory cannot be a symlink")
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    index_pages = []
-    for page in pages:
-        filename = f"{page.sha256}.body"
-        target = fixture_root / filename
-        if target.exists():
-            if (
-                target.is_symlink()
-                or hashlib.sha256(target.read_bytes()).hexdigest() != page.sha256
-            ):
-                raise ValueError("existing replay fixture failed its digest check")
-        else:
-            descriptor, temporary_name = tempfile.mkstemp(
-                prefix=".pending-", dir=fixture_root
+    if "O_NOFOLLOW" not in os.__dict__ or "O_DIRECTORY" not in os.__dict__:
+        raise ValueError("safe descriptor-relative fixture export is unsupported")
+    if ".." in artifact_root.parts:
+        raise ValueError("replay fixture root cannot contain parent traversal")
+
+    def open_directory(path: Path) -> int:
+        descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for component in path.parts[1:]:
+                try:
+                    child = os.open(
+                        component,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=descriptor,
+                    )
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(component, 0o700, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass
+                    child = os.open(
+                        component,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=descriptor,
+                    )
+                os.close(descriptor)
+                descriptor = child
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def check_private_directory(descriptor: int) -> None:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o077
+        ):
+            raise ValueError(
+                "replay fixture directories must be owner-only directories"
             )
-            temporary_path = Path(temporary_name)
+
+    def open_child(parent: int, name: str) -> int:
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=parent,
+            )
+        except FileNotFoundError:
             try:
-                with os.fdopen(descriptor, "wb") as stream:
-                    stream.write(page.body)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary_path, target)
-            finally:
-                temporary_path.unlink(missing_ok=True)
-        index_pages.append(
-            {
-                "url": page.url,
-                "status": page.status,
-                "content_type": page.content_type,
-                "evidence_ref": page.evidence_ref,
-                "sha256": page.sha256,
-                "body_file": filename,
-            }
-        )
-    rendered = (
-        json.dumps({"pages": index_pages}, sort_keys=True, separators=(",", ":")) + "\n"
-    ).encode("utf-8")
-    index_path = fixture_root / "index.json"
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".pending-", dir=fixture_root)
-    temporary_path = Path(temporary_name)
+                os.mkdir(name, 0o700, dir_fd=parent)
+            except FileExistsError:
+                pass
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=parent,
+            )
+        try:
+            check_private_directory(descriptor)
+            os.fsync(parent)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return descriptor
+
+    root_fd = open_directory(artifact_root)
     try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(rendered)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary_path, index_path)
+        check_private_directory(root_fd)
+        session_fd = open_child(root_fd, session_id)
+        try:
+            fixture_fd = open_child(session_fd, "captured-fixtures")
+        finally:
+            os.close(session_fd)
     finally:
-        temporary_path.unlink(missing_ok=True)
-    return fixture_root, hashlib.sha256(rendered).hexdigest()
+        os.close(root_fd)
+    try:
+        try:
+            lock_fd = os.open(
+                ".export.lock",
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
+                0o600,
+                dir_fd=fixture_fd,
+            )
+        except FileExistsError:
+            lock_fd = os.open(
+                ".export.lock",
+                os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=fixture_fd,
+            )
+        lock_metadata = os.fstat(lock_fd)
+        if (
+            not stat.S_ISREG(lock_metadata.st_mode)
+            or lock_metadata.st_uid != os.geteuid()
+            or lock_metadata.st_mode & 0o077
+        ):
+            raise ValueError("fixture export lock has unsafe ownership or mode")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        for stale_name in os.listdir(fixture_fd):
+            if not stale_name.startswith(".pending-"):
+                continue
+            stale_fd = os.open(
+                stale_name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=fixture_fd,
+            )
+            stale_metadata = os.fstat(stale_fd)
+            os.close(stale_fd)
+            if (
+                not stat.S_ISREG(stale_metadata.st_mode)
+                or stale_metadata.st_uid != os.geteuid()
+                or stale_metadata.st_mode & 0o077
+            ):
+                raise ValueError("stale fixture temporary has unsafe ownership or mode")
+            os.unlink(stale_name, dir_fd=fixture_fd)
+        index_pages = []
+        for page in pages:
+            filename = f"{page.sha256}.body"
+            if (
+                hashlib.sha256(page.body).hexdigest() != page.sha256
+                or len(page.body) != page.size_bytes
+            ):
+                raise ValueError("replay fixture bytes failed their evidence digest")
+            try:
+                existing_fd = os.open(
+                    filename,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=fixture_fd,
+                )
+            except FileNotFoundError:
+                temporary_body = ".pending-body-" + secrets.token_hex(16)
+                body_fd = os.open(
+                    temporary_body,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=fixture_fd,
+                )
+                try:
+                    with os.fdopen(body_fd, "wb") as stream:
+                        stream.write(page.body)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    try:
+                        os.link(
+                            temporary_body,
+                            filename,
+                            src_dir_fd=fixture_fd,
+                            dst_dir_fd=fixture_fd,
+                            follow_symlinks=False,
+                        )
+                    except FileExistsError:
+                        pass
+                    os.fsync(fixture_fd)
+                finally:
+                    try:
+                        os.unlink(temporary_body, dir_fd=fixture_fd)
+                    except FileNotFoundError:
+                        pass
+                body_fd = os.open(
+                    filename, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fixture_fd
+                )
+            else:
+                body_fd = existing_fd
+            metadata = os.fstat(body_fd)
+            existing = b""
+            while chunk := os.read(body_fd, 1024 * 1024):
+                existing += chunk
+            os.close(body_fd)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or metadata.st_mode & 0o077
+                or existing != page.body
+                or hashlib.sha256(existing).hexdigest() != page.sha256
+            ):
+                raise ValueError(
+                    "existing replay fixture failed ownership, mode or digest verification"
+                )
+            index_pages.append(
+                {
+                    "url": page.url,
+                    "requested_url": page.requested_url,
+                    "effective_url": page.url,
+                    "sequence": page.sequence,
+                    "request_count": page.request_count,
+                    "status": page.status,
+                    "content_type": page.content_type,
+                    "evidence_ref": page.evidence_ref,
+                    "sha256": page.sha256,
+                    "body_file": filename,
+                }
+            )
+        rendered = (
+            json.dumps(
+                {"complete": True, "pages": index_pages},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        temporary_name = ".pending-" + secrets.token_hex(16)
+        try:
+            descriptor = os.open(
+                temporary_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=fixture_fd,
+            )
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(rendered)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(
+                    temporary_name,
+                    "index.json",
+                    src_dir_fd=fixture_fd,
+                    dst_dir_fd=fixture_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                existing_fd = os.open(
+                    "index.json",
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=fixture_fd,
+                )
+                metadata = os.fstat(existing_fd)
+                existing = os.read(existing_fd, 4_000_001)
+                os.close(existing_fd)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != os.geteuid()
+                    or metadata.st_mode & 0o077
+                    or existing != rendered
+                ):
+                    raise ValueError(
+                        "existing fixture index is incomplete or differs from this export"
+                    )
+            os.fsync(fixture_fd)
+        finally:
+            try:
+                os.unlink(temporary_name, dir_fd=fixture_fd)
+            except FileNotFoundError:
+                pass
+        return artifact_root / session_id / "captured-fixtures", hashlib.sha256(
+            rendered
+        ).hexdigest()
+    finally:
+        if "lock_fd" in locals():
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
+        os.close(fixture_fd)
 
 
 def create_server(
@@ -551,9 +753,12 @@ def create_server(
                     "pages": [
                         {
                             "url": page.url,
+                            "requested_url": page.requested_url,
+                            "sequence": page.sequence,
                             "evidence_ref": page.evidence_ref,
                             "sha256": page.sha256,
                             "size_bytes": page.size_bytes,
+                            "request_count": page.request_count,
                         }
                         for page in pages
                     ],

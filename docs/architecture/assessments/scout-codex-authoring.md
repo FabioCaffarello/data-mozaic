@@ -1,5 +1,7 @@
 # Scout Codex local authoring — implementation evidence
 
+Historical snapshot of the initial PR #9 implementation. The absence of a real model session and the gaps found here were addressed by [Scout Codex functional remediation — independent acceptance](scout-codex-functional-remediation.md); use that later assessment for current behavior and gates.
+
 Date: 2026-11-19; branch: `feat/scout-codex-playbook-authoring`; base: PR #8 merge `5c3e2b14f758b1956e6ef9acb5d937b12109f234`.
 
 ## Delivered path

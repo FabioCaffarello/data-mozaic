@@ -28,7 +28,7 @@ Conectar somente `scout_fetch` ao host, com URL dentro do source/revision da ses
 
 ## Incremento atual — Codex local e autoria de Playbook
 
-Estender a skill local e a configuração Codex project-scoped para conduzir preflight, sessão, exploração MCP limitada, evidências, findings, proposta, transcript, draft/validate/replay BC15 e resumo de revisão. Adicionar uma exportação BC14 de fixtures que reautoriza a sessão e verifica custody/digest antes de escrever ao artifact root local, sem devolver bytes brutos ao modelo. O E2E HTTPS controlado deve exercitar o pipeline completo e a falha de escopo; distinguir esses testes determinísticos de demonstração real do Codex. Não altera Scout/transcript v1 ou CapturePlaybook draft v1, não promove ACK, não implementa sandbox de agente, Playwright, compilador ou runtime.
+O PR #9 introduz skill Codex, MCP e BC15 local. A remediação preserva Scout v1 e CapturePlaybook draft v1, mas evolui explicitamente o DTO interno BC14→BC15 para transcript draft v2, pois a sequência inicial não existia em v1. Adiciona replay de `output.raw`, acceptance contra expectativas independentes, wrapper BC15 compatível com workspace-write e publicação privada de fixtures descriptor-relative. Duas sessões reais locais do Codex passaram acceptance em fixtures HTTPS independentes, incluindo uma variação sem paginação; os resultados e limites estão no [assessment de remediação e aceitação](../architecture/assessments/scout-codex-functional-remediation.md). A execução real permanece um gate manual por ambiente; testes determinísticos não a substituem. Isso não promove ACK, não implementa isolamento global do processo, Playwright, compilador ou runtime.
 
 ## Próximo limite — adapters proprietários e adoção controlada
 

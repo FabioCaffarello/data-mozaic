@@ -1,10 +1,13 @@
+import hashlib
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
 from collector_engineering.playbooks import (
     PlaybookError,
+    accept_acquisition,
     build_draft,
     dump_yaml,
     load_playbook,
@@ -25,10 +28,20 @@ class CapturePlaybookTests(unittest.TestCase):
         self.assertEqual([], validate_playbook(draft))
         rendered = dump_yaml(draft)
         with tempfile.TemporaryDirectory() as temporary:
-            playbook_path = Path(temporary) / "candidate.yaml"
+            temporary_path = Path(temporary)
+            playbook_path = temporary_path / "candidate.yaml"
             playbook_path.write_text(rendered)
             reparsed = load_playbook(playbook_path)
-            report = replay(reparsed, MULTIPAGE)
+            report = replay(reparsed, MULTIPAGE, temporary_path / "replay-output")
+            self.assertEqual(2, len(report["raw_outputs"]))
+            first_body = (
+                temporary_path / "replay-output" / report["raw_outputs"][0]["body_file"]
+            ).read_bytes()
+            self.assertIn(b'data-id="r-101"', first_body)
+            second_report = replay(
+                reparsed, MULTIPAGE, temporary_path / "replay-output"
+            )
+            self.assertEqual(report, second_report)
         self.assertEqual("passed", report["state"])
         self.assertEqual(2, len(report["replayed_pages"]))
         self.assertEqual(
@@ -54,12 +67,73 @@ class CapturePlaybookTests(unittest.TestCase):
 
     def test_draft_requires_versioned_transcript_snapshot(self):
         self.transcript["transcript_schema"] = "scout-transcript-draft/v9"
-        with self.assertRaisesRegex(PlaybookError, "transcript draft v1"):
+        with self.assertRaisesRegex(PlaybookError, "unsupported Scout transcript"):
             build_draft(self.transcript)
         self.transcript = json.loads((MULTIPAGE / "transcript.json").read_text())
         self.transcript["pages"][0]["evidence_ref"] = "invented-manifest"
         with self.assertRaisesRegex(PlaybookError, "evidence reference"):
             build_draft(self.transcript)
+
+    def test_draft_uses_explicit_start_and_sequence_not_observation_id_order(self):
+        self.transcript["pages"][0]["observation_id"] = "z-start"
+        self.transcript["pages"][1]["observation_id"] = "a-next"
+        self.transcript["pages"][1]["discovered_from_observation_ids"] = ["z-start"]
+        self.assertEqual(
+            "https://catalog.test/",
+            build_draft(self.transcript)["steps"][0]["url"],
+        )
+
+    def test_draft_rejects_incomplete_and_unreachable_transcripts(self):
+        incomplete = json.loads(json.dumps(self.transcript))
+        incomplete["navigation"]["sequence_complete"] = False
+        with self.assertRaisesRegex(PlaybookError, "incomplete transcript"):
+            build_draft(incomplete)
+        unreachable = json.loads(json.dumps(self.transcript))
+        unreachable["pages"][0]["discovered_links"] = []
+        unreachable["pages"][1]["discovered_from_observation_ids"] = []
+        with self.assertRaisesRegex(PlaybookError, "discovery relations|not reachable"):
+            build_draft(unreachable)
+
+    def test_draft_preserves_redirected_start_url(self):
+        redirected = json.loads(json.dumps(self.transcript))
+        redirected["navigation"]["start_requested_url"] = "https://catalog.test/start"
+        redirected["pages"][0]["requested_url"] = "https://catalog.test/start"
+        self.assertEqual(
+            "https://catalog.test/start",
+            build_draft(redirected)["steps"][0]["url"],
+        )
+        draft = build_draft(redirected)
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture_copy = Path(temporary) / "fixtures"
+            shutil.copytree(MULTIPAGE, fixture_copy)
+            index = json.loads((fixture_copy / "index.json").read_text())
+            index["pages"][0]["requested_url"] = "https://catalog.test/start"
+            (fixture_copy / "index.json").write_text(json.dumps(index))
+            result = replay(draft, fixture_copy, Path(temporary) / "output")
+        self.assertEqual("passed", result["state"])
+        self.assertEqual(
+            "https://catalog.test/start", result["replayed_pages"][0]["requested_url"]
+        )
+        self.assertEqual("https://catalog.test/", result["replayed_pages"][0]["url"])
+
+    def test_draft_rejects_ambiguous_start_duplicate_resources_and_bad_strategy(self):
+        missing_start = json.loads(json.dumps(self.transcript))
+        missing_start["navigation"]["start_requested_url"] = (
+            "https://catalog.test/missing"
+        )
+        with self.assertRaisesRegex(PlaybookError, "starting observation"):
+            build_draft(missing_start)
+        duplicate = json.loads(json.dumps(self.transcript))
+        duplicate["pages"][1]["url"] = duplicate["pages"][0]["url"]
+        duplicate["pages"][1]["requested_url"] = duplicate["pages"][0]["requested_url"]
+        with self.assertRaisesRegex(
+            PlaybookError, "discovery relations|duplicate page URL"
+        ):
+            build_draft(duplicate)
+        unsupported = json.loads(json.dumps(self.transcript))
+        unsupported["proposal"]["required_capabilities"] = ["browser.execute"]
+        with self.assertRaisesRegex(PlaybookError, "unsupported draft/v1 capabilities"):
+            build_draft(unsupported)
 
     def test_draft_rejects_unreferenced_or_invented_finding(self):
         self.transcript["proposal"]["finding_ids"] = ["not-observed"]
@@ -91,6 +165,14 @@ class CapturePlaybookTests(unittest.TestCase):
         draft["steps"][1]["selector"] = "article.product"
         self.assertTrue(validate_playbook(draft))
 
+    def test_semantic_validation_rejects_unreachable_or_missing_raw_output(self):
+        draft = build_draft(self.transcript)
+        draft["steps"][1]["from_step"] = "unrelated"
+        self.assertTrue(any("unreachable" in item for item in validate_playbook(draft)))
+        draft = build_draft(self.transcript)
+        draft["steps"].pop()
+        self.assertTrue(validate_playbook(draft))
+
     def test_replay_reports_missing_page_and_rejects_bad_digest(self):
         draft = build_draft(self.transcript)
         with tempfile.TemporaryDirectory() as temporary:
@@ -100,7 +182,7 @@ class CapturePlaybookTests(unittest.TestCase):
             (Path(temporary) / "page-1.html").write_bytes(
                 (MULTIPAGE / "page-1.html").read_bytes()
             )
-            report = replay(draft, Path(temporary))
+            report = replay(draft, Path(temporary), Path(temporary) / "output")
         self.assertEqual("failed", report["state"])
         self.assertTrue(
             any("no captured fixture" in item["reason"] for item in report["failures"])
@@ -115,7 +197,88 @@ class CapturePlaybookTests(unittest.TestCase):
                     (MULTIPAGE / body_name).read_bytes()
                 )
             with self.assertRaisesRegex(PlaybookError, "digest mismatch"):
-                replay(draft, Path(temporary))
+                replay(draft, Path(temporary), Path(temporary) / "output")
+
+    def test_replay_deduplicates_revisited_resources(self):
+        draft = build_draft(self.transcript)
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture_copy = Path(temporary) / "fixtures"
+            shutil.copytree(MULTIPAGE, fixture_copy)
+            index_path = fixture_copy / "index.json"
+            index = json.loads(index_path.read_text())
+            body_path = fixture_copy / index["pages"][1]["body_file"]
+            body = body_path.read_bytes().replace(
+                b"</body>",
+                b'<a href="/">Home</a><a href="/">Home again</a></body>',
+            )
+            body_path.write_bytes(body)
+            index["pages"][1]["sha256"] = hashlib.sha256(body).hexdigest()
+            index_path.write_text(json.dumps(index))
+            report = replay(draft, fixture_copy, Path(temporary) / "output")
+        self.assertEqual("passed", report["state"])
+        self.assertEqual(2, len(report["replayed_pages"]))
+
+    def test_acquisition_acceptance_uses_independent_expectations(self):
+        draft = build_draft(self.transcript)
+        expectations = json.loads((MULTIPAGE / "acceptance.json").read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            result = accept_acquisition(
+                draft,
+                self.transcript,
+                MULTIPAGE,
+                Path(temporary) / "output",
+                expectations,
+            )
+        self.assertEqual("passed", result["structural_validation"]["state"])
+        self.assertEqual("passed", result["replay_execution"]["state"])
+        self.assertEqual("accepted", result["acquisition_acceptance"]["state"])
+        self.assertFalse(result["acquisition_acceptance"]["records_extracted"])
+
+    def test_acceptance_rejects_wrong_start_even_when_replay_passes(self):
+        draft = build_draft(self.transcript)
+        expectations = json.loads((MULTIPAGE / "acceptance.json").read_text())
+        draft["steps"][0]["url"] = "https://catalog.test/items/page-2"
+        with tempfile.TemporaryDirectory() as temporary:
+            result = accept_acquisition(
+                draft,
+                self.transcript,
+                MULTIPAGE,
+                Path(temporary) / "output",
+                expectations,
+            )
+        self.assertEqual("passed", result["replay_execution"]["state"])
+        self.assertEqual("rejected", result["acquisition_acceptance"]["state"])
+        self.assertTrue(
+            any(
+                "requested URL" in item
+                for item in result["acquisition_acceptance"]["failures"]
+            )
+        )
+
+    def test_acceptance_rejects_empty_or_unbounded_independent_expectations(self):
+        draft = build_draft(self.transcript)
+        expectations = json.loads((MULTIPAGE / "acceptance.json").read_text())
+        expectations["required_pages"] = []
+        expectations["max_requests"] = 0
+        expectations["max_pages"] = True
+        with tempfile.TemporaryDirectory() as temporary:
+            result = accept_acquisition(
+                draft,
+                self.transcript,
+                MULTIPAGE,
+                Path(temporary) / "output",
+                expectations,
+            )
+        self.assertEqual("passed", result["replay_execution"]["state"])
+        self.assertEqual("rejected", result["acquisition_acceptance"]["state"])
+        self.assertEqual(
+            {
+                "independent expectations must require at least one page",
+                "independent request limit must be a positive integer",
+                "independent page limit must be a positive integer",
+            },
+            set(result["acquisition_acceptance"]["failures"]),
+        )
 
 
 if __name__ == "__main__":

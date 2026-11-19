@@ -10,10 +10,12 @@ if [[ ! -f "$environment_file" ]]; then
   exit 2
 fi
 
+cd "$repo_root"
+
 exec uv run \
   --locked \
   --offline \
   --project "$repo_root" \
-  --env-file "$environment_file" \
+  --env-file .local/scout-mcp.env \
   --package mozaic-scout \
   python -m scout.tool_host

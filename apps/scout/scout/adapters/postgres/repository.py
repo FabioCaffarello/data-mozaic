@@ -264,6 +264,10 @@ def _restore(value: dict[str, Any]) -> ScoutSession:
             item.get("title"),
             tuple(item.get("links", ())),
             item.get("extraction_version"),
+            item.get("requested_url"),
+            item.get("exploration_sequence"),
+            tuple(item.get("discovered_from_observation_ids", ())),
+            item.get("request_count", 1),
         )
         for item in raw["observations"]
     )
@@ -330,6 +334,8 @@ def _restore(value: dict[str, Any]) -> ScoutSession:
         ("findings", findings),
         ("proposal", proposal),
         ("handoff_result", raw["handoff_result"]),
+        ("start_requested_url", raw.get("start_requested_url")),
+        ("start_effective_url", raw.get("start_effective_url")),
     ):
         object.__setattr__(session, name, restored_value)
     return session

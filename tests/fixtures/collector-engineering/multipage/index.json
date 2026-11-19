@@ -5,14 +5,23 @@
       "status": 200,
       "evidence_ref": "evidence-page-1",
       "body_file": "page-1.html",
-      "sha256": "956ca70c1430ba75e36531c3e379d22dea13d88f8c0d01458958ebbfa432fde8"
+      "sha256": "f7e40f48346cf6021f75329a44f4fe9e51c33169f56289514c649a8c0f80fd74",
+      "requested_url": "https://catalog.test/",
+      "effective_url": "https://catalog.test/",
+      "sequence": 1,
+      "request_count": 1
     },
     {
       "url": "https://catalog.test/items/page-2",
       "status": 200,
       "evidence_ref": "evidence-page-2",
       "body_file": "page-2.html",
-      "sha256": "62bb4a67b6a0da1115e33c14ef727da2d2cebd4f23965484a432f737be377835"
+      "sha256": "fd07cffcad81f5a0d454fb3e916a1cf18f56244f806e196f5be17a5c8375bee2",
+      "requested_url": "https://catalog.test/items/page-2",
+      "effective_url": "https://catalog.test/items/page-2",
+      "sequence": 2,
+      "request_count": 1
     }
-  ]
+  ],
+  "complete": true
 }

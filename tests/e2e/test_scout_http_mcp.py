@@ -351,6 +351,15 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 exported_value = json.loads(exported.content[0].text)
                 self.assertTrue(exported_value["ok"], exported_value)
                 transcript = json.loads(exported_value["transcript_json"])
+                self.assertEqual(
+                    "scout-transcript-draft/v2", transcript["transcript_schema"]
+                )
+                self.assertEqual(
+                    start_url, transcript["navigation"]["start_requested_url"]
+                )
+                self.assertEqual(
+                    [1, 2], [page["sequence"] for page in transcript["pages"]]
+                )
                 self.assertFalse(transcript["redaction"]["raw_content_included"])
                 self.assertEqual(
                     transcript["session"]["source"],
@@ -385,6 +394,11 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
             self.assertEqual(persisted.principal, principal)
             self.assertEqual(persisted.source, source)
             self.assertEqual(len(persisted.observations), 2)
+            self.assertEqual(
+                [1, 2],
+                [item.exploration_sequence for item in persisted.observations],
+            )
+            self.assertEqual(start_url, persisted.start_requested_url)
             self.assertEqual(persisted.remaining_requests, 2)
             self.assertEqual(
                 persisted.observations[0].extraction_version, "scout-text-v1"
@@ -491,6 +505,8 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 str(draft_path),
                 "--fixtures",
                 str(replay_fixtures),
+                "--output",
+                str(artifact_root / "replay-output"),
                 "--report",
                 str(replay_path),
                 env=env,
@@ -500,6 +516,31 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
             self.assertEqual(replay_report["state"], "passed")
             self.assertEqual(len(replay_report["replayed_pages"]), 2)
             self.assertEqual(replay_report["failures"], [])
+            expectations = (
+                ROOT
+                / "tests/fixtures/scout-authoring/controlled-catalog-acceptance.json"
+            )
+            acceptance_path = artifact_root / "acquisition-acceptance.json"
+            acceptance_code, _, acceptance_stderr = await self.run_cli(
+                "accept",
+                str(draft_path),
+                str(transcript_path),
+                "--fixtures",
+                str(replay_fixtures),
+                "--expectations",
+                str(expectations),
+                "--output",
+                str(artifact_root / "acceptance-output"),
+                "--report",
+                str(acceptance_path),
+                env=env,
+            )
+            self.assertEqual(acceptance_code, 0, acceptance_stderr)
+            acceptance = json.loads(acceptance_path.read_text(encoding="utf-8"))
+            self.assertEqual("passed", acceptance["structural_validation"]["state"])
+            self.assertEqual("passed", acceptance["replay_execution"]["state"])
+            self.assertEqual("accepted", acceptance["acquisition_acceptance"]["state"])
+            self.assertFalse(acceptance["acquisition_acceptance"]["records_extracted"])
             (artifact_root / "review-summary.md").write_text(
                 "\n".join(
                     [
@@ -520,7 +561,12 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 encoding="utf-8",
             )
             for path in artifact_root.rglob("*"):
-                if path.is_file() and path.parent != replay_fixtures:
+                if (
+                    path.is_file()
+                    and path.parent != replay_fixtures
+                    and "replay-output/raw" not in str(path)
+                    and "acceptance-output/raw" not in str(path)
+                ):
                     self.assertNotIn(
                         b"fixture-secret-value", path.read_bytes(), path.name
                     )

@@ -22,10 +22,19 @@ def validate_request(request: dict) -> None:
 
 def validate_transcript(transcript: dict) -> None:
     """Validate the versioned draft transcript DTO and embedded BC14 proposal."""
+    if not isinstance(transcript, dict):
+        raise TypeError("transcript must be a JSON object")
+    versions = {
+        "scout-transcript-draft/v1": "v1",
+        "scout-transcript-draft/v2": "v2",
+    }
+    version = versions.get(transcript.get("transcript_schema"))
+    if version is None:
+        raise ValueError("unsupported Scout transcript draft version")
     schema = json.loads(
         (
             ROOT
-            / "contracts/scout/transcript/draft/v1/ScoutSessionTranscript.schema.json"
+            / f"contracts/scout/transcript/draft/{version}/ScoutSessionTranscript.schema.json"
         ).read_text()
     )
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(transcript)
@@ -74,3 +83,47 @@ def validate_transcript(transcript: dict) -> None:
         page_artifacts.add(page["artifact_id"])
     if page_artifacts != set(evidence_by_id):
         raise ValueError("transcript evidence is not linked to captured pages")
+    if version == "v2":
+        pages = transcript["pages"]
+        navigation = transcript["navigation"]
+        ordered = sorted(pages, key=lambda page: page["sequence"])
+        sequences = [page["sequence"] for page in ordered]
+        complete = sequences == list(range(1, navigation["observation_count"] + 1))
+        if (
+            len(sequences) != len(set(sequences))
+            or sequences != sorted(sequences)
+            or not sequences
+            or navigation["observation_count"] < sequences[-1]
+            or navigation["sequence_complete"] != complete
+        ):
+            raise ValueError(
+                "transcript navigation sequence is incomplete or inconsistent"
+            )
+        observation_ids = {page["observation_id"] for page in ordered}
+        if len(observation_ids) != len(ordered):
+            raise ValueError("transcript contains duplicate observation identities")
+        if complete and (
+            ordered[0]["requested_url"] != navigation["start_requested_url"]
+            or ordered[0]["url"] != navigation["start_effective_url"]
+        ):
+            raise ValueError(
+                "transcript navigation start differs from its first observation"
+            )
+        for page in ordered:
+            parents = page["discovered_from_observation_ids"]
+            if len(parents) != len(set(parents)) or (
+                complete and not set(parents) <= observation_ids
+            ):
+                raise ValueError("transcript discovery relation is invalid")
+            if not complete:
+                continue
+            expected_parents = {
+                parent["observation_id"]
+                for parent in ordered
+                if page["requested_url"] in parent["discovered_links"]
+                and parent["sequence"] < page["sequence"]
+            }
+            if set(parents) != expected_parents:
+                raise ValueError(
+                    "transcript discovery relation does not match evidence"
+                )

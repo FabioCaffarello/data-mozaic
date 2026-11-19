@@ -13,7 +13,7 @@
    cp config/scout/authoring-policy.example.json .local/authoring-policy.json
    ```
 
-4. Copy `config/scout/authoring-mcp.env.example` to `.local/scout-mcp.env`; set the local principal, policy path, absolute custody and artifact roots outside the checkout, and loopback proxy. Restrict it to its owner (`chmod 600 .local/scout-mcp.env`). Do not put the database URL or credentials in this file or in Git. Keep `SCOUT_DATABASE_URL` in the existing ignored `.env`.
+4. Copy `config/scout/authoring-mcp.env.example` to `.local/scout-mcp.env`; set the local principal, policy path, absolute custody and artifact roots outside the checkout, and loopback proxy. Quote dotenv values containing spaces because uv parses this file. Restrict it to its owner (`chmod 600 .local/scout-mcp.env`). Do not put the database URL or credentials in this file or in Git. Keep `SCOUT_DATABASE_URL` in the existing ignored `.env`.
 5. Install locked workspace dependencies with `make sync`. The project Codex MCP configuration is `.codex/config.toml`; its launcher `tooling/codex-scout-mcp.sh` uses `uv --offline`, loads the ignored local env file, and starts the official SDK STDIO host. Review and trust this project configuration before use. Codex configuration requires the `SCOUT_DATABASE_URL` variable to be inherited. For a local Codex CLI session, start Codex from a shell that exports the reviewed `.env`, then verify `/mcp` lists `data_mozaic_scout`:
 
    ```sh
@@ -42,7 +42,7 @@ An input URL never creates a source or grants access. An administrator must perf
 `scout_preflight`, `scout_start`, `scout_fetch`, `scout_record_finding`, `scout_propose`, `scout_status`, `scout_export_transcript`, and `scout_export_replay_fixtures` are the current tools. `scout_explore_fixture` is a separate hermetic test/demo tool and is not the HTTP source workflow. Schemas reject extra arguments; principal, policy, approval, budgets, evidence root, artifact root, and credentials are launcher-owned.
 
 - `scout_fetch` accepts one HTTPS page, resolves source/revision from its session, reauthorizes each redirect hop, spends the durable PostgreSQL request budget, stores final response bytes in local custody, and returns bounded extracted text, links, and evidence IDs/digests. Links are suggestions; none is followed automatically.
-- `scout_export_transcript` reauthorizes the session, checks proposal/finding/evidence references, verifies custody, and returns the BC14 transcript draft/v1 plus its SHA-256. The JSON transcript intentionally contains metadata and references, not raw body bytes.
+- `scout_export_transcript` reauthorizes the session, checks proposal/finding/evidence references, verifies custody, and returns the versioned BC14 transcript plus its SHA-256. HTTP exploration exports internal transcript draft/v2 with requested/effective start URLs and ordered observations; the hermetic fixture workflow may still export v1. The JSON transcript intentionally contains metadata and references, not raw body bytes.
 - `scout_export_replay_fixtures` is the BC14 application export use case behind a thin MCP adapter. It reauthorizes the session, limits export to the proposal's evidence, verifies identity/size/digest and writes bodies below `<SCOUT_ARTIFACT_ROOT>/<session_id>/captured-fixtures/`. It does not accept an output path argument and returns only the fixture location, evidence refs, and index digest. Files are local, private test/review artifacts; preserve their source retention rules.
 - `scout_record_finding` supports `observation` and `hypothesis`; there is no independent verification tool in the current contract.
 - `scout_propose` submits a BC14 `PlaybookProposal` to the durable BC15 outbox. Delivery acknowledgement means received, not approved.
@@ -68,15 +68,16 @@ replay-report.json
 review-summary.md
 ```
 
-Save the exact `transcript_json` tool result to `transcript.json` and compare its bytes to the returned SHA-256. Use the existing BC15 CLI in that session directory:
+Save the exact `transcript_json` tool result to `transcript.json` and compare its bytes to the returned SHA-256. Use the versioned BC15 wrapper; it resolves the workspace from its own location and accepts absolute artifacts from any current directory:
 
 ```sh
-uv run --locked --package mozaic-collector-engineering python -m collector_engineering draft transcript.json --output capture-playbook.yaml
-uv run --locked --package mozaic-collector-engineering python -m collector_engineering validate capture-playbook.yaml
-uv run --locked --package mozaic-collector-engineering python -m collector_engineering replay capture-playbook.yaml --fixtures captured-fixtures --report replay-report.json
+tooling/codex-scout-bc15.sh draft /absolute/session/transcript.json --output /absolute/session/capture-playbook.yaml
+tooling/codex-scout-bc15.sh validate /absolute/session/capture-playbook.yaml
+tooling/codex-scout-bc15.sh replay /absolute/session/capture-playbook.yaml --fixtures /absolute/session/captured-fixtures --output /absolute/session/replay-output --report /absolute/session/replay-report.json
+tooling/codex-scout-bc15.sh accept /absolute/session/capture-playbook.yaml /absolute/session/transcript.json --fixtures /absolute/session/captured-fixtures --expectations /absolute/approved/acceptance.json --output /absolute/session/acceptance-output --report /absolute/session/acquisition-acceptance.json
 ```
 
-The draft/v1 subset supports observed HTTPS start fetch, same-origin/in-scope link discovery, bounded page following, and raw output. There are no selectors, query pagination, credentials, arbitrary code, browser actions, or productive bot compilation. Missing fixture, digest mismatch, unsupported response, or budget failure must appear in the replay result; never repair it by fetching again. The schema and ADR 013 remain illustrative/Proposed, not runtime or release contracts.
+The internal transcript draft v2 preserves requested/effective start URLs, sequence and observed links. BC15 refuses transcript v1 for generation because it cannot identify the start unambiguously. Structural/semantic validation, replay execution and acceptance are distinct; acceptance uses independent operator expectations and checks required pages, edges, digests, raw output and limits. `output.raw` preserves raw response bytes and does not extract records. No selectors, query pagination, credentials, arbitrary code, browser actions, or productive bot compilation are supported. Missing fixture, digest mismatch, unsupported response, or budget failure must appear in replay; never repair it by fetching again. The CapturePlaybook draft/v1 schema and ADR 013 remain illustrative/Proposed, not runtime or release contracts.
 
 ## Validation and evidence boundaries
 

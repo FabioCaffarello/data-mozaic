@@ -58,14 +58,22 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
             "PlaybookProposal.schema.json": hashlib.sha256(
                 (ROOT / "contracts/scout/v1/PlaybookProposal.schema.json").read_bytes()
             ).hexdigest(),
-            "ScoutSessionTranscript.schema.json": hashlib.sha256(
+            "ScoutSessionTranscript.v1.schema.json": hashlib.sha256(
                 (
                     ROOT
                     / "contracts/scout/transcript/draft/v1/ScoutSessionTranscript.schema.json"
                 ).read_bytes()
             ).hexdigest(),
+            "ScoutSessionTranscript.v2.schema.json": hashlib.sha256(
+                (
+                    ROOT
+                    / "contracts/scout/transcript/draft/v2/ScoutSessionTranscript.schema.json"
+                ).read_bytes()
+            ).hexdigest(),
         }
-        with tempfile.TemporaryDirectory(prefix="bc15-isolated-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="bc15 isolated with spaces "
+        ) as temporary:
             external = Path(temporary)
             distributions = external / "dist"
             subprocess.run(
@@ -140,7 +148,7 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                             "root=files('collector_engineering').joinpath('schemas'); "
                             "print(json.dumps({name: hashlib.sha256(root.joinpath(name).read_bytes()).hexdigest() "
                             "for name in ('CapturePlaybook.schema.json','PlaybookProposal.schema.json',"
-                            "'ScoutSessionTranscript.schema.json')}))"
+                            "'ScoutSessionTranscript.v1.schema.json','ScoutSessionTranscript.v2.schema.json')}))"
                         ),
                     ],
                     cwd=external,
@@ -161,8 +169,23 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                         str(draft_path),
                         "--fixtures",
                         str(fixture_copy),
+                        "--output",
+                        str(external / f"raw-{suffix}"),
                         "--report",
                         str(external / f"replay-{suffix}.json"),
+                    ],
+                    [
+                        "accept",
+                        str(draft_path),
+                        str(transcript_path),
+                        "--fixtures",
+                        str(fixture_copy),
+                        "--expectations",
+                        str(fixture_copy / "acceptance.json"),
+                        "--output",
+                        str(external / f"acceptance-raw-{suffix}"),
+                        "--report",
+                        str(external / f"acceptance-{suffix}.json"),
                     ],
                 ):
                     subprocess.run(
