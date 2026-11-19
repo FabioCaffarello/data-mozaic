@@ -166,6 +166,12 @@ def _runtime_home(root: Path) -> Path:
     return base / identity
 
 
+def _artifact_home(root: Path) -> Path:
+    identity = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:12]
+    base = Path(tempfile.gettempdir()) / f"data-mozaic-scout-artifacts-{os.geteuid()}"
+    return base / identity
+
+
 def find_repository_root(start: Path) -> Path:
     result = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
@@ -197,8 +203,9 @@ def _prepare_local_files(root: Path, runtime: Path, proxy_url: str) -> dict:
         local / "authoring-policy.json",
     )
 
-    artifact_root = runtime / "artifacts"
+    artifact_root = _artifact_home(root)
     evidence_root = runtime / "evidence"
+    _secure_directory(artifact_root.parent)
     _secure_directory(artifact_root)
     _secure_directory(evidence_root)
     env_path = local / "scout-mcp.env"
@@ -211,11 +218,23 @@ def _prepare_local_files(root: Path, runtime: Path, proxy_url: str) -> dict:
             "SCOUT_EVIDENCE_ROOT": str(evidence_root),
             "SCOUT_ARTIFACT_ROOT": str(artifact_root),
             "SCOUT_EGRESS_PROXY": proxy_url,
+            "SSL_CERT_FILE": str(runtime / "certs/ca.crt"),
         }
         if any(current.get(key) != value for key, value in expected.items()):
-            raise RuntimeError(
-                "existing MCP environment differs from this worktree runtime; review it manually"
-            )
+            generated_previous = expected | {
+                "SCOUT_ARTIFACT_ROOT": str(runtime / "artifacts")
+            }
+            if principal == LOCAL_PRINCIPAL and all(
+                current.get(key) == value for key, value in generated_previous.items()
+            ):
+                _rewrite_managed_env_values(
+                    env_path, {"SCOUT_ARTIFACT_ROOT": str(artifact_root)}
+                )
+                current = _read_env(env_path)
+            if any(current.get(key) != value for key, value in expected.items()):
+                raise RuntimeError(
+                    "existing MCP environment differs from this worktree runtime; review it manually"
+                )
         if not principal:
             raise RuntimeError("existing MCP environment has no local principal")
         return {"principal": principal, "artifact_root": artifact_root}
@@ -269,6 +288,43 @@ def _load_runtime(root: Path) -> tuple[Path, dict]:
     if value.get("worktree") != str(root.resolve()):
         raise RuntimeError("Scout runtime manifest belongs to a different worktree")
     return runtime, value
+
+
+def _rewrite_managed_env_values(path: Path, updates: dict[str, str]) -> None:
+    _secure_file(path, required=True)
+    rewritten = []
+    seen = {key: 0 for key in updates}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key = line.split("=", 1)[0] if "=" in line else None
+        if key in updates:
+            rewritten.append(f"{key}={_quote_env(updates[key])}")
+            seen[key] += 1
+        else:
+            rewritten.append(line)
+    if any(count != 1 for count in seen.values()):
+        raise RuntimeError("generated MCP environment has an ambiguous managed value")
+    descriptor, temporary = tempfile.mkstemp(prefix=".scout-mcp-", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        _write_all(descriptor, ("\n".join(rewritten) + "\n").encode())
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(temporary, path)
+        directory_fd = os.open(
+            path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def _migrate_managed_proxy_url(
@@ -954,8 +1010,8 @@ def _acceptance(args) -> int:
     if not report["ready"]:
         print("Scout authoring is not ready; no Codex session was started.")
         return 2
-    runtime, _ = _load_runtime(ROOT)
-    artifact_root = runtime / "artifacts"
+    _load_runtime(ROOT)
+    artifact_root = _artifact_home(ROOT)
     run_id = "single-fixture-" + uuid.uuid4().hex[:12]
     session_dir = artifact_root / ("codex-" + run_id)
     _secure_directory(session_dir)
@@ -1088,11 +1144,7 @@ def _verify_codex_acceptance(
                     failed_tools.add(tool)
         if item.get("type") == "command_execution":
             command = item.get("command", "")
-            if isinstance(command, str) and re.search(
-                r"\b(curl|wget|httpie|xh|lynx|w3m)\b|urllib|requests\.(get|post)",
-                command,
-                flags=re.IGNORECASE,
-            ):
+            if isinstance(command, str) and _looks_like_direct_network_command(command):
                 direct_network_commands += 1
     if thread_id is None:
         return False, "Codex thread identifier is absent from the CLI event stream"
@@ -1301,6 +1353,21 @@ def _verify_codex_acceptance(
     finally:
         os.close(descriptor)
     return True, f"Scout session {session_directory.name}; body SHA-256 {body_sha}"
+
+
+def _looks_like_direct_network_command(command: str) -> bool:
+    """Detect network clients while allowing local URL parsing utilities."""
+    patterns = (
+        r"\b(?:curl|wget|httpie|xh|lynx|w3m)\b",
+        r"\burllib\.(?:request|3)\b",
+        r"\burlopen\s*\(",
+        r"\brequests\.(?:get|post|put|patch|delete|request)\s*\(",
+        r"\bhttpx\.(?:get|post|put|patch|delete|request|Client|AsyncClient)\b",
+        r"\baiohttp\.ClientSession\b",
+        r"\bhttp\.client\b",
+        r"\b(?:fetch|axios)\s*\(",
+    )
+    return any(re.search(pattern, command, flags=re.IGNORECASE) for pattern in patterns)
 
 
 def _redact_codex_events(source: Path, destination: Path) -> None:

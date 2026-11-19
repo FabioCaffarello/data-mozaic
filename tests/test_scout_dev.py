@@ -14,19 +14,37 @@ from tooling.scout_dev import (
     FIXTURE_PROXY_PORT,
     LOCAL_PRINCIPAL,
     SINGLE_SOURCE,
+    _artifact_home,
     _authorize_single_fixture,
     _codex_exec_command,
     _database_check,
     _diagnostics,
     _fixture_stack_check,
+    _looks_like_direct_network_command,
     _migrate_managed_proxy_url,
     _prepare_local_files,
+    _read_env,
     _source_authorized,
     find_repository_root,
 )
 
 
 class ScoutDevBootstrapTests(unittest.TestCase):
+    def test_network_command_guard_allows_url_parsing_but_rejects_clients(self):
+        self.assertFalse(
+            _looks_like_direct_network_command(
+                "python3 -c 'import urllib.parse; print(urllib.parse.urlparse(x))'"
+            )
+        )
+        for command in (
+            "python3 -c 'from urllib.request import urlopen'",
+            "python3 -c 'urlopen(url)'",
+            "python3 -c 'import requests; requests.get(url)'",
+            "curl https://example.test",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(_looks_like_direct_network_command(command))
+
     def test_codex_exec_command_uses_cli_compatible_workspace_write_approval(self):
         command = _codex_exec_command(
             Path("/checkout with spaces"),
@@ -152,12 +170,33 @@ class ScoutDevBootstrapTests(unittest.TestCase):
             (runtime / "certs").mkdir(mode=0o700)
             (runtime / "certs/ca.crt").write_text("synthetic ca placeholder")
 
-            _prepare_local_files(root, runtime, "http://127.0.0.1:3137")
+            with mock.patch(
+                "tooling.scout_dev.tempfile.gettempdir", return_value=temporary
+            ):
+                _prepare_local_files(root, runtime, "http://127.0.0.1:3137")
             policy_path = root / ".local/authoring-policy.json"
             mcp_env_path = root / ".local/scout-mcp.env"
             original_policy = policy_path.read_bytes()
             original_env = mcp_env_path.read_bytes()
-            _prepare_local_files(root, runtime, "http://127.0.0.1:3137")
+            with mock.patch(
+                "tooling.scout_dev.tempfile.gettempdir", return_value=temporary
+            ):
+                artifact_root = _artifact_home(root)
+            self.assertEqual(
+                str(artifact_root),
+                _read_env(mcp_env_path)["SCOUT_ARTIFACT_ROOT"],
+            )
+            (runtime / "artifacts").mkdir(mode=0o700)
+            mcp_env_path.write_bytes(
+                original_env.replace(
+                    str(artifact_root).encode(), str(runtime / "artifacts").encode()
+                )
+            )
+            mcp_env_path.chmod(0o600)
+            with mock.patch(
+                "tooling.scout_dev.tempfile.gettempdir", return_value=temporary
+            ):
+                _prepare_local_files(root, runtime, "http://127.0.0.1:3137")
 
             self.assertEqual(original_policy, policy_path.read_bytes())
             self.assertEqual(original_env, mcp_env_path.read_bytes())
