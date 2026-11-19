@@ -11,6 +11,7 @@ from unittest import mock
 from tooling.scout_dev import (
     FIXTURE_ORIGIN,
     FIXTURE_PREFIX,
+    FIXTURE_PROXY_PORT,
     LOCAL_PRINCIPAL,
     SINGLE_SOURCE,
     _authorize_single_fixture,
@@ -18,6 +19,7 @@ from tooling.scout_dev import (
     _database_check,
     _diagnostics,
     _fixture_stack_check,
+    _migrate_managed_proxy_url,
     _prepare_local_files,
     _source_authorized,
     find_repository_root,
@@ -38,6 +40,55 @@ class ScoutDevBootstrapTests(unittest.TestCase):
             ["--cd", "/checkout with spaces"],
             command[command.index("--cd") : command.index("--cd") + 2],
         )
+
+    def test_fixture_proxy_migration_updates_only_generated_local_configuration(self):
+        with tempfile.TemporaryDirectory(prefix="scout proxy setup ") as temporary:
+            root = Path(temporary) / "checkout"
+            local = root / ".local"
+            local.mkdir(parents=True, mode=0o700)
+            runtime = Path(temporary) / "runtime"
+            runtime.mkdir(mode=0o700)
+            for name in ("evidence", "artifacts", "certs"):
+                (runtime / name).mkdir(mode=0o700)
+            policy = local / "authoring-policy.json"
+            policy.write_text("{}\n")
+            env_path = local / "scout-mcp.env"
+            env_path.write_text(
+                f"SCOUT_LOCAL_PRINCIPAL={LOCAL_PRINCIPAL}\n"
+                f'SCOUT_HOST_POLICY_FILE="{policy}"\n'
+                f'SCOUT_EVIDENCE_ROOT="{runtime / "evidence"}"\n'
+                f'SCOUT_ARTIFACT_ROOT="{runtime / "artifacts"}"\n'
+                'SCOUT_EGRESS_PROXY="http://127.0.0.1:53001"\n'
+                f'SSL_CERT_FILE="{runtime / "certs/ca.crt"}"\n'
+            )
+            env_path.chmod(0o600)
+            _migrate_managed_proxy_url(root, runtime, 53001, FIXTURE_PROXY_PORT)
+            migrated = env_path.read_text()
+            self.assertIn('SCOUT_EGRESS_PROXY="http://127.0.0.1:3128"', migrated)
+            self.assertEqual(0o600, stat.S_IMODE(env_path.stat().st_mode))
+
+            env_path.write_text(migrated.replace(LOCAL_PRINCIPAL, "custom-principal"))
+            env_path.chmod(0o600)
+            before = env_path.read_bytes()
+            with self.assertRaisesRegex(RuntimeError, "not the generated fixture"):
+                _migrate_managed_proxy_url(root, runtime, 3128, 3130)
+            self.assertEqual(before, env_path.read_bytes())
+
+    def test_fixture_status_rejects_transport_proxy_port_drift(self):
+        with mock.patch(
+            "tooling.scout_dev._load_runtime",
+            return_value=(
+                Path("/private/runtime"),
+                {"complete": True, "proxy_port": 53001},
+            ),
+        ):
+            self.assertEqual(
+                (
+                    False,
+                    "Scout's governed HTTP transport requires loopback Squid on port 3128",
+                ),
+                _fixture_stack_check(Path("/repo")),
+            )
 
     def make_checkout(self, root: Path) -> Path:
         root.mkdir(parents=True)

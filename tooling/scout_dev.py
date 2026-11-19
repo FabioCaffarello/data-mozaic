@@ -29,6 +29,7 @@ SINGLE_SOURCE = ("e2e-catalog-single", "single-resource-v1")
 LOCAL_PRINCIPAL = "scout-local-acceptance"
 FIXTURE_ORIGIN = "https://catalog.fixture.test"
 FIXTURE_PREFIX = "/api"
+FIXTURE_PROXY_PORT = 3128
 
 
 def _run(
@@ -270,6 +271,64 @@ def _load_runtime(root: Path) -> tuple[Path, dict]:
     return runtime, value
 
 
+def _migrate_managed_proxy_url(
+    root: Path, runtime: Path, old_port: int, new_port: int
+) -> None:
+    if old_port == new_port:
+        return
+    local = root / ".local"
+    env_path = local / "scout-mcp.env"
+    if not env_path.exists() and not env_path.is_symlink():
+        return
+    _secure_file(env_path, required=True)
+    values = _read_env(env_path)
+    expected = {
+        "SCOUT_LOCAL_PRINCIPAL": LOCAL_PRINCIPAL,
+        "SCOUT_HOST_POLICY_FILE": str(local / "authoring-policy.json"),
+        "SCOUT_EVIDENCE_ROOT": str(runtime / "evidence"),
+        "SCOUT_ARTIFACT_ROOT": str(runtime / "artifacts"),
+        "SCOUT_EGRESS_PROXY": f"http://127.0.0.1:{old_port}",
+        "SSL_CERT_FILE": str(runtime / "certs/ca.crt"),
+    }
+    if any(values.get(key) != value for key, value in expected.items()):
+        raise RuntimeError(
+            "existing MCP configuration is not the generated fixture template; "
+            "review its proxy URL manually"
+        )
+    rewritten = []
+    seen = 0
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("SCOUT_EGRESS_PROXY="):
+            rewritten.append(
+                f"SCOUT_EGRESS_PROXY={_quote_env(f'http://127.0.0.1:{new_port}')}"
+            )
+            seen += 1
+        else:
+            rewritten.append(line)
+    if seen != 1:
+        raise RuntimeError("generated MCP configuration has an ambiguous proxy entry")
+    descriptor, temporary = tempfile.mkstemp(prefix=".scout-mcp-", dir=local)
+    try:
+        os.fchmod(descriptor, 0o600)
+        _write_all(descriptor, ("\n".join(rewritten) + "\n").encode())
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(temporary, env_path)
+        directory_fd = os.open(local, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
 def _write_runtime(path: Path, value: dict) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=".runtime-", dir=path)
     try:
@@ -370,6 +429,10 @@ def _setup(args) -> int:
         runtime_data = json.loads(runtime_path.read_text(encoding="utf-8"))
         if runtime_data.get("worktree") != str(root.resolve()):
             raise RuntimeError("runtime manifest does not match this worktree")
+        _migrate_managed_proxy_url(
+            root, runtime, runtime_data["proxy_port"], FIXTURE_PROXY_PORT
+        )
+        runtime_data["proxy_port"] = FIXTURE_PROXY_PORT
     else:
         e2e = _import_e2e_helpers(root)
         cert_dir = runtime / "certs"
@@ -380,7 +443,7 @@ def _setup(args) -> int:
         squid_config = runtime / "squid.conf"
         e2e._render_squid_config(squid_config)
         squid_config.chmod(0o600)
-        proxy_port = e2e._free_loopback_port()
+        proxy_port = e2e._test_proxy_port()
         dns_port = e2e._free_loopback_port()
         project = (
             "scout-dev-" + hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:10]
@@ -653,6 +716,11 @@ def _fixture_stack_check(root: Path) -> tuple[bool, str]:
         runtime, data = _load_runtime(root)
         if not data.get("complete"):
             return False, "fixture setup was interrupted"
+        if data.get("proxy_port") != FIXTURE_PROXY_PORT:
+            return (
+                False,
+                "Scout's governed HTTP transport requires loopback Squid on port 3128",
+            )
         compose_env = os.environ.copy()
         compose_env.update(_read_env(root / ".env"))
         compose_env.update(
