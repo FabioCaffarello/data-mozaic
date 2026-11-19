@@ -183,7 +183,7 @@ make scout-sandbox-check
 make db-down
 ```
 
-O job remoto ainda não foi executado nesta seção: precisa rodar após publicar o novo HEAD. Consulta read-only à API de branch protection retornou `404 Branch not protected`; a API de rulesets retornou lista vazia. A configuração necessária é manual no mantenedor: criar proteção/ruleset de `main`, exigir os checks atuais antes do merge, incluindo **Integration Security Gate** (job ID `integration-security`) e **Quality Gate**, e impedir merge de Draft. Não foi feita alteração automática de branch protection. Sem essa configuração, os checks passam mas não são enforcement obrigatório do repositório.
+No HEAD publicado `18c0427c1691165c1ad243417b9c5d5975394c8c`, o GitHub Actions run [44571550930](https://github.com/FabioCaffarello/data-mozaic/actions/runs/44571550930) passou em `Quality Gate` e `Integration Security Gate`; o segundo registrou 21 testes PostgreSQL, 2 HTTP/MCP, 2 DNS adversariais, zero skips nos gates dedicados e concluiu cleanup. A execução em runner Ubuntu 24.04 emite aviso de depreciação Node.js 20 para as actions fixadas; não falhou, mas requer atualização futura. Consulta read-only à API de branch protection retornou `404 Branch not protected`; a API de rulesets retornou lista vazia. A configuração necessária é manual no mantenedor: criar proteção/ruleset de `main`, exigir os checks atuais antes do merge, incluindo **Integration Security Gate** (job ID `integration-security`) e **Quality Gate**, e impedir merge de Draft. Não foi feita alteração automática de branch protection. Sem essa configuração, os checks passam mas não são enforcement obrigatório do repositório.
 
 ### PR8-REV-002 — falha DNS seguida por IP proibido
 
@@ -191,11 +191,11 @@ Causa-raiz do finding era falta de evidência por operação: o teste anterior v
 
 | Ordem | DNS ID | Consulta/resposta | Evidência |
 |---|---:|---|---|
-| 1 | 12812 | `A dns-recovery.fixture.test`, `SERVFAIL` (rcode 2), sem endereço | Evento DNS ordinal 1 |
-| 2 | 45036 | `AAAA dns-recovery.fixture.test`, `NOERROR`, sem endereço | Evento DNS ordinal 2 |
-| 3 | 12812 | nova `A`, `NOERROR`, endereço `172.30.91.11` (sink privado proibido) | Evento DNS ordinal 3; Squid repetiu o ID DNS A e o fixture também registra ordinais |
+| 1 | 61232 | `A dns-recovery.fixture.test`, `SERVFAIL` (rcode 2), sem endereço | Evento DNS ordinal 1 |
+| 2 | 49837 | `AAAA dns-recovery.fixture.test`, `NOERROR`, sem endereço | Evento DNS ordinal 2 |
+| 3 | 61232 | nova `A`, `NOERROR`, endereço `172.30.91.11` (sink privado proibido) | Evento DNS ordinal 3; Squid repetiu o ID DNS A e o fixture também registra ordinais |
 
-Na resposta MCP da operação o resultado foi `policy_denied`. O access log Squid da mesma janela/host identificou `master_xaction=74`, peer `-`, `HIER_NONE`, `TCP_DENIED/403 CONNECT`; não houve peer selecionado nem accept no sink. A decisão não depende somente do 403: o fixture de sink recebeu zero conexões e o log de conexão não mostra `172.30.91.11`. A fixture registra os IDs e as respostas; o log Squid agora inclui epoch, `master_xaction`, hostname, peer efetivo, hierarquia, status e método.
+Na resposta MCP da operação o resultado foi `policy_denied`. O access log Squid da mesma janela/host identificou `master_xaction=74`, peer `-`, `HIER_NONE`, `TCP_DENIED/403 CONNECT`; não houve peer selecionado nem accept no sink. A decisão não depende somente do 403: o fixture de sink recebeu zero conexões e o log de conexão não mostra `172.30.91.11`. A fixture registra os IDs e as respostas; o log Squid agora inclui epoch, `master_xaction`, hostname, peer efetivo, hierarquia, status e método. Esses IDs correspondem ao run remoto 44571550930.
 
 Controle positivo após a recuperação: uma nova operação MCP, com source/revision e grant próprios para `catalog.fixture.test`, completou HTTPS 200. Squid registrou `master_xaction=76`, peer `172.30.91.10`, `HIER_DIRECT`, `TCP_TUNNEL/200 CONNECT`; fixture recebeu um GET `/docs/page`. O cache log do container durante a mesma execução indicou **Squid 7.7**. A imagem do serviço permanece `ubuntu/squid:7.2-26.04_edge@sha256:6a252a42875d08bbb9dae4ab70a041afd4f8b530eaa0226102d1816309eef8b5`; o runner exige versão runtime 7.7 para evitar que atualização de tag silenciosamente altere a semântica validada.
 
