@@ -1,6 +1,9 @@
 import hashlib
+import json
+import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from scout.domain import AuthorizationError, SourceRef
 from scout.tools.discovery import (
@@ -55,6 +58,10 @@ class URLPolicyTests(unittest.TestCase):
             "https://169.254.169.254/latest/meta-data/",
             "https://[::1]/",
             "https://[fc00::1]/",
+            "https://[::ffff:127.0.0.1]/",
+            "https://127.1/",
+            "https://2130706433/",
+            "https://0x7f000001/",
             "https://example.org/?access_token=x",
             "https://example.org/%zz",
         ):
@@ -100,6 +107,41 @@ class HTTPTransportConfigurationTests(unittest.TestCase):
 
 
 class LocalAuthorizationTests(unittest.TestCase):
+    def test_file_policy_revision_is_a_safe_content_fingerprint(self):
+        document = {
+            "version": 1,
+            "sources": [
+                {
+                    "source_id": SOURCE.source_id,
+                    "revision": SOURCE.revision,
+                    "grants": [
+                        {"origin": "https://example.org", "path_prefixes": ["/"]}
+                    ],
+                    "limits": limits(4),
+                }
+            ],
+            "approvals": [
+                {
+                    "principal": "analyst",
+                    "source_id": SOURCE.source_id,
+                    "revision": SOURCE.revision,
+                    "grants": [
+                        {"origin": "https://example.org", "path_prefixes": ["/docs"]}
+                    ],
+                    "expires_at": (NOW + timedelta(minutes=5)).isoformat(),
+                    "limits": limits(2),
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "policy.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            expected = hashlib.sha256(path.read_bytes()).hexdigest()
+            scope = LocalAuthorizationStore.from_file(path).authorize(
+                "analyst", SOURCE, NOW
+            )
+        self.assertEqual(scope.policy_revision_sha256, expected)
+
     def test_intersection_preserves_origin_path_pairs(self):
         registered = RegisteredSource(
             SOURCE,
@@ -315,6 +357,54 @@ class HTTPDiscoveryToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.evidence.rows), 1)
         self.assertEqual(self.evidence.rows[0][1], 302)
         self.assertIn("http.target.denied", [event[0] for event in self.trace.events])
+
+    async def test_http_downgrade_and_cross_origin_redirects_are_denied(self):
+        for location in (
+            "http://example.org/foo/insecure",
+            "https://other.example/foo/escape",
+        ):
+            with self.subTest(location=location):
+                transport = ToolFakes.Transport(
+                    [HTTPResponse(302, {"location": location}, b"")]
+                )
+                tool = HTTPDiscoveryTool(
+                    ToolFakes.Context(),
+                    self.auth,
+                    ToolFakes.Budget(),
+                    ToolFakes.Evidence(),
+                    ToolFakes.Trace(),
+                    ToolFakes.Clock(),
+                    transport,
+                )
+                with self.assertRaises(
+                    TargetRejected
+                    if location.startswith("http:")
+                    else AuthorizationError
+                ):
+                    await tool.fetch(
+                        "owned-source", "revision-1", "https://example.org/foo"
+                    )
+                self.assertEqual(transport.urls, ["https://example.org/foo"])
+
+    async def test_redirect_chain_stops_at_the_session_request_budget(self):
+        transport = ToolFakes.Transport(
+            [
+                HTTPResponse(302, {"location": f"/foo/{hop + 1}"}, b"")
+                for hop in range(4)
+            ]
+        )
+        tool = HTTPDiscoveryTool(
+            ToolFakes.Context(),
+            self.auth,
+            ToolFakes.Budget(),
+            ToolFakes.Evidence(),
+            ToolFakes.Trace(),
+            ToolFakes.Clock(),
+            transport,
+        )
+        with self.assertRaises(AuthorizationError):
+            await tool.fetch("owned-source", "revision-1", "https://example.org/foo")
+        self.assertEqual(len(transport.urls), 4)
 
     async def test_redirect_to_private_literal_is_rejected_before_second_request(self):
         transport = ToolFakes.Transport(

@@ -12,11 +12,33 @@ from pathlib import Path
 from collector_engineering.__main__ import main as collector_cli
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from scout.tool_host.server import command_identity
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class ScoutMCPStdioTests(unittest.TestCase):
+    def test_mcp_command_identity_is_stable_across_transport_retries(self):
+        args = {
+            "session_id": "session-1",
+            "expected_version": 0,
+            "url": "https://catalog.test/docs/page",
+        }
+        first = command_identity("analyst", "scout_fetch", args)
+        retry = command_identity("analyst", "scout_fetch", args.copy())
+        self.assertEqual(first, retry)
+
+        next_operation = command_identity(
+            "analyst", "scout_fetch", args | {"expected_version": 1}
+        )
+        self.assertNotEqual(first[1], next_operation[1])
+
+        conflicting_payload = command_identity(
+            "analyst", "scout_fetch", args | {"url": "https://catalog.test/docs/other"}
+        )
+        self.assertEqual(first[1], conflicting_payload[1])
+        self.assertNotEqual(first[2], conflicting_payload[2])
+
     def test_stdio_fixture_evidence_transcript_and_bc15_cli(self):
         async def exercise(custody_root: Path, artifact_root: Path):
             env = os.environ.copy()

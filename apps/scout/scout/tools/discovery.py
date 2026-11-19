@@ -71,6 +71,10 @@ class DiscoveryResult:
     request_count: int
     final_url: str
     completed_at: datetime
+    extraction_version: str
+
+
+TEXT_EXTRACTION_VERSION = "scout-text-v1"
 
 
 class _PageParser(HTMLParser):
@@ -187,7 +191,12 @@ class HTTPDiscoveryTool:
             self.trace.append(
                 caller.session_id,
                 "http.request.authorized",
-                _trace_target(current) | {"method": "GET", "hop": hop},
+                _trace_target(current)
+                | {
+                    "method": "GET",
+                    "hop": hop,
+                    "policy_revision_sha256": scope.policy_revision_sha256,
+                },
                 now,
             )
             try:
@@ -322,11 +331,10 @@ class HTTPDiscoveryTool:
             )
         )
         current_scope = scope.intersect(self._scope_for(session_id, source))
-        text, title, links = _extract_content(
+        raw_text, title, links = _extract_content(
             response.body, content_type, target, current_scope, now
         )
-        truncated = len(text) > 16_000
-        text = _redact_page_text(text[:16_000])
+        text, truncated = _bounded_redacted_text(raw_text)
         if title:
             title = _redact_page_text(title)[:512]
         self.trace.append(
@@ -354,7 +362,14 @@ class HTTPDiscoveryTool:
             request_count,
             target.url,
             now,
+            TEXT_EXTRACTION_VERSION,
         )
+
+    @staticmethod
+    def reconstruct_text(
+        body: bytes, content_type: str, extraction_version: str
+    ) -> tuple[str, bool]:
+        return reconstruct_text_projection(body, content_type, extraction_version)
 
     def _store_evidence(self, session_id, source, target, response, content_type):
         evidence = self.evidence.store(
@@ -402,6 +417,29 @@ def _extract_content(body: bytes, content_type: str, target: NormalizedURL, scop
         if candidate.url not in links:
             links.append(candidate.url)
     return text, title, tuple(links[:100])
+
+
+def reconstruct_text_projection(
+    body: bytes, content_type: str, extraction_version: str
+) -> tuple[str, bool]:
+    """Rebuild the stable, redacted text response from BC06 bytes."""
+    if extraction_version != TEXT_EXTRACTION_VERSION:
+        raise DiscoveryStructureError("unsupported HTTP text extraction version")
+    decoded = body.decode("utf-8", errors="replace")
+    if content_type == "text/plain":
+        text = " ".join(decoded.split())
+    elif content_type == "text/html":
+        parser = _PageParser()
+        parser.feed(decoded)
+        text = " ".join(parser.text_parts)
+    else:
+        raise DiscoveryStructureError("unsupported content type for text replay")
+    return _bounded_redacted_text(text)
+
+
+def _bounded_redacted_text(text: str) -> tuple[str, bool]:
+    truncated = len(text) > 16_000
+    return _redact_page_text(text[:16_000]), truncated
 
 
 def _url_digest(target: NormalizedURL) -> str:

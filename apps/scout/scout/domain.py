@@ -21,6 +21,10 @@ class IntegrityError(ScoutError):
     pass
 
 
+class EvidenceUnavailableError(ScoutError):
+    """A previously sealed artifact cannot be safely replayed."""
+
+
 class ConflictError(ScoutError):
     pass
 
@@ -152,6 +156,7 @@ class SourceObservation:
     content_type: str | None = None
     title: str | None = None
     links: tuple[str, ...] = ()
+    extraction_version: str | None = None
 
 
 @dataclass(frozen=True)

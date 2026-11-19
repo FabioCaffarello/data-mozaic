@@ -19,6 +19,26 @@ from ..edge import validate_transcript
 _LOG = logging.getLogger(__name__)
 
 
+def command_identity(
+    principal: str, tool_name: str, arguments: dict
+) -> tuple[str, str, str]:
+    """Use stable tool arguments for retries; JSON-RPC request ids are transport-only."""
+    canonical = json.dumps(
+        arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    fingerprint = hashlib.sha256(canonical).hexdigest()
+    slot = {"principal": principal, "tool": tool_name}
+    if tool_name == "scout_start":
+        slot["arguments"] = arguments
+    else:
+        slot["session_id"] = arguments["session_id"]
+        slot["expected_version"] = arguments["expected_version"]
+    slot_digest = hashlib.sha256(
+        json.dumps(slot, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return "cmd-" + slot_digest, f"mcp:{tool_name}:{slot_digest}", fingerprint
+
+
 def create_server(application: ScoutApplication, principal: str) -> Server:
     """Create a tool server bound to launcher-owned local identity and adapters."""
     if not principal:
@@ -28,25 +48,13 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
     def now() -> datetime:
         return datetime.now(UTC)
 
-    def command_identity(tool_name: str, arguments: dict) -> tuple[str, str, str]:
-        canonical = json.dumps(
-            arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-        fingerprint = hashlib.sha256(canonical).hexdigest()
-        slot = {"principal": principal, "tool": tool_name}
-        if tool_name == "scout_start":
-            slot["arguments"] = arguments
-        else:
-            slot["session_id"] = arguments["session_id"]
-            slot["expected_version"] = arguments["expected_version"]
-        slot_digest = hashlib.sha256(
-            json.dumps(slot, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-        key = f"mcp:{tool_name}:{slot_digest}"
-        return "cmd-" + slot_digest, key, fingerprint
-
     def failure(error: Exception) -> dict:
-        from ..domain import AuthorizationError, ConflictError, IntegrityError
+        from ..domain import (
+            AuthorizationError,
+            ConflictError,
+            EvidenceUnavailableError,
+            IntegrityError,
+        )
         from ..tools.discovery import (
             DiscoveryCustodyError,
             DiscoveryNetworkError,
@@ -66,6 +74,8 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
             code = "structural_response_error"
         elif isinstance(error, DiscoveryCustodyError):
             code = "custody_failure"
+        elif isinstance(error, EvidenceUnavailableError):
+            code = "evidence_unavailable"
         elif isinstance(error, ConflictError):
             code = "version_or_idempotency_conflict"
         elif isinstance(error, IntegrityError):
@@ -283,7 +293,7 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
                     "approval_expires_at": decision.expires_at.isoformat(),
                 }
             if name == "scout_start":
-                command_id, _, _ = command_identity(name, arguments)
+                command_id, _, _ = command_identity(principal, name, arguments)
                 session = application.start_incremental(
                     source=SourceRef(arguments["source_id"], arguments["revision"]),
                     objective=arguments["objective"],
@@ -298,7 +308,9 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
                     "state": session.state.value,
                 }
             if name == "scout_record_finding":
-                command_id, key, fingerprint = command_identity(name, arguments)
+                command_id, key, fingerprint = command_identity(
+                    principal, name, arguments
+                )
                 session = application.record_finding_incremental(
                     session_id=arguments["session_id"],
                     principal=principal,
@@ -319,7 +331,9 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
                     "finding_ids": [item.finding_id for item in session.findings],
                 }
             if name == "scout_explore_fixture":
-                command_id, key, fingerprint = command_identity(name, arguments)
+                command_id, key, fingerprint = command_identity(
+                    principal, name, arguments
+                )
                 session = application.explore_fixture_incremental(
                     session_id=arguments["session_id"],
                     principal=principal,
@@ -343,7 +357,9 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
                     "body_included": False,
                 }
             if name == "scout_fetch":
-                command_id, key, fingerprint = command_identity(name, arguments)
+                command_id, key, fingerprint = command_identity(
+                    principal, name, arguments
+                )
                 outcome = await application.explore_http_incremental(
                     session_id=arguments["session_id"],
                     principal=principal,
@@ -378,7 +394,9 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
                     "links": list(observation.links),
                 }
             if name == "scout_propose":
-                command_id, key, fingerprint = command_identity(name, arguments)
+                command_id, key, fingerprint = command_identity(
+                    principal, name, arguments
+                )
                 session = application.submit_proposal_incremental(
                     session_id=arguments["session_id"],
                     principal=principal,

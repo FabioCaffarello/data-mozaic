@@ -415,6 +415,7 @@ class PostgresScoutRepositoryTests(unittest.TestCase):
             links=(),
             text="Persisted original bytes",
             truncated=False,
+            extraction_version="scout-text-v1",
         )
 
         class Discovery:
@@ -423,6 +424,11 @@ class PostgresScoutRepositoryTests(unittest.TestCase):
 
             async def fetch(self, source_id, revision, url):
                 return result
+
+            def reconstruct_text(self, content, content_type, version):
+                from scout.tools.discovery import reconstruct_text_projection
+
+                return reconstruct_text_projection(content, content_type, version)
 
         with tempfile.TemporaryDirectory() as temporary:
             custody = LocalFileEvidenceCustody(Path(temporary).resolve())
@@ -458,14 +464,18 @@ class PostgresScoutRepositoryTests(unittest.TestCase):
             )
             artifact = outcome.session.manifests[0].artifacts[0]
             restarted_repo = PostgresScoutSessionRepository(self.test_dsn)
+            test_case = self
+
+            class ReplayDiscovery(Discovery):
+                async def fetch(self, source_id, revision, url):
+                    test_case.fail("completed HTTP request was fetched again")
+
             restarted = ScoutApplication(
                 sources,
                 policy,
                 restarted_repo,
                 LocalFileEvidenceCustody(Path(temporary).resolve()),
-                http_discovery_factory=lambda *_: self.fail(
-                    "completed HTTP request was fetched again"
-                ),
+                http_discovery_factory=lambda *_: ReplayDiscovery(),
             )
             replay = asyncio.run(
                 restarted.explore_http_incremental(
@@ -481,6 +491,11 @@ class PostgresScoutRepositoryTests(unittest.TestCase):
             )
             self.assertEqual(replay.session.version, 1)
             self.assertTrue(restarted.custody.verify(artifact))
+            self.assertEqual(outcome.text, "Persisted original bytes")
+            self.assertEqual(replay.text, outcome.text)
+            self.assertEqual(replay.truncated, outcome.truncated)
+            self.assertEqual(replay.session.observations, outcome.session.observations)
+            self.assertEqual(replay.session.manifests, outcome.session.manifests)
 
     def test_child_process_crash_before_and_after_commit(self):
         with connect(self.test_dsn) as conn:

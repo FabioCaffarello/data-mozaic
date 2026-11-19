@@ -377,6 +377,11 @@ class FakeEvidenceCustody:
             and hashlib.sha256(item[1]).hexdigest() == artifact.sha256
         )
 
+    def read(self, artifact):
+        if not self.verify(artifact):
+            return None
+        return bytes(self.objects[artifact.artifact_id][1])
+
     def lookup(self, artifact_id):
         item = self.objects.get(artifact_id)
         return item[0] if item else None

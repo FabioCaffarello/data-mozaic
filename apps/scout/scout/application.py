@@ -13,6 +13,7 @@ from .domain import (
     ConflictError,
     DiscoveryFinding,
     EvidenceManifest,
+    EvidenceUnavailableError,
     IntegrityError,
     PlaybookProposal,
     ScoutObjective,
@@ -391,18 +392,117 @@ class ScoutApplication:
         header = self.repository.find_command_header(
             principal, idempotency_key, fingerprint
         )
+        discovery = self.http_discovery_factory(principal, session_id, command_id)
         if header is not None and header["status"] == "completed":
+            if header["source"] != session.source:
+                raise IntegrityError("HTTP replay source revision mismatch")
             replay = self.repository.get_command_result(
                 principal, idempotency_key, fingerprint
             )
             if replay is None:
                 raise IntegrityError("completed HTTP command has no result snapshot")
-            return HTTPExplorationOutcome(replay, "", True)
+            observation_id = (
+                "observation-"
+                + hashlib.sha256(
+                    f"{session_id}\0{header['command_id']}".encode()
+                ).hexdigest()
+            )
+            observation = next(
+                (
+                    item
+                    for item in replay.observations
+                    if item.observation_id == observation_id
+                ),
+                None,
+            )
+            try:
+                replay_target = (
+                    discovery.normalize_target(observation.url)
+                    if observation is not None and observation.url is not None
+                    else None
+                )
+            except Exception as error:
+                raise EvidenceUnavailableError(
+                    "authorized HTTP replay target is invalid"
+                ) from error
+            if (
+                replay.session_id != session_id
+                or replay.principal != principal
+                or replay.source != session.source
+                or observation is None
+                or observation.source != session.source
+                or observation.session_id != session_id
+                or observation.url is None
+                or observation.content_type not in {"text/html", "text/plain"}
+                or not observation.extraction_version
+                or replay_target is None
+                or not session.authorization.scope.allows(
+                    replay_target.origin, replay_target.path
+                )
+            ):
+                raise EvidenceUnavailableError(
+                    "authorized HTTP replay metadata is unavailable"
+                )
+            manifests = [
+                item
+                for item in replay.manifests
+                if any(
+                    artifact.artifact_id == observation.artifact_id
+                    for artifact in item.artifacts
+                )
+            ]
+            if len(manifests) != 1 or len(manifests[0].artifacts) != 1:
+                raise EvidenceUnavailableError(
+                    "authorized HTTP replay manifest is unavailable"
+                )
+            artifact = manifests[0].artifacts[0]
+            if (
+                manifests[0].session_id != session_id
+                or manifests[0].source != session.source
+                or artifact.artifact_id != observation.artifact_id
+                or artifact.session_id != session_id
+                or artifact.source != session.source
+                or artifact.kind != "http_response"
+                or artifact.custody_status != CUSTODY_STATUS_AVAILABLE
+                or artifact.size_bytes is None
+                or artifact.size_bytes > min(decision.max_response_bytes, 2_000_000)
+            ):
+                raise EvidenceUnavailableError(
+                    "authorized HTTP replay artifact is unavailable"
+                )
+            try:
+                body = self.custody.read(artifact)
+            except Exception as error:
+                raise EvidenceUnavailableError(
+                    "authorized HTTP replay custody read failed"
+                ) from error
+            if (
+                body is None
+                or not isinstance(body, bytes)
+                or len(body) != artifact.size_bytes
+                or hashlib.sha256(body).hexdigest() != artifact.sha256
+                or len(body) > min(decision.max_response_bytes, 2_000_000)
+            ):
+                raise EvidenceUnavailableError(
+                    "authorized HTTP replay bytes are unavailable or invalid"
+                )
+            try:
+                text, truncated = discovery.reconstruct_text(
+                    body, observation.content_type, observation.extraction_version
+                )
+            except Exception as error:
+                raise EvidenceUnavailableError(
+                    "authorized HTTP replay projection is unavailable"
+                ) from error
+            if not isinstance(text, str) or len(text.encode("utf-8")) > 64_000:
+                raise EvidenceUnavailableError(
+                    "authorized HTTP replay projection exceeds its limit"
+                )
+            return HTTPExplorationOutcome(replay, text, truncated)
         if session.version != expected_version:
             raise ConflictError("optimistic concurrency conflict")
         if session.remaining_requests < 1 or session.remaining_seconds < 1:
             raise IntegrityError("authorized session budget is exhausted")
-        discovery = self.http_discovery_factory(principal, session_id, command_id)
         normalized = discovery.normalize_target(url)
         if not session.authorization.scope.allows(normalized.origin, normalized.path):
             raise AuthorizationError("target is outside the approved source scope")
@@ -439,6 +539,8 @@ class ScoutApplication:
             or result.status > 599
             or result.content_type not in {"text/html", "text/plain"}
             or not isinstance(result.body, bytes)
+            or not isinstance(result.extraction_version, str)
+            or not result.extraction_version
             or not isinstance(result.completed_at, datetime)
             or result.completed_at.tzinfo is None
             or len(result.body) > min(decision.max_response_bytes, 2_000_000)
@@ -536,6 +638,7 @@ class ScoutApplication:
             result.content_type,
             result.title,
             tuple(result.links),
+            result.extraction_version,
         )
         session.observe(
             observation,

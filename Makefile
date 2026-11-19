@@ -1,4 +1,4 @@
-.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check
+.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check
 
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 
@@ -7,7 +7,7 @@ define require_env
 endef
 
 help:
-	@printf '%s\n' 'sync          Install locked development dependencies' 'check         Run repository checks' 'db-up         Start local PostgreSQL and wait for readiness' 'db-migrate    Apply checksummed pending Scout migrations' 'test-integration Run PostgreSQL recovery tests in an isolated database' 'scout-relay   Run independent Scout outbox worker' 'scout-sandbox-check Verify optional network egress isolation with Docker' 'db-down       Stop PostgreSQL without deleting its volume' 'ci            Run repository checks'
+	@printf '%s\n' 'sync          Install locked development dependencies' 'check         Run repository checks' 'db-up         Start local PostgreSQL and wait for readiness' 'db-migrate    Apply checksummed pending Scout migrations' 'test-integration Run PostgreSQL recovery tests in an isolated database' 'scout-relay   Run independent Scout outbox worker' 'scout-sandbox-check Verify optional network egress isolation with Docker' 'scout-http-e2e Run the real MCP/HTTPS fixture path in isolated Compose' 'db-down       Stop PostgreSQL without deleting its volume' 'ci            Run repository checks'
 
 sync:
 	uv sync --all-packages --locked
@@ -82,3 +82,7 @@ scout-relay-once:
 
 scout-sandbox-check:
 	uv run --locked python tooling/check_scout_sandbox.py
+
+scout-http-e2e scout-dns-adversarial-check:
+	$(require_env)
+	@set -a; . ./.env; set +a; uv run --locked python tooling/run_scout_http_e2e.py

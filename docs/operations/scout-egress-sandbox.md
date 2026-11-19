@@ -20,4 +20,12 @@ Squid permite apenas CONNECT na porta 443, exige hostname listado e bloqueia ran
 
 ## Limites atuais
 
-Esta PR entrega a topologia isolada e sua prova, mas ainda não instala um MCP/tool host. O container probe não é o worker de produção. Nenhum agent foi executado nesta sandbox; uma shell/rede separada do agente não é restringida por este Compose. Não use isso como evidência de workflow Codex seguro nem habilite navegação real até conectar o host a esta rede e provar essa integração.
+O alvo `scout-sandbox-check` continua sendo somente um probe de rede, não o processo MCP/tool host de produção. O perfil `scout-http-e2e` separado executa MCP Client e Tool Host reais como processos do host, passando o fetch pelo Squid. Nenhum agente remoto foi executado e uma shell/rede separada do Codex não é restringida pelo Compose. Não use esses testes como prova de isolamento global do agente.
+
+## E2E de HTTP autorizado e DNS controlado
+
+`make scout-http-e2e` também sobe um perfil Compose efêmero com PostgreSQL já ativo, Squid, servidor DNS programável, fixture HTTPS com CA local de curta duração e sink de conexão proibida. `make scout-dns-adversarial-check` executa o mesmo gate, incluindo private/mixed A, mixed AAAA, CNAME, rebinding, retry e SERVFAIL. O DNS configurado é o próprio nameserver usado pelo container Squid, que é o processo que resolve e abre o socket. O access log seguro do Squid registra host, peer IP efetivo, status e método; o runner exige peer `172.30.91.10` no CONNECT positivo e zero accepts no sink `172.30.91.11`.
+
+O perfil E2E remove da lista deny somente o IP estático da fixture HTTPS. Essa exceção fica no arquivo temporário gerado para aquele Compose e não altera a ACL de produção. A rede de teste usa bridge para publicar o proxy apenas no loopback do host; por isso não demonstra isolamento do processo MCP/Codex nem instalação de firewall. A segurança do caminho testado depende do transporte fixar o proxy e do Squid manter a ACL `dst`/cache conforme a imagem digest-pinned. Se o proxy ficar indisponível, o transporte falha sem acesso direto. Não desative a allowlist nem use `--network host` para tornar o teste verde.
+
+Reprodução: `make db-up`, `make db-migrate`, `make scout-http-e2e`. O runner encerra os containers do perfil com `docker compose down` e preserva volumes PostgreSQL. O teste usa apenas IPs de rede de fixture; não envia requisições a destinos públicos, serviços privados reais ou metadata.
