@@ -286,8 +286,9 @@ class ProtectedReplayCompositionTests(unittest.TestCase):
                     self.assertNotIn('data-id="r-102"', all_results)
             finally:
                 await http_client.aclose()
-                process.terminate()
-                await process.wait()
+                if process.returncode is None:
+                    process.terminate()
+                    await process.wait()
 
         with tempfile.TemporaryDirectory() as temporary:
             registry_path = Path(temporary) / "bc15-runs.sqlite3"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -56,7 +57,11 @@ def main() -> None:
         "local-analyst",
         protected_replay_executor=DockerProtectedReplayExecutor(
             os.environ["SCOUT_TEST_WORKER_IMAGE_DIGEST"],
+            docker_executable=os.environ.get(
+                "SCOUT_TEST_DOCKER_EXECUTABLE", shutil.which("docker") or ""
+            ),
             registry_path=Path(os.environ["SCOUT_TEST_REGISTRY_PATH"]),
+            allow_unprivileged_test_cli=True,
         ),
         acceptance_expectations={source_key: oracle},
     )

@@ -386,6 +386,7 @@ def main() -> int:
                 "SCOUT_HTTP_E2E_SQUID_CONFIG": str(squid_config),
                 "SCOUT_HTTP_E2E_DATABASE_URL": env["SCOUT_DATABASE_URL"],
                 "SCOUT_TEST_WORKER_IMAGE_DIGEST": worker_image,
+                "SCOUT_TEST_REGISTRY_PATH": str(Path(temporary) / "bc15-runs.sqlite3"),
             }
         )
         compose = [

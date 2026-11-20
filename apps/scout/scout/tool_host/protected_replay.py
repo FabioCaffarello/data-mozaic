@@ -13,6 +13,7 @@ import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from stat import S_ISDIR, S_ISREG, S_ISVTX
 
 from .protected_run_registry import ProtectedRunRegistry
 
@@ -35,9 +36,11 @@ class DockerProtectedReplayExecutor:
     def __init__(
         self,
         worker_image_digest: str,
+        docker_executable: str,
         registry_path: Path | None = None,
         docker_context: str = "default",
         docker_endpoint: str = "unix:///var/run/docker.sock",
+        allow_unprivileged_test_cli: bool = False,
     ):
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", worker_image_digest):
             raise ProtectedReplayError("protected BC15 image digest is invalid")
@@ -47,7 +50,9 @@ class DockerProtectedReplayExecutor:
             raise ProtectedReplayError(
                 "protected Docker endpoint must be a local socket"
             )
-        self._docker = self._find_docker()
+        self._docker = self._validate_docker_executable(
+            docker_executable, allow_unprivileged_test_cli=allow_unprivileged_test_cli
+        )
         self._context = docker_context
         self._endpoint = docker_endpoint
         self._image = worker_image_digest
@@ -68,13 +73,65 @@ class DockerProtectedReplayExecutor:
         self._cleanup_thread.start()
 
     @staticmethod
-    def _find_docker() -> str:
-        import shutil
-
-        docker = shutil.which("docker")
-        if docker is None:
-            raise ProtectedReplayError("protected BC15 executor is unavailable")
-        return docker
+    def _validate_docker_executable(
+        configured_path: str, *, allow_unprivileged_test_cli: bool = False
+    ) -> str:
+        path = Path(configured_path)
+        if not path.is_absolute():
+            raise ProtectedReplayError("Docker executable must be an absolute path")
+        try:
+            resolved = path.resolve(strict=True)
+            metadata = resolved.stat()
+        except OSError as error:
+            raise ProtectedReplayError(
+                "configured Docker executable is unavailable"
+            ) from error
+        owner_is_trusted = metadata.st_uid == 0 or (
+            allow_unprivileged_test_cli and metadata.st_uid == os.geteuid()
+        )
+        if (
+            not S_ISREG(metadata.st_mode)
+            or not owner_is_trusted
+            or metadata.st_mode & 0o022
+            or metadata.st_mode & 0o6000
+            or not os.access(resolved, os.X_OK)
+        ):
+            raise ProtectedReplayError(
+                "Docker executable must be trusted-owned, executable, and non-writable"
+            )
+        for parent in resolved.parents:
+            try:
+                metadata = parent.stat()
+            except OSError as error:
+                raise ProtectedReplayError(
+                    "Docker executable parent directory is unavailable"
+                ) from error
+            parent_is_trusted = metadata.st_uid == 0 or (
+                allow_unprivileged_test_cli and metadata.st_uid == os.geteuid()
+            )
+            private_temp_parent = (
+                allow_unprivileged_test_cli
+                and metadata.st_uid == 0
+                and metadata.st_mode & S_ISVTX
+            )
+            developer_owned_parent = (
+                allow_unprivileged_test_cli
+                and metadata.st_uid == os.geteuid()
+                and not metadata.st_mode & 0o002
+            )
+            if (
+                not S_ISDIR(metadata.st_mode)
+                or not parent_is_trusted
+                or (
+                    metadata.st_mode & 0o022
+                    and not private_temp_parent
+                    and not developer_owned_parent
+                )
+            ):
+                raise ProtectedReplayError(
+                    "Docker executable path contains an untrusted directory"
+                )
+        return str(resolved)
 
     def _run(
         self, arguments: list[str], *, input_bytes: bytes | None = None, timeout=30
@@ -88,9 +145,12 @@ class DockerProtectedReplayExecutor:
                 timeout=timeout,
                 check=False,
                 env={
-                    key: os.environ[key]
-                    for key in ("PATH", "HOME", "DOCKER_CONFIG")
-                    if key in os.environ
+                    "PATH": "/usr/bin:/bin",
+                    **{
+                        key: os.environ[key]
+                        for key in ("HOME", "DOCKER_CONFIG")
+                        if key in os.environ
+                    },
                 },
             )
         except (OSError, subprocess.TimeoutExpired) as error:

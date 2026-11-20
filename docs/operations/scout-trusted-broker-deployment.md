@@ -8,35 +8,52 @@ The existing low-level MCP `Server` and tool handlers are reused through the SDK
 
 The repository locks MCP Python SDK 1.30.0. Its HTTP session manager negotiates the protocol version during `initialize`; the SDK advertises `2024-11-05`, `2025-03-26`, `2025-06-18`, and `2025-11-25`. The deterministic client test negotiates through this SDK. The Codex CLI 0.170.0 handshake against an installed service still needs operator-run verification. The Streamable HTTP transport requires one endpoint supporting POST/GET and `Origin` validation; local servers should bind loopback and authenticate requests ([MCP transport specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)).
 
-## Build an install bundle
+## Build and verify a Linux release bundle
 
-Build only from a reviewed commit, in a clean release environment and separately for each target OS/CPU. The worker builder requires an immutable base image reference:
+Protected deployment targets Linux first. Build natively on a clean Linux runner for each architecture; do not use a macOS-generated wheelhouse. CI currently targets `ubuntu-24.04` / `x86_64` and publishes `linux/amd64`. `linux/arm64` requires a separate native ARM64 runner and a separate bundle. macOS is a development/test host, not a supported protected deployment target.
+
+The worker build and image import must run only against a disposable CI/release Docker daemon. Never point these commands at a user's productive Docker Desktop daemon. The worker builder requires an immutable base image reference:
 
 ```sh
 uv run --locked python tooling/build_bc15_worker_image.py \
   --base-image 'python@sha256:<reviewed-base-digest>' \
+  --platform linux/amd64 \
+  --docker-host 'unix:///var/run/docker.sock' \
+  --verify-docker-host 'unix:///var/run/docker.sock' \
   --output /release/bc15-worker
 uv run --locked python tooling/package_scout_broker.py \
+  --target-platform linux/amd64 \
   --worker-bundle /release/bc15-worker \
   --output /release/scout-broker
-python3 tooling/verify_scout_bundle.py /release/scout-broker
-shasum -a 256 /release/scout-broker/manifest.json
+uv run --locked python tooling/verify_scout_bundle.py /release/scout-broker \
+  --expected-commit '<full-reviewed-commit>' \
+  --expected-tree '<reviewed-git-tree>' \
+  --target-platform linux/amd64 \
+  --expected-manifest-sha256 '<digest-from-independent-release-record>' \
+  --source-root "$PWD" \
+  --docker-host 'unix:///var/run/docker.sock'
+sha256sum /release/scout-broker/manifest.json
 ```
 
-The builders reject dirty or untracked worktrees. The bundle contains broker and observability wheels, a hash-locked dependency file and target-platform wheelhouse, the exported worker image, worker manifest, file hashes, full source commit and Git tree, source-input digest, lockfile and exported-requirements digests, Python/SDK versions, base image reference, and immutable final worker image ID. The build script does not sign or attest the bundle. Its in-bundle hashes detect accidental changes but do not authenticate the bundle if an attacker replaces both manifest and files. The operator must compare the manifest SHA-256 or release signature through an independent trusted channel before installation. Never install the earlier dirty-tree staging artifact as a privileged release.
+The builders reject dirty or untracked worktrees. The worker builder declares the full source commit/tree, Dockerfile and input hashes, digest-pinned base reference, explicit OS/architecture, Docker image ID (the content digest of the image config), exported archive SHA-256, archive config digest, rootfs diff IDs, runtime config, and ID/platform/config after `docker load`. It removes only the unique image it just built from the explicitly selected disposable daemon before importing the archive, so a successful build proves an actual import round trip. `RepoDigest` is recorded separately; it is not the image ID or archive hash. The verifier independently parses the archive's `manifest.json` and config blob, checks the blob hash and filename, compares its OS/architecture and entrypoint/config with the manifest, and can inspect the imported image in the selected daemon.
 
-`install_scout_bundle.sh BUNDLE_DIR STAGING_PREFIX` installs only into a new unprivileged directory. It does not use sudo, load a Docker image, create a service, or write administrative policy. The operator performs those operations only after independent review. The MCP broker never builds an image; it accepts only the operator-configured image ID (`sha256:…`), verifies that exact ID exists in the configured Docker context, and uses it for every worker.
+The Linux bundle contains broker/observability wheels, a hash-locked requirements export and Linux-targeted wheelhouse, the exported worker image, `uv.lock`, manifests and helper scripts. The package build refuses a non-Linux host or a target/platform mismatch. The verifier requires expected commit, Git tree, target platform, and (for an operator release) a manifest digest obtained independently. `--source-root` adds a clean-checkout/source-input comparison; `--docker-host` checks the image imported in that disposable daemon. In-bundle hashes alone are not authentication: the verifier cannot prove its own origin if both it and the package are replaced. The workflow artifact and immutable workflow revision are distribution evidence, not a cryptographic signature or independent attestation. The operator must compare source SHA/tree and manifest SHA against a trusted GitHub workflow record before installation. Never treat a prior macOS or pre-commit bundle as a Linux release.
+
+`install_scout_bundle.sh BUNDLE PREFIX EXPECTED_COMMIT EXPECTED_TREE TARGET EXPECTED_MANIFEST_SHA256 DOCKER_HOST` verifies the bundle and imported image before installing only into a new unprivileged staging directory. It does not use sudo, load an image, create a service, or write administrative policy. The operator separately loads the archive into the intended protected daemon, verifies the exact config-derived image ID and target platform, then provisions the service. The broker never builds an image; it accepts only the operator-configured image ID (`sha256:…`) and fixed context/endpoint, then verifies that image before exposing protected operations.
 
 ## Operator provisioning
 
 ### Linux with native Docker
 
 1. Install the verified bundle under a root-owned versioned path such as `/opt/data-mozaic/scout-broker/<version>`. Make release files non-writable by both the broker and Codex identities. Give a dedicated `scout-broker` service UID read/execute access to the venv and write access only to its `/var/lib/data-mozaic/scout` state, evidence, and artifact roots.
-2. Load the reviewed worker archive through the intended Docker daemon. Verify the loaded image ID equals `worker-manifest.json:worker_image_id`. Configure `SCOUT_BC15_WORKER_IMAGE_DIGEST`, `SCOUT_DOCKER_CONTEXT`, and `SCOUT_DOCKER_ENDPOINT` in a root-owned service environment file.
+2. Load the reviewed worker archive through the intended Docker daemon. Recompute the SHA-256 of the config blob named in archive `manifest.json`; it must equal `worker-manifest.json:worker_image_id`, which must also equal `archive_config_digest` and the imported Docker `.Id`. Verify `.Os=linux`, `.Architecture` matches the target, and compare entrypoint, command, user, working directory, and rootfs diff IDs. Configure `SCOUT_BC15_WORKER_IMAGE_DIGEST`, `SCOUT_DOCKER_EXECUTABLE`, `SCOUT_DOCKER_CONTEXT`, and `SCOUT_DOCKER_ENDPOINT` in a root-owned service environment file. Do not use a mutable tag as image identity.
 3. Grant the broker service identity access to the Docker socket. Membership in the `docker` group is effectively root-equivalent; Codex must use another UID, must not be in that group, and must fail an OS-level socket connect probe. The daemon and all service files/configuration need independent root ownership.
-4. Use a root-owned systemd unit with `User=scout-broker`, `WorkingDirectory=/`, `ExecStart=/opt/.../venv/bin/python -m scout.tool_host`, a protected environment file, restart-on-failure, and write paths limited to the declared state/data roots. Keep the release tree read-only to the service. Set `PYTHONDONTWRITEBYTECODE=1`; do not set `PYTHONPATH`, `DOCKER_CONTEXT`, or workspace-derived paths.
+4. Resolve the Docker CLI path as the root-owned executable's real path. Check the file and every parent directory are root-owned and not group/world writable; record symlink resolution, mode, inode/hash and version. The broker validates these conditions at startup and invokes that absolute path with a fixed PATH and no shell. Ensure the service PATH cannot shadow it. Keep Docker context config/service environment root-owned, pin the Unix endpoint, and omit `DOCKER_HOST`, `DOCKER_CONTEXT`, `PYTHONPATH`, and workspace-derived paths from the service environment.
+5. Use a root-owned systemd unit with `User=scout-broker`, `WorkingDirectory=/`, `ExecStart=/opt/.../venv/bin/python -I -m scout.tool_host`, a protected environment file, restart-on-failure, and write paths limited to declared state/data roots. Keep release code and venv read-only to the service. Set `PYTHONDONTWRITEBYTECODE=1`. Verify the running process's executable, argv, environment allowlist, working directory, module origins and ownership after every restart.
 
 ### macOS with Docker Desktop
+
+The protected deployment profile in this release is Linux only. macOS is not accepted as a protected deployment based on code-level checks or Docker Desktop volume placement.
 
 1. Install the same reviewed files under a root-owned path such as `/Library/Application Support/Data Mozaic/scout-broker/<version>`; the LaunchAgent plist and environment/configuration must also be root-managed and non-writable by the workspace user.
 2. Docker Desktop exposes its daemon through a logged-in user's socket/context. There is no separate daemon UID equivalent to native Linux in this setup. The broker may need to run as the desktop user, so same-UID filesystem mode bits do not isolate it from Codex. This platform is unsupported unless the effective Codex shell sandbox denies every Docker endpoint and an enforced managed MCP policy prevents project config from starting any unapproved STDIO process. Verify actual process identity, socket paths, and access after service and Codex restart.
@@ -71,7 +88,9 @@ The sample [codex-requirements.example.toml](../../config/scout/codex-requiremen
 
 The repository example is not active policy. This host has not had an enforced policy provisioned or confirmed. Do not modify `/etc/codex`, MDM, or user-wide configuration as part of this task.
 
-After operator provisioning, run the prepared negative probe against a disposable Codex project: it adds a synthetic STDIO command that can only create a marker in a temporary directory, plus an incorrect HTTP URL. With the managed policy active, verify the approved URL remains enabled, the extra STDIO and wrong URL are disabled, and the marker is absent. Repeat after restarting Codex and changing the project config. If the command runs or effective policy provenance cannot be shown, treat the allowlist as absent. No such host-policy probe has been run here.
+After operator provisioning, run `tooling/probe_codex_mcp_allowlist.py` only under a dedicated authenticated `SCOUT_CODEX_TEST_HOME`, with `SCOUT_POLICY_EVIDENCE_DIR` pointing to a private operator evidence directory and a synthetic `SCOUT_BROKER_TOKEN`. It creates disposable MCP STDIO and HTTP servers, starts actual `codex exec --json --ephemeral` sessions with the supported `workspace-write` sandbox, rewrites project configuration between fresh Codex processes, and checks whether the synthetic STDIO process or alternate HTTP endpoint was reached. Each session must also complete a harmless `scout_preflight` call against a deliberately nonexistent source through the approved HTTP broker; this proves the Codex session initialized and invoked that MCP identity without using the fixture. Do not approve any elevation or shell operation; if the session cannot complete without one, classify it as inconclusive. The JSON session must contain a completed thread/turn and the expected MCP tool call; a missing marker without those events is inconclusive. Preserve the `codex mcp list --json` output, session events, policy source/provenance, exact managed-policy hash and Codex version. The script does not claim a pass from marker absence alone. Run separate disposable VM snapshots with managed policy absent and invalid as negative controls: the STDIO startup marker or alternate HTTP request must be observed, otherwise the test did not exercise the control. No host policy test was run here; the managed policy remains pending.
+
+Record the effective Codex policy from its administrative source, not the repository TOML. Repeat after a Codex restart and adversarial project-config rewrite. If startup attempts, policy provenance, disabled reasons, or negative controls are missing, classify enforcement as **NOT VERIFIED**. Do not change `/etc/codex`, MDM, or administrative settings as part of this release task.
 
 ## Required deployment evidence
 
@@ -82,3 +101,7 @@ The direct BC15 writer remains a trusted in-process API and does not defend agai
 The real synthetic Codex fixture approval is expired. Do not start a real Codex fixture session until the owner explicitly grants a valid one-use approval.
 
 For the future one-use request, ask the owner to authorize only `e2e-catalog-single` / `single-resource-v1`: one HTTPS `GET` to `https://catalog.fixture.test/api/catalog`, at most one request and one page, at most 4096 response bytes, 120 seconds maximum session duration, one execution only, and approval expiry no later than 30 minutes after grant. Deny all other sources and public/external destinations. Do not write this approval into policy or start a session until the owner explicitly grants it.
+
+## Disk and capacity operations
+
+Docker named volumes do not have a physical disk quota in this implementation. Run count, concurrency, worker memory/CPU/PID limits, body limits, and 24-hour retention constrain application behavior but do not cap Docker Desktop VM or Linux filesystem consumption. Monitor the Docker data root/VM free space and volume growth. The operator must define and alert on a minimum free-space threshold before enabling the broker; stop accepting new replay/acceptance work below it, preserve in-retention evidence, and investigate/clean only volumes the broker's ownership labels and registry prove it owns. Never use global `docker system prune` or `volume prune` for this service.

@@ -36,6 +36,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The bundle must identify the published PR branch commit, not the
+          # synthetic pull_request merge commit used by the event's default SHA.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
@@ -66,6 +70,84 @@ jobs:
         run: make scout-dns-adversarial-check
       - name: Worker network sandbox check
         run: make scout-sandbox-check
+      - name: Build, import, and smoke-test Linux release bundle
+        env:
+          SCOUT_RELEASE_ROOT: ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}
+          SCOUT_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SCOUT_DATABASE_URL: postgresql://scout:scout_ci_only@127.0.0.1:55432/scout_dev
+          SCOUT_BASE_IMAGE: python@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
+          SCOUT_DOCKER_HOST: unix:///var/run/docker.sock
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+          test "$(git rev-parse HEAD)" = "$SCOUT_SOURCE_SHA"
+          mkdir -p "$SCOUT_RELEASE_ROOT"
+          uv run --locked python tooling/build_bc15_worker_image.py \
+            --base-image "$SCOUT_BASE_IMAGE" \
+            --platform linux/amd64 \
+            --docker-host "$SCOUT_DOCKER_HOST" \
+            --verify-docker-host "$SCOUT_DOCKER_HOST" \
+            --candidate-record "$SCOUT_RELEASE_ROOT/worker-image-id.txt" \
+            --output "$SCOUT_RELEASE_ROOT/worker"
+          uv run --locked python tooling/package_scout_broker.py \
+            --target-platform linux/amd64 \
+            --worker-bundle "$SCOUT_RELEASE_ROOT/worker" \
+            --output "$SCOUT_RELEASE_ROOT/bundle"
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          TREE_SHA="$(git rev-parse 'HEAD^{tree}')"
+          MANIFEST_SHA="$(sha256sum "$SCOUT_RELEASE_ROOT/bundle/manifest.json" | cut -d ' ' -f 1)"
+          uv run --locked python tooling/verify_scout_bundle.py \
+            "$SCOUT_RELEASE_ROOT/bundle" \
+            --expected-commit "$COMMIT_SHA" \
+            --expected-tree "$TREE_SHA" \
+            --target-platform linux/amd64 \
+            --expected-manifest-sha256 "$MANIFEST_SHA" \
+            --source-root "$GITHUB_WORKSPACE" \
+            --docker-host "$SCOUT_DOCKER_HOST"
+          STAGING_PREFIX="$SCOUT_RELEASE_ROOT/staging"
+          sh "$SCOUT_RELEASE_ROOT/bundle/install_scout_bundle.sh" \
+            "$SCOUT_RELEASE_ROOT/bundle" "$STAGING_PREFIX" \
+            "$COMMIT_SHA" "$TREE_SHA" linux/amd64 "$MANIFEST_SHA" \
+            "$SCOUT_DOCKER_HOST"
+          WORKER_IMAGE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worker_image_id"])' "$SCOUT_RELEASE_ROOT/worker/worker-manifest.json")"
+          SCOUT_STAGING_PREFIX="$STAGING_PREFIX" \
+            SCOUT_BC15_WORKER_IMAGE_DIGEST="$WORKER_IMAGE_ID" \
+            uv run --locked python tooling/check_scout_bundle_staging.py
+          printf 'commit=%s\ntree=%s\nmanifest_sha256=%s\nworker_image_id=%s\n' \
+            "$COMMIT_SHA" "$TREE_SHA" "$MANIFEST_SHA" "$WORKER_IMAGE_ID" \
+            > "$SCOUT_RELEASE_ROOT/release-evidence.txt"
+      - name: Remove only the release candidate worker image
+        if: always()
+        env:
+          SCOUT_RELEASE_ROOT: ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}
+          SCOUT_DOCKER_HOST: unix:///var/run/docker.sock
+        run: |
+          set -euo pipefail
+          image_record="$SCOUT_RELEASE_ROOT/worker-image-id.txt"
+          if [ -f "$image_record" ]; then
+            worker_image_id="$(cat "$image_record")"
+            if ! printf '%s\n' "$worker_image_id" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+              echo "invalid scoped worker image cleanup record" >&2
+              exit 1
+            fi
+            if docker --host "$SCOUT_DOCKER_HOST" image inspect "$worker_image_id" >/dev/null 2>&1; then
+              docker --host "$SCOUT_DOCKER_HOST" image rm --force "$worker_image_id"
+            fi
+            if docker --host "$SCOUT_DOCKER_HOST" image inspect "$worker_image_id" >/dev/null 2>&1; then
+              echo "release candidate worker image remains after scoped cleanup" >&2
+              exit 1
+            fi
+          fi
+      - name: Upload Linux release candidate bundle
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: scout-broker-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}/bundle/
+            ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}/release-evidence.txt
+          if-no-files-found: error
+          retention-days: 14
       - name: Stop E2E Compose profile (preserve volumes)
         if: always()
         env:

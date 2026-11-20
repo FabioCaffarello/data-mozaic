@@ -110,7 +110,11 @@ class _LocalPolicyDecision:
         )
 
 
-def build_server(*, trusted_http: bool = False):
+def build_server(
+    *,
+    trusted_http: bool = False,
+    protected_replay_executor: DockerProtectedReplayExecutor | None = None,
+):
     """Compose the existing Scout application with local or operator-owned config."""
     trusted_http = trusted_http or os.environ.get("SCOUT_TRUSTED_HTTP") == "1"
     policy_path = Path(
@@ -277,14 +281,17 @@ def build_server(*, trusted_http: bool = False):
     )
     if not worker_image:
         raise RuntimeError("a prebuilt BC15 worker image digest is required")
-    executor = DockerProtectedReplayExecutor(
-        worker_image,
-        registry_path=private_state_root / "bc15-runs.sqlite3",
-        docker_context=os.environ.get("SCOUT_DOCKER_CONTEXT", "default"),
-        docker_endpoint=os.environ.get(
-            "SCOUT_DOCKER_ENDPOINT", "unix:///var/run/docker.sock"
-        ),
-    )
+    executor = protected_replay_executor
+    if executor is None:
+        executor = DockerProtectedReplayExecutor(
+            worker_image,
+            docker_executable=os.environ.get("SCOUT_DOCKER_EXECUTABLE", ""),
+            registry_path=private_state_root / "bc15-runs.sqlite3",
+            docker_context=os.environ.get("SCOUT_DOCKER_CONTEXT", "default"),
+            docker_endpoint=os.environ.get(
+                "SCOUT_DOCKER_ENDPOINT", "unix:///var/run/docker.sock"
+            ),
+        )
     return create_server(
         app,
         principal,

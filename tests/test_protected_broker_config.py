@@ -1,10 +1,17 @@
 import json
+import os
 import stat
 import tempfile
 import unittest
 from pathlib import Path
+from subprocess import CompletedProcess
+from unittest.mock import patch
 
 from scout.tool_host.composition import _private_policy_snapshot
+from scout.tool_host.protected_replay import (
+    DockerProtectedReplayExecutor,
+    ProtectedReplayError,
+)
 
 
 class ProtectedBrokerConfigTests(unittest.TestCase):
@@ -46,6 +53,44 @@ class ProtectedBrokerConfigTests(unittest.TestCase):
             source.symlink_to(actual)
             with self.assertRaisesRegex(RuntimeError, "unavailable"):
                 _private_policy_snapshot(source, root / "private/policy.json")
+
+    def test_docker_executable_must_be_absolute_and_protected(self):
+        with self.assertRaisesRegex(ProtectedReplayError, "absolute path"):
+            DockerProtectedReplayExecutor._validate_docker_executable("docker")
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary) / "docker"
+            candidate.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            candidate.chmod(0o755)
+            with self.assertRaisesRegex(ProtectedReplayError, "trusted-owned"):
+                DockerProtectedReplayExecutor._validate_docker_executable(
+                    str(candidate)
+                )
+            self.assertEqual(
+                str(candidate.resolve()),
+                DockerProtectedReplayExecutor._validate_docker_executable(
+                    str(candidate), allow_unprivileged_test_cli=True
+                ),
+            )
+
+    def test_docker_invocation_ignores_path_shadowing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            shadow = directory / "docker"
+            shadow.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+            shadow.chmod(0o755)
+            executor = object.__new__(DockerProtectedReplayExecutor)
+            executor._docker = "/usr/bin/true"
+            with (
+                patch.dict(os.environ, {"PATH": str(directory)}),
+                patch("scout.tool_host.protected_replay.subprocess.run") as run,
+            ):
+                run.return_value = CompletedProcess(["/usr/bin/true"], 0, b"", b"")
+                executor._run(["version"])
+            command = run.call_args.args[0]
+            environment = run.call_args.kwargs["env"]
+            self.assertEqual("/usr/bin/true", command[0])
+            self.assertEqual("/usr/bin:/bin", environment["PATH"])
+            self.assertNotIn(str(directory), environment["PATH"])
 
 
 if __name__ == "__main__":
