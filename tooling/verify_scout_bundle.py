@@ -128,7 +128,14 @@ def verify_bundle(
             raise ValueError(f"bundle contains a symlink: {path.relative_to(root)}")
         if path.is_file() and path != manifest_path:
             actual.add(path.relative_to(root).as_posix())
-    _fail(actual == set(listed), "bundle file set differs from the manifest")
+    expected_files = set(listed)
+    missing_files = sorted(expected_files - actual)
+    unexpected_files = sorted(actual - expected_files)
+    _fail(
+        actual == expected_files,
+        "bundle file set differs from the manifest; "
+        f"missing={missing_files}; unexpected={unexpected_files}",
+    )
     for relative, expected in listed.items():
         item = PurePosixPath(relative)
         _fail(

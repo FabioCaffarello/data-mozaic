@@ -1,5 +1,8 @@
 import hashlib
 import json
+import shutil
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -192,6 +195,36 @@ class ReleaseBundleVerificationTests(unittest.TestCase):
     def test_valid_bundle_is_accepted(self):
         manifest = self._verify()
         self.assertEqual(self.image_id, manifest["worker_image_id"])
+
+    def test_staging_verifier_does_not_add_bytecode_to_bundle(self):
+        tooling = Path(__file__).resolve().parents[1] / "tooling"
+        verifier = self.root / "verify_scout_bundle.py"
+        shutil.copy2(tooling / verifier.name, verifier)
+        shutil.copy2(
+            tooling / "scout_release_artifact.py",
+            self.root / "scout_release_artifact.py",
+        )
+        self._refresh_file_hashes()
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(verifier),
+                str(self.root),
+                "--expected-commit",
+                COMMIT,
+                "--expected-tree",
+                TREE,
+                "--target-platform",
+                TARGET,
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(list(self.root.rglob("__pycache__")))
 
     def test_wrong_image_id_is_rejected(self):
         worker = json.loads((self.root / "worker-manifest.json").read_text())

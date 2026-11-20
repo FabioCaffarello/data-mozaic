@@ -11,7 +11,7 @@ if [ -e "$prefix" ]; then
   echo "destination must not already exist" >&2
   exit 2
 fi
-python3 "$bundle/verify_scout_bundle.py" "$bundle" \
+python3 -B "$bundle/verify_scout_bundle.py" "$bundle" \
   --expected-commit "$3" \
   --expected-tree "$4" \
   --target-platform "$5" \
