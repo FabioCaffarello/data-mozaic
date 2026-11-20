@@ -45,7 +45,7 @@ def _assert_imports_are_installed(python: Path) -> None:
     if str(ROOT) in result.stdout:
         raise RuntimeError("installed runtime imported from the checkout")
     subprocess.run(
-        [str(python), "-I", "-m", "pip", "check"],
+        ["uv", "pip", "check", "--python", str(python)],
         cwd="/",
         check=True,
         timeout=30,
