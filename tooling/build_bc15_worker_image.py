@@ -150,6 +150,25 @@ def main() -> int:
                 docker_command(
                     docker,
                     args.docker_host,
+                    "image",
+                    "pull",
+                    "--platform",
+                    args.platform,
+                    args.base_image,
+                ),
+                check=True,
+                timeout=600,
+            )
+            base = inspect_image(docker, args.docker_host, args.base_image)
+            if (
+                base.get("Os") != expected_os
+                or base.get("Architecture") != expected_arch
+            ):
+                raise SystemExit("pinned base image platform does not match request")
+            subprocess.run(
+                docker_command(
+                    docker,
+                    args.docker_host,
                     "build",
                     "--pull",
                     "--quiet",
@@ -170,12 +189,6 @@ def main() -> int:
 
             built = inspect_image(docker, args.docker_host, tag)
             image_id = built["Id"]
-            base = inspect_image(docker, args.docker_host, args.base_image)
-            if (
-                base.get("Os") != expected_os
-                or base.get("Architecture") != expected_arch
-            ):
-                raise SystemExit("pinned base image platform does not match request")
             if not image_id.startswith("sha256:") or len(image_id) != 71:
                 raise SystemExit("Docker returned an invalid worker image ID")
             if (
