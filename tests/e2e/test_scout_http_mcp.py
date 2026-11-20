@@ -24,6 +24,8 @@ from psycopg.conninfo import make_conninfo
 from psycopg.sql import SQL, Identifier
 
 ROOT = Path(__file__).resolve().parents[2]
+FIXTURE_IP = os.environ.get("SCOUT_HTTP_E2E_FIXTURE_IP", "172.30.91.10")
+SINK_IP = os.environ.get("SCOUT_HTTP_E2E_SINK_IP", "172.30.91.11")
 sys.path.insert(0, str(ROOT / "apps" / "scout"))
 
 from scout.adapters.local_custody import LocalFileEvidenceCustody
@@ -106,7 +108,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
             self.configure_dns(
                 {
                     "catalog.fixture.test": {
-                        "A": ["172.30.91.10"],
+                        "A": [FIXTURE_IP],
                         "ttl": 60,
                     },
                 }
@@ -156,6 +158,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 ],
             }
             policy_path.write_text(json.dumps(policy), encoding="utf-8")
+            policy_path.chmod(0o600)
 
             env = os.environ.copy()
             env.update(
@@ -174,7 +177,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
             )
             params = StdioServerParameters(
                 command=sys.executable,
-                args=["-m", "scout.tool_host"],
+                args=[str(ROOT / "tests" / "mcp_authoring_stdio_fixture.py")],
                 env=env,
             )
             source_args = {
@@ -201,7 +204,8 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                         "scout_record_finding",
                         "scout_propose",
                         "scout_export_transcript",
-                        "scout_export_replay_fixtures",
+                        "scout_bc15_replay",
+                        "scout_bc15_accept",
                     }
                     <= set(tools)
                 )
@@ -381,14 +385,41 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                     ).hexdigest(),
                     transcript_sha256,
                 )
-                fixture_export = await client.call_tool(
-                    "scout_export_replay_fixtures", {"session_id": session_id}
+                draft_input = await asyncio.create_subprocess_exec(
+                    str(ROOT / ".venv/bin/python"),
+                    "-c",
+                    "import json,sys; from collector_engineering.playbooks import build_draft,dump_yaml; print(dump_yaml(build_draft(json.load(sys.stdin))))",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
                 )
-                fixture_export_value = json.loads(fixture_export.content[0].text)
-                self.assertTrue(fixture_export_value["ok"], fixture_export_value)
-                self.assertEqual(len(fixture_export_value["pages"]), 2)
-                self.assertNotIn("body", fixture_export_value)
-                self.assertNotIn("fixture-secret-value", fixture_export.content[0].text)
+                draft_stdout, draft_stderr = await draft_input.communicate(
+                    exported_value["transcript_json"].encode("utf-8")
+                )
+                self.assertEqual(draft_input.returncode, 0, draft_stderr.decode())
+                protected_draft = draft_stdout.decode("utf-8")
+                replay_call = await client.call_tool(
+                    "scout_bc15_replay",
+                    {"session_id": session_id, "draft_yaml": protected_draft},
+                )
+                replay_call_value = json.loads(replay_call.content[0].text)
+                self.assertTrue(replay_call_value["ok"], replay_call_value)
+                self.assertEqual("passed", replay_call_value["state"])
+                replay_report = replay_call_value["report"]
+                self.assertEqual(2, len(replay_report["replayed_pages"]))
+                self.assertNotIn("fixture-secret-value", replay_call.content[0].text)
+                accept_call = await client.call_tool(
+                    "scout_bc15_accept",
+                    {"session_id": session_id, "draft_yaml": protected_draft},
+                )
+                accept_call_value = json.loads(accept_call.content[0].text)
+                self.assertTrue(accept_call_value["ok"], accept_call_value)
+                acceptance_report = accept_call_value["report"]
+                self.assertEqual(
+                    "accepted",
+                    acceptance_report["acquisition_acceptance"]["state"],
+                )
 
             persisted = self.repository.get_session(session_id)
             self.assertEqual(persisted.principal, principal)
@@ -463,9 +494,6 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                     encoding="utf-8",
                 )
 
-            replay_fixtures = Path(fixture_export_value["fixtures_dir"])
-            self.assertTrue((replay_fixtures / "index.json").is_file())
-
             env["PYTHONPATH"] = os.pathsep.join(
                 [
                     str(ROOT / "apps" / "collector-engineering"),
@@ -500,43 +528,13 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 encoding="utf-8",
             )
             replay_path = artifact_root / "replay-report.json"
-            replay_code, replay_stdout, replay_stderr = await self.run_cli(
-                "replay",
-                str(draft_path),
-                "--fixtures",
-                str(replay_fixtures),
-                "--output",
-                str(artifact_root / "replay-output"),
-                "--report",
-                str(replay_path),
-                env=env,
-            )
-            self.assertEqual(replay_code, 0, replay_stderr or replay_stdout)
-            replay_report = json.loads(replay_path.read_text(encoding="utf-8"))
+            replay_path.write_text(json.dumps(replay_report), encoding="utf-8")
             self.assertEqual(replay_report["state"], "passed")
             self.assertEqual(len(replay_report["replayed_pages"]), 2)
             self.assertEqual(replay_report["failures"], [])
-            expectations = (
-                ROOT
-                / "tests/fixtures/scout-authoring/controlled-catalog-acceptance.json"
-            )
             acceptance_path = artifact_root / "acquisition-acceptance.json"
-            acceptance_code, _, acceptance_stderr = await self.run_cli(
-                "accept",
-                str(draft_path),
-                str(transcript_path),
-                "--fixtures",
-                str(replay_fixtures),
-                "--expectations",
-                str(expectations),
-                "--output",
-                str(artifact_root / "acceptance-output"),
-                "--report",
-                str(acceptance_path),
-                env=env,
-            )
-            self.assertEqual(acceptance_code, 0, acceptance_stderr)
-            acceptance = json.loads(acceptance_path.read_text(encoding="utf-8"))
+            acceptance_path.write_text(json.dumps(acceptance_report), encoding="utf-8")
+            acceptance = acceptance_report
             self.assertEqual("passed", acceptance["structural_validation"]["state"])
             self.assertEqual("passed", acceptance["replay_execution"]["state"])
             self.assertEqual("accepted", acceptance["acquisition_acceptance"]["state"])
@@ -554,19 +552,14 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                         "- BC15 draft validation: passed.",
                         "- Offline fixture replay: passed for 2 captured HTTPS pages.",
                         "- Security: page prompt injection remained untrusted data; out-of-scope fetch was denied.",
-                        "- Limits: deterministic Python/MCP test, not a live Codex run; BC01/BC06/BC11 are local adapters; Codex shell is not sandboxed.",
+                        "- Limits: deterministic MCP/container test, not a live Codex run; BC01/BC06/BC11 are local adapters; Codex workspace-write must deny Docker daemon access.",
                         "",
                     ]
                 ),
                 encoding="utf-8",
             )
             for path in artifact_root.rglob("*"):
-                if (
-                    path.is_file()
-                    and path.parent != replay_fixtures
-                    and "replay-output/raw" not in str(path)
-                    and "acceptance-output/raw" not in str(path)
-                ):
+                if path.is_file():
                     self.assertNotIn(
                         b"fixture-secret-value", path.read_bytes(), path.name
                     )
@@ -587,7 +580,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
 
         self.configure_dns(
             {
-                "single.fixture.test": {"A": ["172.30.91.10"], "ttl": 60},
+                "single.fixture.test": {"A": [FIXTURE_IP], "ttl": 60},
             }
         )
         with mock.patch.dict(
@@ -605,7 +598,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                     "ttl": 60,
                 },
                 "cname-edge.fixture.test": {
-                    "A": ["172.30.91.10"],
+                    "A": [FIXTURE_IP],
                     "ttl": 60,
                 },
             }
@@ -621,17 +614,17 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
         cases = (
             (
                 "private.fixture.test",
-                {"private.fixture.test": {"A": ["172.30.91.11"]}},
+                {"private.fixture.test": {"A": [SINK_IP]}},
             ),
             (
                 "mixed-a.fixture.test",
-                {"mixed-a.fixture.test": {"A": ["172.30.91.10", "172.30.91.11"]}},
+                {"mixed-a.fixture.test": {"A": [FIXTURE_IP, SINK_IP]}},
             ),
             (
                 "mixed-aaaa.fixture.test",
                 {
                     "mixed-aaaa.fixture.test": {
-                        "A": ["172.30.91.10"],
+                        "A": [FIXTURE_IP],
                         "AAAA": ["::1"],
                     }
                 },
@@ -640,14 +633,14 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 "special.fixture.test",
                 {
                     "special.fixture.test": {
-                        "A": ["172.30.91.10"],
-                        "AAAA": ["::ffff:172.30.91.11", "5f00::1"],
+                        "A": [FIXTURE_IP],
+                        "AAAA": [f"::ffff:{SINK_IP}", "5f00::1"],
                     }
                 },
             ),
             (
                 "retry.fixture.test",
-                {"retry.fixture.test": {"A": ["203.0.113.7", "172.30.91.11"]}},
+                {"retry.fixture.test": {"A": ["203.0.113.7", SINK_IP]}},
             ),
         )
         for host, zones in cases:
@@ -660,9 +653,9 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
         self.configure_dns(
             {
                 "rebinding.fixture.test": {
-                    "A": ["172.30.91.10"],
+                    "A": [FIXTURE_IP],
                     "ttl": 0,
-                    "next": {"A": ["172.30.91.11"], "ttl": 60},
+                    "next": {"A": [SINK_IP], "ttl": 60},
                 }
             }
         )
@@ -750,6 +743,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            policy_path.chmod(0o600)
             env = os.environ.copy()
             env.update(
                 {
@@ -764,7 +758,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
             )
             params = StdioServerParameters(
                 command=sys.executable,
-                args=["-m", "scout.tool_host"],
+                args=[str(ROOT / "tests" / "mcp_authoring_stdio_fixture.py")],
                 env=env,
             )
 
@@ -793,7 +787,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                             "rcode": 2,
                             "A": [],
                             "ttl": 0,
-                            "next": {"A": ["172.30.91.11"], "ttl": 0},
+                            "next": {"A": [SINK_IP], "ttl": 0},
                         }
                     }
                 )
@@ -830,8 +824,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                         and item["rcode"] == 0
                         and item["ordinal"] > first_a[0]["ordinal"]
                         and any(
-                            answer.get("value") == "172.30.91.11"
-                            for answer in item["answers"]
+                            answer.get("value") == SINK_IP for answer in item["answers"]
                         )
                         for item in first_operation_responses
                     ),
@@ -852,7 +845,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 self.configure_dns(
                     {
                         "catalog.fixture.test": {
-                            "A": ["172.30.91.10"],
+                            "A": [FIXTURE_IP],
                             "ttl": 60,
                         }
                     }
@@ -903,7 +896,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
         async def scenario():
             proxy = os.environ["SCOUT_HTTP_E2E_PROXY_URL"]
             transport = AiohttpSquidTransport(proxy)
-            self.configure_dns({"private.fixture.test": {"A": ["172.30.91.11"]}})
+            self.configure_dns({"private.fixture.test": {"A": [SINK_IP]}})
             with self.assertRaises(aiohttp.ClientHttpProxyError) as denied:
                 await transport.get("https://private.fixture.test/", 1024, 2)
             self.assertEqual(denied.exception.status, 403)

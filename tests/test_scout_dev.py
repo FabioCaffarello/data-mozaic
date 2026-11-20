@@ -5,6 +5,7 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -54,7 +55,10 @@ class ScoutDevBootstrapTests(unittest.TestCase):
             "Use the skill.",
         )
         self.assertIn("--approve-for-me", command)
-        self.assertNotIn("--sandbox", command)
+        self.assertEqual(
+            ["--sandbox", "workspace-write"],
+            command[command.index("--sandbox") : command.index("--sandbox") + 2],
+        )
         self.assertEqual(
             ["--cd", "/checkout with spaces"],
             command[command.index("--cd") : command.index("--cd") + 2],
@@ -251,10 +255,14 @@ class ScoutDevBootstrapTests(unittest.TestCase):
                 [{"origin": FIXTURE_ORIGIN, "path_prefixes": [FIXTURE_PREFIX]}],
                 value["sources"][0]["grants"],
             )
-            self.assertEqual(2, value["sources"][0]["limits"]["max_requests"])
+            self.assertEqual(1, value["sources"][0]["limits"]["max_requests"])
+            self.assertEqual(120, value["sources"][0]["limits"]["max_duration_seconds"])
             self.assertEqual(1, value["approvals"][0]["limits"]["max_requests"])
+            expires_at = datetime.fromisoformat(value["approvals"][0]["expires_at"])
+            self.assertLessEqual(expires_at - datetime.now(UTC), timedelta(minutes=30))
             self.assertEqual(0o600, stat.S_IMODE(policy.stat().st_mode))
-            _authorize_single_fixture(root, LOCAL_PRINCIPAL)
+            with self.assertRaisesRegex(RuntimeError, "already active"):
+                _authorize_single_fixture(root, LOCAL_PRINCIPAL)
             self.assertEqual(1, len(json.loads(policy.read_text())["approvals"]))
 
     def test_database_and_fixture_preflight_report_missing_prerequisites(self):

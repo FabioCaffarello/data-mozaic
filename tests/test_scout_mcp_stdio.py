@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from collector_engineering.__main__ import main as collector_cli
+from collector_engineering.playbooks import load_playbook, replay
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from scout.tool_host.server import command_identity
@@ -39,7 +40,7 @@ class ScoutMCPStdioTests(unittest.TestCase):
         self.assertEqual(first[1], conflicting_payload[1])
         self.assertNotEqual(first[2], conflicting_payload[2])
 
-    def test_stdio_fixture_evidence_transcript_and_bc15_cli(self):
+    def test_stdio_fixture_evidence_and_trusted_bc15_api(self):
         async def exercise(custody_root: Path, artifact_root: Path):
             env = os.environ.copy()
             env["PYTHONPATH"] = f"{ROOT / 'apps/scout'}:{ROOT}"
@@ -246,22 +247,14 @@ class ScoutMCPStdioTests(unittest.TestCase):
                 (fixture_dir / "index.json").write_text(
                     json.dumps(index, sort_keys=True), encoding="utf-8"
                 )
-                self.assertEqual(
-                    0,
-                    collector_cli(
-                        [
-                            "replay",
-                            str(draft_path),
-                            "--fixtures",
-                            str(fixture_dir),
-                            "--output",
-                            str(artifact_root / "replay-output"),
-                            "--report",
-                            str(artifact_root / "replay.json"),
-                        ]
-                    ),
+                replay_report = replay(
+                    load_playbook(draft_path),
+                    fixture_dir,
+                    artifact_root / "replay-output",
                 )
-                replay_report = json.loads((artifact_root / "replay.json").read_text())
+                (artifact_root / "replay.json").write_text(
+                    json.dumps(replay_report), encoding="utf-8"
+                )
                 self.assertEqual("passed", replay_report["state"])
 
         with tempfile.TemporaryDirectory() as temporary:

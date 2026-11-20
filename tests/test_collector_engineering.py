@@ -110,6 +110,43 @@ class CapturePlaybookTests(unittest.TestCase):
             self.assertEqual([], list(outside.iterdir()))
             self.assertFalse((output_root / "held-raw/index.json").exists())
 
+    def test_trusted_direct_replay_documents_same_uid_rename_limit(self):
+        draft = build_draft(self.transcript)
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            output_root = base / "output"
+            output_root.mkdir(mode=0o700)
+            outside = base / "outside"
+            outside.mkdir(mode=0o700)
+            moved_raw = outside / "moved-raw"
+            real_write = os.write
+            moved = False
+
+            def move_raw_then_write(descriptor, content):
+                nonlocal moved
+                if not moved:
+                    moved = True
+                    (output_root / "raw").rename(moved_raw)
+                    (output_root / "raw").symlink_to(outside, target_is_directory=True)
+                return real_write(descriptor, content)
+
+            with (
+                mock.patch(
+                    "collector_engineering.playbooks.os.write",
+                    move_raw_then_write,
+                ),
+                self.assertRaisesRegex(
+                    PlaybookError, "raw output directory changed during replay"
+                ),
+            ):
+                replay(draft, MULTIPAGE, output_root)
+
+            self.assertTrue((output_root / "raw").is_symlink())
+            self.assertEqual([moved_raw], list(outside.iterdir()))
+            published = list(moved_raw.iterdir())
+            self.assertEqual(2, len(published))
+            self.assertEqual({136, 104}, {path.stat().st_size for path in published})
+
     def test_replay_rejects_final_symlink_fifo_and_existing_arbitrary_file(self):
         draft = build_draft(self.transcript)
         body_digest = json.loads((MULTIPAGE / "index.json").read_text())["pages"][0][

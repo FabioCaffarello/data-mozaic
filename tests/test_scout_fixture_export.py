@@ -162,6 +162,46 @@ class ReplayFixtureExportTests(unittest.TestCase):
             self.assertFalse(index_path.exists())
             self.assertEqual(original_body, body_path.read_bytes())
 
+    def test_index_read_io_error_closes_descriptor_and_preserves_index(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve() / "private"
+            root.mkdir(mode=0o700)
+            fixture_root, _ = _write_replay_fixtures([self.page()], root, "session-1")
+            index_path = fixture_root / "index.json"
+            original_index = index_path.read_bytes()
+            index_inode = index_path.stat().st_ino
+            real_read = os.read
+            real_close = os.close
+            opened_for_failed_read = []
+            closed = []
+
+            def fail_index_read(descriptor, size):
+                if os.fstat(descriptor).st_ino == index_inode:
+                    opened_for_failed_read.append(descriptor)
+                    raise OSError("injected index read failure")
+                return real_read(descriptor, size)
+
+            def track_close(descriptor):
+                if descriptor in opened_for_failed_read:
+                    closed.append(descriptor)
+                return real_close(descriptor)
+
+            with (
+                mock.patch("scout.tool_host.server.os.read", fail_index_read),
+                mock.patch("scout.tool_host.server.os.close", track_close),
+                self.assertRaisesRegex(
+                    ValueError, "existing fixture index could not be verified"
+                ),
+            ):
+                _write_replay_fixtures([self.page()], root, "session-1")
+
+            self.assertEqual(1, len(opened_for_failed_read))
+            self.assertEqual(opened_for_failed_read, closed)
+            with self.assertRaises(OSError):
+                os.fstat(opened_for_failed_read[0])
+            self.assertEqual(original_index, index_path.read_bytes())
+            self.assertEqual([], list(fixture_root.glob(".pending-*")))
+
 
 if __name__ == "__main__":
     unittest.main()

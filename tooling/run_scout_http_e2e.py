@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -24,6 +25,89 @@ COMPOSE = ROOT / "deployments/compose/scout-http-e2e.compose.yaml"
 
 def _run(command: list[str], *, env: dict[str, str], check: bool = True):
     return subprocess.run(command, cwd=ROOT, env=env, check=check, text=True)
+
+
+def _build_test_worker_image() -> tuple[str, str, str]:
+    """Build an isolated test image before starting the test MCP subprocess."""
+    docker = shutil.which("docker")
+    if docker is None:
+        raise RuntimeError("Docker is required for the Scout HTTP integration suite")
+    suffix = uuid4().hex[:16]
+    worker_tag = f"data-mozaic-bc15-http-test:{suffix}"
+    base_tag = f"data-mozaic-python-http-test:{suffix}"
+    base = subprocess.run(
+        [docker, "image", "inspect", "python:3.12-slim", "--format", "{{.Id}}"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if base.returncode:
+        subprocess.run([docker, "pull", "python:3.12-slim"], check=True)
+        base = subprocess.run(
+            [docker, "image", "inspect", "python:3.12-slim", "--format", "{{.Id}}"],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+    base_id = base.stdout.strip()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", base_id):
+        raise RuntimeError("test base image did not resolve to an immutable ID")
+    subprocess.run([docker, "image", "tag", base_id, base_tag], check=True)
+    with tempfile.TemporaryDirectory(prefix="scout-http-worker-") as temp:
+        context = Path(temp)
+        subprocess.run(
+            [
+                "uv",
+                "export",
+                "--locked",
+                "--package",
+                "mozaic-collector-engineering",
+                "--no-dev",
+                "--no-emit-workspace",
+                "--no-emit-package",
+                "mozaic-collector-engineering",
+                "--format",
+                "requirements.txt",
+                "--output-file",
+                str(context / "requirements.txt"),
+            ],
+            cwd=ROOT,
+            env=os.environ.copy(),
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        shutil.copytree(
+            ROOT / "apps/collector-engineering/collector_engineering",
+            context / "collector_engineering",
+        )
+        shutil.copy2(
+            ROOT / "apps/collector-engineering/Dockerfile.protected",
+            context / "Dockerfile.protected",
+        )
+        subprocess.run(
+            [
+                docker,
+                "build",
+                "--quiet",
+                "--build-arg",
+                f"PYTHON_BASE_IMAGE={base_tag}",
+                "--tag",
+                worker_tag,
+                "--file",
+                str(context / "Dockerfile.protected"),
+                str(context),
+            ],
+            cwd=ROOT,
+            check=True,
+            timeout=300,
+        )
+    worker_id = subprocess.check_output(
+        [docker, "image", "inspect", worker_tag, "--format", "{{.Id}}"], text=True
+    ).strip()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", worker_id):
+        raise RuntimeError("test worker image did not resolve to an immutable ID")
+    return worker_tag, base_tag, worker_id
 
 
 def _make_certificates(directory: Path) -> None:
@@ -103,15 +187,7 @@ def _make_certificates(directory: Path) -> None:
 
 
 def _test_proxy_port() -> int:
-    with socket.socket() as listener:
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            listener.bind(("127.0.0.1", 3128))
-        except OSError as error:
-            raise RuntimeError(
-                "the isolated E2E proxy requires free loopback port 3128"
-            ) from error
-        return 3128
+    return _free_loopback_port()
 
 
 def _free_loopback_port() -> int:
@@ -120,7 +196,39 @@ def _free_loopback_port() -> int:
         return listener.getsockname()[1]
 
 
-def _render_squid_config(destination: Path) -> None:
+def _select_e2e_subnet() -> ipaddress.IPv4Network:
+    network_ids = subprocess.run(
+        ["docker", "network", "ls", "--quiet"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    occupied = []
+    if network_ids:
+        inspected = subprocess.run(
+            ["docker", "network", "inspect", *network_ids],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        for network in json.loads(inspected):
+            for config in network.get("IPAM", {}).get("Config") or []:
+                subnet = config.get("Subnet")
+                if subnet:
+                    try:
+                        occupied.append(ipaddress.ip_network(subnet, strict=False))
+                    except ValueError:
+                        continue
+    for third_octet in range(256):
+        candidate = ipaddress.ip_network(f"172.30.{third_octet}.0/24")
+        if not any(candidate.overlaps(existing) for existing in occupied):
+            return candidate
+    raise RuntimeError("no unused Docker subnet is available for Scout E2E")
+
+
+def _render_squid_config(destination: Path, *, fixture_ip: str, dns_ip: str) -> None:
     blocked = (
         "0.0.0.0/8",
         "10.0.0.0/8",
@@ -151,7 +259,7 @@ def _render_squid_config(destination: Path) -> None:
         "fe80::/10",
         "ff00::/8",
     )
-    fixture = ipaddress.ip_network("172.30.91.10/32")
+    fixture = ipaddress.ip_network(f"{fixture_ip}/32")
     ranges = []
     for item in blocked:
         network = ipaddress.ip_network(item)
@@ -161,7 +269,7 @@ def _render_squid_config(destination: Path) -> None:
             ranges.append(network)
     template = (ROOT / "config/scout/squid-e2e.conf").read_text(encoding="utf-8")
     destination.write_text(
-        template.replace(
+        template.replace("172.30.91.53", dns_ip).replace(
             "@BLOCKED_DESTINATIONS@",
             " ".join(str(network) for network in ranges),
         ),
@@ -241,18 +349,32 @@ def main() -> int:
     project = os.environ.get("SCOUT_HTTP_E2E_PROJECT") or (
         "scout-http-e2e-" + uuid4().hex[:10]
     )
+    subnet = _select_e2e_subnet()
+    addresses = {
+        "SCOUT_HTTP_E2E_SUBNET": str(subnet),
+        "SCOUT_HTTP_E2E_SQUID_IP": str(subnet.network_address + 2),
+        "SCOUT_HTTP_E2E_FIXTURE_IP": str(subnet.network_address + 10),
+        "SCOUT_HTTP_E2E_SINK_IP": str(subnet.network_address + 11),
+        "SCOUT_HTTP_E2E_DNS_IP": str(subnet.network_address + 53),
+    }
     port = _test_proxy_port()
     dns_control_port = _free_loopback_port()
+    worker_tag, base_tag, worker_image = _build_test_worker_image()
     with tempfile.TemporaryDirectory(prefix="scout-http-e2e-") as temporary:
         temporary = str(Path(temporary).resolve())
         cert_dir = Path(temporary) / "certs"
         cert_dir.mkdir()
         _make_certificates(cert_dir)
         squid_config = Path(temporary) / "squid.conf"
-        _render_squid_config(squid_config)
+        _render_squid_config(
+            squid_config,
+            fixture_ip=addresses["SCOUT_HTTP_E2E_FIXTURE_IP"],
+            dns_ip=addresses["SCOUT_HTTP_E2E_DNS_IP"],
+        )
         env = os.environ.copy()
         env.update(
             {
+                **addresses,
                 "SCOUT_HTTP_E2E_CERT_DIR": str(cert_dir),
                 "SCOUT_HTTP_E2E_PROXY_PORT": str(port),
                 "SCOUT_HTTP_E2E_DNS_CONTROL_PORT": str(dns_control_port),
@@ -263,6 +385,7 @@ def main() -> int:
                 "SCOUT_HTTP_E2E_CA_FILE": str(cert_dir / "ca.crt"),
                 "SCOUT_HTTP_E2E_SQUID_CONFIG": str(squid_config),
                 "SCOUT_HTTP_E2E_DATABASE_URL": env["SCOUT_DATABASE_URL"],
+                "SCOUT_TEST_WORKER_IMAGE_DIGEST": worker_image,
             }
         )
         compose = [
@@ -378,7 +501,7 @@ def main() -> int:
                 for fields in access_records
                 if len(fields) >= 7
                 and fields[2] in {"catalog.fixture.test", "catalog.fixture.test:443"}
-                and fields[3] == "172.30.91.10"
+                and fields[3] == addresses["SCOUT_HTTP_E2E_FIXTURE_IP"]
                 and fields[4] == "HIER_DIRECT"
                 and fields[5] == "TCP_TUNNEL/200"
                 and fields[6] == "CONNECT"
@@ -403,7 +526,7 @@ def main() -> int:
                         if item["name"] == recovery_host and item["type"] == "A"
                     ]
                     first_has_forbidden = any(
-                        answer.get("value") == "172.30.91.11"
+                        answer.get("value") == addresses["SCOUT_HTTP_E2E_SINK_IP"]
                         for item in first_responses
                         for answer in item["answers"]
                     )
@@ -413,7 +536,7 @@ def main() -> int:
                         and item["rcode"] == 0
                         and item["ordinal"] > first_a[0]["ordinal"]
                         and any(
-                            answer.get("value") == "172.30.91.11"
+                            answer.get("value") == addresses["SCOUT_HTTP_E2E_SINK_IP"]
                             for answer in item["answers"]
                         )
                         for item in first_responses
@@ -431,7 +554,7 @@ def main() -> int:
                         access_records, "catalog.fixture.test", positive_control
                     )
                     positive_control_connected = any(
-                        fields[3] == "172.30.91.10"
+                        fields[3] == addresses["SCOUT_HTTP_E2E_FIXTURE_IP"]
                         and fields[4] == "HIER_DIRECT"
                         and fields[5] == "TCP_TUNNEL/200"
                         and fields[6] == "CONNECT"
@@ -492,7 +615,8 @@ def main() -> int:
                 print(
                     f"verified: {args.suite} suite passed with {test_result.testsRun} "
                     f"tests and zero skips on Squid {squid_version}; fixture GETs={fixture_page_hits}; Squid connected "
-                    "to fixture IP 172.30.91.10; forbidden sink accepted zero connections"
+                    f"to fixture IP {addresses['SCOUT_HTTP_E2E_FIXTURE_IP']}; "
+                    "forbidden sink accepted zero connections"
                 )
                 print(f"connection evidence: {connection_evidence}")
                 print(f"denied CONNECTs: {denied_count}; forbidden sink accepts: 0")
@@ -518,6 +642,13 @@ def main() -> int:
                 )
         finally:
             _run([*compose, "down"], env=env, check=False)
+            docker = shutil.which("docker")
+            if docker:
+                subprocess.run(
+                    [docker, "image", "rm", "--force", worker_tag, base_tag],
+                    check=False,
+                    capture_output=True,
+                )
         return status
 
 

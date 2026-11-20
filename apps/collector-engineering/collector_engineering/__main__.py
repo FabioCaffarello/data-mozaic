@@ -1,4 +1,4 @@
-"""Command-line entry point for local draft validation and fixture replay."""
+"""Command-line entry point for local draft authoring and validation only."""
 
 import argparse
 import json
@@ -6,22 +6,10 @@ import sys
 from pathlib import Path
 
 from .playbooks import (
-    PlaybookError,
-    accept_acquisition,
     build_draft,
     dump_yaml,
-    load_playbook,
-    replay,
     validate_file,
 )
-
-
-def _write_report(path: Path | None, payload: dict) -> None:
-    rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    if path is None:
-        print(rendered, end="")
-    else:
-        path.write_text(rendered, encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,23 +22,6 @@ def main(argv: list[str] | None = None) -> int:
     draft_parser.add_argument("--output", type=Path, required=True)
     validate_parser = subparsers.add_parser("validate", help="validate a YAML draft")
     validate_parser.add_argument("playbook", type=Path)
-    replay_parser = subparsers.add_parser(
-        "replay", help="replay against captured fixtures only"
-    )
-    replay_parser.add_argument("playbook", type=Path)
-    replay_parser.add_argument("--fixtures", type=Path, required=True)
-    replay_parser.add_argument("--output", type=Path, required=True)
-    replay_parser.add_argument("--report", type=Path)
-    accept_parser = subparsers.add_parser(
-        "accept",
-        help="compare offline replay against independent acquisition expectations",
-    )
-    accept_parser.add_argument("playbook", type=Path)
-    accept_parser.add_argument("transcript", type=Path)
-    accept_parser.add_argument("--fixtures", type=Path, required=True)
-    accept_parser.add_argument("--expectations", type=Path, required=True)
-    accept_parser.add_argument("--output", type=Path, required=True)
-    accept_parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "draft":
@@ -67,20 +38,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print("CapturePlaybook draft is schema and semantically valid")
             return 0
-        if args.command == "replay":
-            report = replay(load_playbook(args.playbook), args.fixtures, args.output)
-            _write_report(args.report, report)
-            return 0 if report["state"] == "passed" else 1
-        report = accept_acquisition(
-            load_playbook(args.playbook),
-            json.loads(args.transcript.read_text(encoding="utf-8")),
-            args.fixtures,
-            args.output,
-            json.loads(args.expectations.read_text(encoding="utf-8")),
-        )
-        _write_report(args.report, report)
-        return 0 if report["acquisition_acceptance"]["state"] == "accepted" else 1
-    except (OSError, json.JSONDecodeError, PlaybookError) as error:
+    except (OSError, json.JSONDecodeError) as error:
         print(str(error), file=sys.stderr)
         return 1
 

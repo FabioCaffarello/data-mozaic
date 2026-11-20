@@ -1,21 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env sh
+set -eu
 
-script_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
-repo_root="$(cd -- "$script_dir/.." && pwd -P)"
-environment_file="$repo_root/.local/scout-mcp.env"
-
-if [[ ! -f "$environment_file" ]]; then
-  echo "Missing $environment_file; copy config/scout/authoring-mcp.env.example and configure an approved local source first." >&2
-  exit 2
-fi
-
-cd "$repo_root"
-
-exec uv run \
-  --locked \
-  --offline \
-  --project "$repo_root" \
-  --env-file .local/scout-mcp.env \
-  --package mozaic-scout \
-  python -m scout.tool_host
+echo "Project-local Scout MCP STDIO startup is disabled. Use only the operator-provisioned Streamable HTTP broker at the managed endpoint." >&2
+exit 78

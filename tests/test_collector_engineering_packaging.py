@@ -164,29 +164,6 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                 for command in (
                     ["draft", str(transcript_path), "--output", str(draft_path)],
                     ["validate", str(draft_path)],
-                    [
-                        "replay",
-                        str(draft_path),
-                        "--fixtures",
-                        str(fixture_copy),
-                        "--output",
-                        str(external / f"raw-{suffix}"),
-                        "--report",
-                        str(external / f"replay-{suffix}.json"),
-                    ],
-                    [
-                        "accept",
-                        str(draft_path),
-                        str(transcript_path),
-                        "--fixtures",
-                        str(fixture_copy),
-                        "--expectations",
-                        str(fixture_copy / "acceptance.json"),
-                        "--output",
-                        str(external / f"acceptance-raw-{suffix}"),
-                        "--report",
-                        str(external / f"acceptance-{suffix}.json"),
-                    ],
                 ):
                     subprocess.run(
                         [
@@ -205,6 +182,32 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                         capture_output=True,
                         text=True,
                     )
+
+                for command in (
+                    ["replay", str(draft_path)],
+                    ["accept", str(draft_path), str(transcript_path)],
+                ):
+                    rejected = subprocess.run(
+                        [
+                            str(python),
+                            "-c",
+                            (
+                                "import runpy,sys; "
+                                f"sys.path.insert(0, {str(runtime_dependencies)!r}); "
+                                "runpy.run_module('collector_engineering',run_name='__main__')"
+                            ),
+                            *command,
+                        ],
+                        cwd=external,
+                        env=clean_env,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(2, rejected.returncode, rejected.stderr)
+                    self.assertIn("invalid choice", rejected.stderr)
+                self.assertFalse((external / f"raw-{suffix}").exists())
+                self.assertFalse((external / f"acceptance-raw-{suffix}").exists())
 
 
 if __name__ == "__main__":

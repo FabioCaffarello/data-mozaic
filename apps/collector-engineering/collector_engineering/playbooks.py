@@ -981,6 +981,12 @@ class _PrivateRawOutput:
 
 
 def replay(playbook: dict, fixture_root: Path, output_root: Path) -> dict:
+    """Replay for trusted in-process callers only; not an agent isolation boundary.
+
+    Untrusted callers must use the protected Scout MCP executor, which owns the
+    output volume. The path-based API cannot protect against a same-UID process
+    that can rename directories in its filesystem namespace.
+    """
     """Replay declared steps against captured bodies and publish raw outputs offline."""
     errors = validate_playbook(playbook)
     if errors:
@@ -1242,7 +1248,7 @@ def accept_acquisition(
     output_root: Path,
     expectations: dict,
 ) -> dict:
-    """Compare offline replay with an independently authored fixture oracle."""
+    """Compare replay with an oracle; trusted callers only, not agent isolation."""
     errors = validate_playbook(playbook)
     structural = {"state": "passed" if not errors else "failed", "errors": errors}
     if errors:

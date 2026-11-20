@@ -1,6 +1,6 @@
 [mcp_servers.data_mozaic_scout]
-command = "bash"
-args = ["tooling/codex-scout-mcp.sh"]
+url = "http://127.0.0.1:8765/mcp"
+bearer_token_env_var = "SCOUT_BROKER_TOKEN"
 enabled = true
 required = true
 enabled_tools = [
@@ -11,9 +11,12 @@ enabled_tools = [
   "scout_propose",
   "scout_status",
   "scout_export_transcript",
-  "scout_export_replay_fixtures",
+  "scout_bc15_replay",
+  "scout_bc15_accept",
+  "scout_bc15_status",
+  "scout_bc15_get_manifest",
+  "scout_bc15_get_report",
 ]
-env_vars = ["SCOUT_DATABASE_URL"]
 default_tools_approval_mode = "prompt"
 startup_timeout_sec = 30
 tool_timeout_sec = 120

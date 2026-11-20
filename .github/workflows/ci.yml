@@ -58,6 +58,8 @@ jobs:
           make db-migrate
       - name: PostgreSQL integration and recovery tests
         run: make test-integration
+      - name: Protected BC15 replay executor and MCP boundary
+        run: make scout-protected-replay-check
       - name: Official MCP client and controlled HTTPS fixture
         run: make scout-http-e2e
       - name: Squid DNS adversarial and connection-time tests

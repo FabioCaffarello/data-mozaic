@@ -48,7 +48,33 @@ def main():
         LocalFileEvidenceCustody(Path(os.environ["SCOUT_TEST_CUSTODY_ROOT"])),
         FixtureExplorer(),
     )
-    serve(create_server(app, "local-analyst"))
+    if os.environ.get("SCOUT_TEST_PROTECTED") == "1":
+        import json
+
+        from scout.tool_host.protected_replay import DockerProtectedReplayExecutor
+
+        repo_root = Path(__file__).resolve().parents[1]
+        oracle_path = (
+            repo_root / "tests/fixtures/scout-authoring/mcp-fixture-acceptance.json"
+        )
+        oracle = json.loads(oracle_path.read_text(encoding="utf-8"))
+        source_key = (
+            oracle["source"]["source_id"],
+            oracle["source"]["revision"],
+        )
+        serve(
+            create_server(
+                app,
+                "local-analyst",
+                protected_replay_executor=DockerProtectedReplayExecutor(
+                    os.environ["SCOUT_TEST_WORKER_IMAGE_DIGEST"],
+                    registry_path=Path(os.environ["SCOUT_TEST_REGISTRY_PATH"]),
+                ),
+                acceptance_expectations={source_key: oracle},
+            )
+        )
+    else:
+        serve(create_server(app, "local-analyst"))
 
 
 if __name__ == "__main__":

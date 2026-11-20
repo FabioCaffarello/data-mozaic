@@ -1,0 +1,14 @@
+ARG PYTHON_BASE_IMAGE
+FROM ${PYTHON_BASE_IMAGE}
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /opt/bc15
+COPY requirements.txt ./requirements.txt
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements.txt
+COPY collector_engineering ./collector_engineering
+RUN mkdir -p /results && chown 65532:65532 /results
+
+USER 65532:65532
+ENTRYPOINT ["python", "-m", "collector_engineering.protected_worker"]

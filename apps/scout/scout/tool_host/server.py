@@ -286,9 +286,15 @@ def _write_replay_fixtures(
                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                     dir_fd=fixture_fd,
                 )
-                metadata = os.fstat(existing_fd)
-                existing = os.read(existing_fd, 4_000_001)
-                os.close(existing_fd)
+                try:
+                    metadata = os.fstat(existing_fd)
+                    existing = os.read(existing_fd, 4_000_001)
+                except OSError as error:
+                    raise ValueError(
+                        "existing fixture index could not be verified"
+                    ) from error
+                finally:
+                    os.close(existing_fd)
                 if (
                     not stat.S_ISREG(metadata.st_mode)
                     or metadata.st_uid != os.geteuid()
@@ -320,6 +326,9 @@ def create_server(
     application: ScoutApplication,
     principal: str,
     artifact_root: Path | None = None,
+    protected_replay_executor=None,
+    acceptance_expectations: dict[tuple[str, str], dict] | None = None,
+    single_use_approval_source: tuple[str, str] | None = None,
 ) -> Server:
     """Create a tool server bound to launcher-owned local identity and adapters."""
     if not principal:
@@ -343,6 +352,7 @@ def create_server(
             DiscoveryStructureError,
         )
         from ..tools.url_policy import TargetRejected
+        from .protected_replay import ProtectedReplayError
 
         if isinstance(
             error,
@@ -361,6 +371,8 @@ def create_server(
             code = "version_or_idempotency_conflict"
         elif isinstance(error, IntegrityError):
             code = "invalid_command"
+        elif isinstance(error, ProtectedReplayError):
+            code = "protected_executor_failure"
         else:
             code = "operation_failed"
         _LOG.warning("scout.tool.failed code=%s type=%s", code, type(error).__name__)
@@ -536,19 +548,126 @@ def create_server(
                 "additionalProperties": False,
             },
         ),
-        Tool(
-            name="scout_export_replay_fixtures",
-            description="Reauthorize a proposed session and export verified custody bytes to the configured local artifact root for offline BC15 replay; raw bodies are not returned to the model.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "session_id": {"type": "string", "minLength": 1, "maxLength": 128}
-                },
-                "required": ["session_id"],
-                "additionalProperties": False,
-            },
-        ),
     ]
+    if protected_replay_executor is None:
+        # Test-only/legacy composition. The production launcher fails closed
+        # unless its protected executor is initialized before exposing tools.
+        tools.append(
+            Tool(
+                name="scout_export_replay_fixtures",
+                description="Test-only fixture export for trusted local callers; not enabled in the protected Codex composition.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                        }
+                    },
+                    "required": ["session_id"],
+                    "additionalProperties": False,
+                },
+            )
+        )
+    if protected_replay_executor is not None:
+        tools.extend(
+            [
+                Tool(
+                    name="scout_bc15_replay",
+                    description="Run the submitted CapturePlaybook through the protected offline BC15 executor. Output locations are executor-owned; raw bodies are not returned.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "draft_yaml": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 24000,
+                            },
+                        },
+                        "required": ["session_id", "draft_yaml"],
+                        "additionalProperties": False,
+                    },
+                ),
+                Tool(
+                    name="scout_bc15_accept",
+                    description="Run protected offline BC15 replay and independent acquisition acceptance for the configured source oracle.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "draft_yaml": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 24000,
+                            },
+                        },
+                        "required": ["session_id", "draft_yaml"],
+                        "additionalProperties": False,
+                    },
+                ),
+                Tool(
+                    name="scout_bc15_status",
+                    description="Return the state of a protected BC15 run owned by this authorized session.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "run_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+                        },
+                        "required": ["session_id", "run_id"],
+                        "additionalProperties": False,
+                    },
+                ),
+                Tool(
+                    name="scout_bc15_get_manifest",
+                    description="Return the raw artifact manifest metadata for a protected BC15 run. Body bytes are never returned.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "run_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+                        },
+                        "required": ["session_id", "run_id"],
+                        "additionalProperties": False,
+                    },
+                ),
+                Tool(
+                    name="scout_bc15_get_report",
+                    description="Return the bounded report metadata for a protected BC15 run. Body bytes are never returned.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "run_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+                        },
+                        "required": ["session_id", "run_id"],
+                        "additionalProperties": False,
+                    },
+                ),
+            ]
+        )
     by_name = {tool.name: tool for tool in tools}
 
     @server.list_tools()
@@ -589,8 +708,21 @@ def create_server(
                 }
             if name == "scout_start":
                 command_id, _, _ = command_identity(principal, name, arguments)
+                source = SourceRef(arguments["source_id"], arguments["revision"])
+                if (
+                    protected_replay_executor is not None
+                    and single_use_approval_source
+                    == (source.source_id, source.revision)
+                ):
+                    decision = application.policy.decide(principal, source, now())
+                    protected_replay_executor.claim_approval_once(
+                        principal,
+                        source.source_id,
+                        source.revision,
+                        decision.expires_at.isoformat(),
+                    )
                 session = application.start_incremental(
-                    source=SourceRef(arguments["source_id"], arguments["revision"]),
+                    source=source,
                     objective=arguments["objective"],
                     principal=principal,
                     command_id=command_id,
@@ -743,8 +875,10 @@ def create_server(
                     "sha256": hashlib.sha256(encoded).hexdigest(),
                 }
             if name == "scout_export_replay_fixtures":
-                if artifact_root is None:
-                    raise ValueError("SCOUT_ARTIFACT_ROOT is not configured")
+                if protected_replay_executor is not None or artifact_root is None:
+                    raise ValueError(
+                        "fixture export is not available in protected mode"
+                    )
                 pages = application.export_replay_fixtures(
                     arguments["session_id"], principal, now()
                 )
@@ -769,6 +903,88 @@ def create_server(
                         for page in pages
                     ],
                 }
+            if name in {"scout_bc15_replay", "scout_bc15_accept"}:
+                transcript = application.export_transcript(
+                    arguments["session_id"], principal, now()
+                )
+                validate_transcript(transcript)
+                source = transcript["session"]["source"]
+                action = "accept" if name == "scout_bc15_accept" else "replay"
+                expectations = {}
+                if action == "accept":
+                    expectation_map = acceptance_expectations or {}
+                    expectations = expectation_map.get(
+                        (source["source_id"], source["revision"])
+                    )
+                    if expectations is None:
+                        raise ValueError(
+                            "no trusted acceptance oracle is configured for this source"
+                        )
+                pages = application.export_replay_fixtures(
+                    arguments["session_id"], principal, now()
+                )
+                run_id, report = await anyio.to_thread.run_sync(
+                    lambda: protected_replay_executor.execute(
+                        action=action,
+                        session_id=arguments["session_id"],
+                        principal=principal,
+                        draft_yaml=arguments["draft_yaml"],
+                        transcript=transcript,
+                        pages=pages,
+                        expectations=expectations,
+                    )
+                )
+                if _report_contains_raw_bytes(report):
+                    raise ValueError("protected BC15 report contains disallowed data")
+                report_bytes = json.dumps(
+                    report, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
+                if len(report_bytes) > 256_000:
+                    raise ValueError("protected BC15 report exceeds the output limit")
+                return {
+                    "ok": True,
+                    "run_id": run_id,
+                    "state": "passed",
+                    "report": report,
+                }
+            if name in {
+                "scout_bc15_status",
+                "scout_bc15_get_manifest",
+                "scout_bc15_get_report",
+            }:
+                application.status_incremental(
+                    arguments["session_id"], principal, now()
+                )
+                run = protected_replay_executor.get_run(arguments["run_id"])
+                if (
+                    run is None
+                    or run["principal"] != principal
+                    or run["session_id"] != arguments["session_id"]
+                ):
+                    return {"ok": False, "error": {"code": "run_unavailable"}}
+                if run["state"] == "expired":
+                    return {"ok": False, "error": {"code": "run_expired"}}
+                if name == "scout_bc15_status":
+                    return {
+                        "ok": True,
+                        "run_id": arguments["run_id"],
+                        "state": run["state"],
+                    }
+                if name == "scout_bc15_get_manifest":
+                    report = (run["report"] or {}).get(
+                        "replay_execution", run["report"] or {}
+                    )
+                    return {
+                        "ok": True,
+                        "run_id": arguments["run_id"],
+                        "manifest": report.get("raw_manifest"),
+                        "raw_outputs": report.get("raw_outputs", []),
+                    }
+                return {
+                    "ok": True,
+                    "run_id": arguments["run_id"],
+                    "report": run["report"],
+                }
             return {"ok": False, "error": {"code": "unknown_tool"}}
         except Exception as error:  # noqa: BLE001 - adapter returns typed tool failures
             return failure(error)
@@ -777,6 +993,18 @@ def create_server(
     # also makes unknown tools a typed denial if a client bypasses tools/list.
     del by_name
     return server
+
+
+def _report_contains_raw_bytes(value) -> bool:
+    if isinstance(value, dict):
+        return any(
+            key in {"body", "body_base64", "raw_body", "content_bytes"}
+            or _report_contains_raw_bytes(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_report_contains_raw_bytes(item) for item in value)
+    return False
 
 
 async def run_stdio(server: Server) -> None:

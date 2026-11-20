@@ -43,7 +43,6 @@ class AiohttpSquidTransport:
         host_loopback_proxy = (
             parts.scheme != "http"
             or parts.hostname not in {"127.0.0.1", "localhost", "::1"}
-            or parts.port != 3128
             or parts.username is not None
             or parts.password is not None
             or parts.path
