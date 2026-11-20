@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tooling.package_scout_broker import remove_uv_build_metadata
 from tooling.scout_release_artifact import runtime_config_differences
 from tooling.verify_scout_bundle import verify_bundle
 
@@ -334,6 +335,39 @@ class ReleaseBundleVerificationTests(unittest.TestCase):
         docker_run.return_value.returncode = 1
         with self.assertRaisesRegex(ValueError, "image is absent"):
             self._verify(docker_host="tcp://docker:2375")
+
+
+class UvWheelOutputTests(unittest.TestCase):
+    def test_removes_only_uv_generated_hidden_gitignore(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            wheels = Path(temporary)
+            (wheels / ".gitignore").write_text("*\n")
+            (wheels / "scout-1.0-py3-none-any.whl").write_bytes(b"wheel")
+
+            remove_uv_build_metadata(wheels)
+
+            self.assertFalse((wheels / ".gitignore").exists())
+            self.assertTrue((wheels / "scout-1.0-py3-none-any.whl").is_file())
+
+    def test_rejects_unexpected_hidden_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            wheels = Path(temporary)
+            (wheels / ".unexpected").write_text("hidden")
+
+            with self.assertRaisesRegex(SystemExit, "unexpected hidden files"):
+                remove_uv_build_metadata(wheels)
+
+    def test_rejects_symlinked_uv_gitignore(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            wheels = root / "wheels"
+            wheels.mkdir()
+            target = root / "target"
+            target.write_text("keep")
+            (wheels / ".gitignore").symlink_to(target)
+
+            with self.assertRaisesRegex(SystemExit, "unsafe wheels/.gitignore"):
+                remove_uv_build_metadata(wheels)
 
 
 if __name__ == "__main__":

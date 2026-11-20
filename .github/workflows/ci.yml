@@ -148,6 +148,36 @@ jobs:
             ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}/release-evidence.txt
           if-no-files-found: error
           retention-days: 14
+      - name: Download the distributed bundle for independent re-verification
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: scout-broker-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}/downloaded
+      - name: Verify the exact downloaded artifact
+        env:
+          SCOUT_RELEASE_ROOT: ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}
+          SCOUT_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          downloaded="$SCOUT_RELEASE_ROOT/downloaded"
+          source_bundle="$SCOUT_RELEASE_ROOT/bundle"
+          test -f "$downloaded/release-evidence.txt"
+          test -d "$downloaded/bundle"
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          TREE_SHA="$(git rev-parse 'HEAD^{tree}')"
+          test "$COMMIT_SHA" = "$SCOUT_SOURCE_SHA"
+          grep -Fx "commit=$COMMIT_SHA" "$downloaded/release-evidence.txt"
+          grep -Fx "tree=$TREE_SHA" "$downloaded/release-evidence.txt"
+          MANIFEST_SHA="$(sha256sum "$source_bundle/manifest.json" | cut -d ' ' -f 1)"
+          grep -Fx "manifest_sha256=$MANIFEST_SHA" "$downloaded/release-evidence.txt"
+          test "$(sha256sum "$downloaded/bundle/manifest.json" | cut -d ' ' -f 1)" = "$MANIFEST_SHA"
+          uv run --locked python tooling/verify_scout_bundle.py \
+            "$downloaded/bundle" \
+            --expected-commit "$COMMIT_SHA" \
+            --expected-tree "$TREE_SHA" \
+            --target-platform linux/amd64 \
+            --expected-manifest-sha256 "$MANIFEST_SHA" \
+            --source-root "$GITHUB_WORKSPACE"
       - name: Stop E2E Compose profile (preserve volumes)
         if: always()
         env:

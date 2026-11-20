@@ -83,6 +83,26 @@ def native_platform() -> str:
     return f"linux/{architecture}"
 
 
+def remove_uv_build_metadata(wheels: Path) -> None:
+    """Drop the known, non-package .gitignore emitted by ``uv build``.
+
+    Hidden files are excluded by GitHub artifact upload by default. They are
+    not release inputs, so remove the exact generated file and reject any
+    other hidden output instead of silently producing a lossy bundle.
+    """
+    generated_gitignore = wheels / ".gitignore"
+    if generated_gitignore.exists() or generated_gitignore.is_symlink():
+        if generated_gitignore.is_symlink() or not generated_gitignore.is_file():
+            raise SystemExit("uv build produced an unsafe wheels/.gitignore")
+        generated_gitignore.unlink()
+    hidden_paths = [path for path in wheels.rglob("*") if path.name.startswith(".")]
+    if hidden_paths:
+        raise SystemExit(
+            "wheel output contains unexpected hidden files: "
+            + ", ".join(path.relative_to(wheels).as_posix() for path in hidden_paths)
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
@@ -178,6 +198,7 @@ def main() -> int:
                 cwd=ROOT,
                 check=True,
             )
+        remove_uv_build_metadata(wheels)
         shutil.copy2(ROOT / "uv.lock", staging / "uv.lock")
         shutil.copy2(
             ROOT / "apps/collector-engineering/Dockerfile.protected",
