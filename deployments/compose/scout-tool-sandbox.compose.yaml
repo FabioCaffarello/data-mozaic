@@ -9,7 +9,7 @@ services:
     extra_hosts:
       - "blocked-target.example.test:127.0.0.1"
     ports:
-      - "127.0.0.1:3128:3128"
+      - "127.0.0.1::3128"
     networks:
       - tool-internal
       - egress

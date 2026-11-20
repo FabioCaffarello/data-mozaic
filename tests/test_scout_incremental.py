@@ -146,6 +146,180 @@ class ScoutIncrementalTests(unittest.TestCase):
             self.assertEqual(captured.remaining_seconds, 58)
             self.assertEqual(outcome.text, "HTTPS fixture untrusted page")
             self.assertEqual(discovery.request[2], "https://catalog.test/docs/page")
+            self.assertEqual(
+                captured.observations[0].requested_url, "https://catalog.test/docs/page"
+            )
+            self.assertEqual(captured.observations[0].exploration_sequence, 1)
+            self.assertEqual(
+                captured.start_requested_url, "https://catalog.test/docs/page"
+            )
+            self.assertEqual(
+                captured.start_effective_url, "https://catalog.test/docs/page"
+            )
+            with self.assertRaises(IntegrityError):
+                asyncio.run(
+                    self.app.explore_http_incremental(
+                        session_id=session.session_id,
+                        principal="operator",
+                        command_id="http-repeat",
+                        idempotency_key="http-repeat-key",
+                        fingerprint="http-repeat-fingerprint",
+                        expected_version=1,
+                        url="https://catalog.test/docs/page",
+                        now=self.now,
+                    )
+                )
+
+    def test_http_redirect_preserves_requested_and_effective_start(self):
+        body = b"<html><title>Canonical</title></html>"
+        result = SimpleNamespace(
+            status=200,
+            content_type="text/html",
+            body=body,
+            request_count=2,
+            elapsed_seconds=1,
+            final_url="https://catalog.test/docs/canonical",
+            completed_at=self.now,
+            title="Canonical",
+            links=(),
+            text="Canonical",
+            truncated=False,
+            extraction_version="scout-text-v1",
+        )
+
+        class Discovery:
+            def normalize_target(self, url):
+                return normalize_url(url)
+
+            async def fetch(self, source_id, revision, url):
+                return result
+
+            def reconstruct_text(self, content, content_type, version):
+                return reconstruct_text_projection(content, content_type, version)
+
+        self.app.http_discovery_factory = lambda *_: Discovery()
+        self.app.custody = FakeEvidenceCustody(kind="http_response")
+        session = self.app.start_incremental(
+            source=self.source,
+            objective="follow an authorized redirect",
+            principal="operator",
+            command_id="redirect-session",
+            now=self.now,
+        )
+        outcome = asyncio.run(
+            self.app.explore_http_incremental(
+                session_id=session.session_id,
+                principal="operator",
+                command_id="redirect-fetch",
+                idempotency_key="redirect-key",
+                fingerprint="redirect-fingerprint",
+                expected_version=0,
+                url="https://catalog.test/docs/start",
+                now=self.now,
+            )
+        )
+        self.assertEqual(
+            "https://catalog.test/docs/start", outcome.session.start_requested_url
+        )
+        self.assertEqual(
+            "https://catalog.test/docs/canonical", outcome.session.start_effective_url
+        )
+
+    def test_http_transcript_marks_proposal_subset_as_incomplete(self):
+        responses = {
+            "https://catalog.test/docs/page": (
+                b"<a href='/docs/next'>Next</a>",
+                ("https://catalog.test/docs/next",),
+            ),
+            "https://catalog.test/docs/next": (b"<article>record</article>", ()),
+        }
+
+        class Discovery:
+            def normalize_target(self, url):
+                return normalize_url(url)
+
+            async def fetch(self, source_id, revision, url):
+                body, links = responses[url]
+                return SimpleNamespace(
+                    status=200,
+                    content_type="text/html",
+                    body=body,
+                    request_count=1,
+                    elapsed_seconds=1,
+                    final_url=url,
+                    completed_at=self_outer.now,
+                    title=None,
+                    links=links,
+                    text="captured fixture",
+                    truncated=False,
+                    extraction_version="scout-text-v1",
+                )
+
+            def reconstruct_text(self, content, content_type, version):
+                return reconstruct_text_projection(content, content_type, version)
+
+        self_outer = self
+        self.app.http_discovery_factory = lambda *_: Discovery()
+        self.app.custody = FakeEvidenceCustody(kind="http_response")
+        session = self.app.start_incremental(
+            source=self.source,
+            objective="inspect one page from a linked catalog",
+            principal="operator",
+            command_id="partial-http-session",
+            now=self.now,
+        )
+        for sequence, url in enumerate(responses, start=1):
+            session = asyncio.run(
+                self.app.explore_http_incremental(
+                    session_id=session.session_id,
+                    principal="operator",
+                    command_id=f"partial-http-fetch-{sequence}",
+                    idempotency_key=f"partial-http-key-{sequence}",
+                    fingerprint=f"partial-http-fingerprint-{sequence}",
+                    expected_version=session.version,
+                    url=url,
+                    now=self.now,
+                )
+            ).session
+        first_manifest = session.manifests[0].manifest_id
+        session = self.app.record_finding_incremental(
+            session_id=session.session_id,
+            principal="operator",
+            command_id="partial-http-finding",
+            idempotency_key="partial-http-finding-key",
+            fingerprint="partial-http-finding-fingerprint",
+            expected_version=session.version,
+            statement="The start page links to a next page.",
+            epistemic_status="observation",
+            confidence=1.0,
+            manifest_ids=(first_manifest,),
+            verification_note="Link observed on the starting page.",
+            now=self.now,
+        )
+        session = self.app.submit_proposal_incremental(
+            session_id=session.session_id,
+            principal="operator",
+            expected_version=session.version,
+            command_id="partial-http-proposal",
+            idempotency_key="partial-http-proposal-key",
+            fingerprint="partial-http-proposal-fingerprint",
+            summary="Capture only the starting page.",
+            finding_ids=(session.findings[0].finding_id,),
+            manifest_ids=(first_manifest,),
+            assumptions=(),
+            risks=(),
+            required_capabilities=("http.fetch",),
+            now=self.now,
+        )
+
+        transcript = self.app.export_transcript(
+            session.session_id, "operator", self.now
+        )
+        self.assertEqual("scout-transcript-draft/v2", transcript["transcript_schema"])
+        self.assertEqual(2, transcript["navigation"]["observation_count"])
+        self.assertFalse(transcript["navigation"]["sequence_complete"])
+        self.assertEqual([1], [page["sequence"] for page in transcript["pages"]])
+        validate_transcript(transcript)
 
     def test_http_replay_reconstructs_text_from_custody_without_refetch(self):
         body = b"<html><title>Replay</title><p>api_key=private-value</p></html>"

@@ -1,0 +1,41 @@
+{
+  "expectation_schema": "capture-acquisition-expectations/v1",
+  "source": {
+    "source_id": "e2e-catalog",
+    "revision": "revision-7"
+  },
+  "start": {
+    "requested_url": "https://catalog.fixture.test/docs/page",
+    "effective_url": "https://catalog.fixture.test/docs/page"
+  },
+  "required_pages": [
+    {
+      "requested_url": "https://catalog.fixture.test/docs/page",
+      "effective_url": "https://catalog.fixture.test/docs/page",
+      "sha256": "0172a40e0707e99225a0ca9b7d74f96a936375aff9b7a6d94c41184e986a05ed",
+      "size_bytes": 231,
+      "contains": [
+        "fixture evidence body",
+        "/docs/next"
+      ]
+    },
+    {
+      "requested_url": "https://catalog.fixture.test/docs/next",
+      "effective_url": "https://catalog.fixture.test/docs/next",
+      "sha256": "e573360812c5251455dd4a58974bd3ab17272bca25a58972b39dbf7d9c5cc1cd",
+      "size_bytes": 191,
+      "contains": [
+        "data-record-id='r-100'",
+        "data-record-id='r-101'"
+      ]
+    }
+  ],
+  "required_links": [
+    {
+      "from_effective_url": "https://catalog.fixture.test/docs/page",
+      "to_requested_url": "https://catalog.fixture.test/docs/next"
+    }
+  ],
+  "max_requests": 4,
+  "max_pages": 3
+}

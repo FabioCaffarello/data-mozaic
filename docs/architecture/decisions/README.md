@@ -20,6 +20,7 @@ Todos os registros estão **Proposed**; não há decisões Accepted, Rejected ou
 | [014](014-scout-egress-sandbox.md) | isolamento de egress para o tool worker Scout | Proposed |
 | [015](015-mcp-sdk-v2-compatibility.md) | compatibilidade do SDK MCP v1 e migração futura para v2 | Proposed |
 | [016](016-scout-authorized-http-tool-host.md) | integração do fetch HTTP autorizado ao host MCP | Proposed |
+| [017](017-scout-trusted-mcp-deployment.md) | deployment confiável do broker MCP Scout | Proposed |
 
 Use o [template](template.md) para alterações que imponham restrições novas. Decisões menores e reversíveis podem permanecer nos documentos de arquitetura até existir evidência suficiente para ADR.
 7. [Recuperação durável de comandos Scout](007-scout-durable-recovery.md)

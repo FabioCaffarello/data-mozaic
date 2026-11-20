@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import stat
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -19,9 +22,45 @@ from ..tools.discovery import HTTPDiscoveryTool
 from ..tools.policy import LocalAuthorizationStore, ReloadingAuthorizationStore
 from ..tools.ports import TrustedToolContext
 from ..tools.transport import AiohttpSquidTransport
+from .protected_replay import DockerProtectedReplayExecutor
 from .server import create_server
 
 _LOG = logging.getLogger(__name__)
+
+
+def _private_policy_snapshot(source: Path, destination: Path) -> Path:
+    if source.is_symlink() or not source.is_file():
+        raise RuntimeError("local Scout policy file is unavailable")
+    source_mode = source.stat()
+    if source_mode.st_uid != os.geteuid() or source_mode.st_mode & 0o077:
+        raise RuntimeError("local Scout policy file must be owner-only")
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    destination.parent.chmod(0o700)
+    parent_mode = destination.parent.stat()
+    if (
+        not stat.S_ISDIR(parent_mode.st_mode)
+        or parent_mode.st_uid != os.geteuid()
+        or parent_mode.st_mode & 0o077
+    ):
+        raise RuntimeError("private Scout broker state directory is not protected")
+    data = source.read_bytes()
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".policy-snapshot-", dir=destination.parent
+    )
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+        destination.chmod(0o400)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    return destination
 
 
 class _LocalSourceLookup:
@@ -71,10 +110,20 @@ class _LocalPolicyDecision:
         )
 
 
-def build_server():
-    """Load launcher-owned local configuration and build a STDIO-only server."""
+def build_server(
+    *,
+    trusted_http: bool = False,
+    protected_replay_executor: DockerProtectedReplayExecutor | None = None,
+):
+    """Compose the existing Scout application with local or operator-owned config."""
+    trusted_http = trusted_http or os.environ.get("SCOUT_TRUSTED_HTTP") == "1"
     policy_path = Path(
-        os.environ.get("SCOUT_HOST_POLICY_FILE", ".local/authoring-policy.json")
+        os.environ.get(
+            "SCOUT_HOST_POLICY_FILE",
+            "/etc/data-mozaic/scout/authoring-policy.json"
+            if trusted_http
+            else ".local/authoring-policy.json",
+        )
     )
     principal = os.environ.get("SCOUT_LOCAL_PRINCIPAL", "")
     dsn = os.environ.get("SCOUT_DATABASE_URL", "")
@@ -84,17 +133,64 @@ def build_server():
             str(Path.home() / "Library/Application Support/Data Mozaic/scout-evidence"),
         )
     )
+    artifact_root = Path(
+        os.environ.get(
+            "SCOUT_ARTIFACT_ROOT",
+            str(Path.home() / ".local/share/data-mozaic/scout-artifacts"),
+        )
+    )
+    repo_root = None if trusted_http else Path(__file__).resolve().parents[4]
+    if not policy_path.is_absolute() and not trusted_http:
+        policy_path = repo_root / policy_path
     if not principal or not dsn or not policy_path.is_file():
         raise RuntimeError(
             "set SCOUT_LOCAL_PRINCIPAL, SCOUT_DATABASE_URL, and an administrative policy file"
         )
-    policy = LocalAuthorizationStore.from_file(policy_path)
-    repo_root = Path(__file__).resolve().parents[4]
-    if not evidence_root.is_absolute() or evidence_root.resolve().is_relative_to(
-        repo_root
+    if trusted_http:
+        if not policy_path.is_absolute() or policy_path.is_symlink():
+            raise RuntimeError(
+                "trusted broker policy must use a protected absolute path"
+            )
+        private_state_root = Path(
+            os.environ.get("SCOUT_RUNTIME_STATE_DIR", "/var/lib/data-mozaic/scout")
+        )
+        if not private_state_root.is_absolute():
+            raise RuntimeError("trusted broker state directory must be absolute")
+        private_state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        metadata = private_state_root.stat()
+        if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+            raise RuntimeError(
+                "trusted broker state must be private to its service identity"
+            )
+        policy_metadata = policy_path.stat()
+        if policy_metadata.st_uid != os.geteuid() or policy_metadata.st_mode & 0o077:
+            raise RuntimeError(
+                "trusted broker policy must be service-owned and private"
+            )
+        if not os.environ.get("SCOUT_EVIDENCE_ROOT") or not os.environ.get(
+            "SCOUT_ARTIFACT_ROOT"
+        ):
+            raise RuntimeError(
+                "trusted broker evidence and artifact roots must be configured"
+            )
+        trusted_policy_path = policy_path
+    else:
+        private_state_root = Path.home() / ".local/state/data-mozaic/scout-bc15"
+        trusted_policy_path = _private_policy_snapshot(
+            policy_path, private_state_root / "policy-snapshot.json"
+        )
+    policy = LocalAuthorizationStore.from_file(trusted_policy_path)
+    if not evidence_root.is_absolute() or (
+        repo_root is not None and evidence_root.resolve().is_relative_to(repo_root)
     ):
         raise RuntimeError(
             "SCOUT_EVIDENCE_ROOT must be absolute and outside the checkout"
+        )
+    if not artifact_root.is_absolute() or (
+        repo_root is not None and artifact_root.resolve().is_relative_to(repo_root)
+    ):
+        raise RuntimeError(
+            "SCOUT_ARTIFACT_ROOT must be absolute and outside the checkout"
         )
     custody = LocalFileEvidenceCustody(evidence_root)
     repository = PostgresScoutSessionRepository(dsn)
@@ -125,7 +221,7 @@ def build_server():
 
         return HTTPDiscoveryTool(
             Context(),
-            ReloadingAuthorizationStore(policy_path),
+            ReloadingAuthorizationStore(trusted_policy_path),
             PostgresNavigationBudgetLedger(dsn),
             NoEvidence(),
             Trace(),
@@ -144,4 +240,70 @@ def build_server():
         FixtureExplorer(),
         http_discovery_factory,
     )
-    return create_server(app, principal)
+    acceptance_expectations = {}
+    expectation_files = []
+    if trusted_http:
+        configured_expectations = os.environ.get(
+            "SCOUT_ACCEPTANCE_EXPECTATIONS_FILE", ""
+        )
+        if configured_expectations:
+            expectation_file = Path(configured_expectations)
+            if not expectation_file.is_absolute() or expectation_file.is_symlink():
+                raise RuntimeError("trusted acceptance oracle path is invalid")
+            metadata = expectation_file.stat()
+            if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+                raise RuntimeError(
+                    "trusted acceptance oracle must be service-owned and private"
+                )
+            expectation_files = [expectation_file]
+    else:
+        expectation_root = repo_root / "tests/fixtures/scout-authoring"
+        expectation_files = [
+            expectation_root / filename
+            for filename in (
+                "controlled-catalog-acceptance.json",
+                "controlled-catalog-codex-acceptance.json",
+                "single-resource-acceptance.json",
+            )
+        ]
+    for expectation_file in expectation_files:
+        expectation = json.loads(expectation_file.read_text(encoding="utf-8"))
+        source = expectation.get("source", {})
+        source_key = (source.get("source_id"), source.get("revision"))
+        if not all(source_key) or source_key in acceptance_expectations:
+            raise RuntimeError("trusted BC15 acceptance oracle registry is invalid")
+        acceptance_expectations[source_key] = expectation
+    worker_image = os.environ.get(
+        "SCOUT_BC15_WORKER_IMAGE_DIGEST"
+        if trusted_http
+        else "SCOUT_TEST_WORKER_IMAGE_DIGEST",
+        "",
+    )
+    if not worker_image:
+        raise RuntimeError("a prebuilt BC15 worker image digest is required")
+    executor = protected_replay_executor
+    if executor is None:
+        executor = DockerProtectedReplayExecutor(
+            worker_image,
+            docker_executable=os.environ.get("SCOUT_DOCKER_EXECUTABLE", ""),
+            registry_path=private_state_root / "bc15-runs.sqlite3",
+            docker_context=os.environ.get("SCOUT_DOCKER_CONTEXT", "default"),
+            docker_endpoint=os.environ.get(
+                "SCOUT_DOCKER_ENDPOINT", "unix:///var/run/docker.sock"
+            ),
+        )
+    return create_server(
+        app,
+        principal,
+        artifact_root,
+        protected_replay_executor=executor,
+        acceptance_expectations=acceptance_expectations,
+        single_use_approval_source=("e2e-catalog-single", "single-resource-v1"),
+    )
+
+
+def build_trusted_http_server():
+    """Construct the operator-configured HTTP service; never use checkout defaults."""
+    if os.environ.get("SCOUT_TRUSTED_HTTP") != "1":
+        raise RuntimeError("trusted HTTP mode is not enabled by the service manager")
+    return build_server(trusted_http=True)

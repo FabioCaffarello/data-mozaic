@@ -1,4 +1,4 @@
-.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check
+.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance
 
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 
@@ -7,7 +7,7 @@ define require_env
 endef
 
 help:
-	@printf '%s\n' 'sync          Install locked development dependencies' 'check         Run the fast quality gate' 'db-up         Start local PostgreSQL and wait for readiness' 'db-migrate    Apply checksummed pending Scout migrations' 'test-integration Run PostgreSQL integration/recovery tests' 'test-recovery Alias for the PostgreSQL integration/recovery suite' 'scout-relay   Run independent Scout outbox worker' 'scout-sandbox-check Verify optional network egress isolation with Docker' 'scout-http-e2e Run MCP/HTTPS tests (not DNS adversarial tests)' 'scout-dns-adversarial-check Run Squid/DNS tests through the real proxy' 'db-down       Stop PostgreSQL without deleting its volume' 'ci            Run repository checks'
+	@printf '%s\n' 'sync          Install locked development dependencies' 'check         Run the fast quality gate' 'db-up         Start local PostgreSQL and wait for readiness' 'db-migrate    Apply checksummed pending Scout migrations' 'test-integration Run PostgreSQL integration/recovery tests' 'test-recovery Alias for the PostgreSQL integration/recovery suite' 'scout-relay   Run independent Scout outbox worker' 'scout-sandbox-check Verify optional network egress isolation with Docker' 'scout-protected-replay-check Run the protected BC15 executor E2E' 'scout-http-e2e Run MCP/HTTPS tests (not DNS adversarial tests)' 'scout-dns-adversarial-check Run Squid/DNS tests through the real proxy' 'db-down       Stop PostgreSQL without deleting its volume' 'ci            Run repository checks'
 
 sync:
 	uv sync --all-packages --locked
@@ -83,6 +83,9 @@ scout-relay-once:
 scout-sandbox-check:
 	uv run --locked python tooling/check_scout_sandbox.py
 
+scout-protected-replay-check:
+	uv run --locked python tooling/run_scout_protected_replay_check.py
+
 scout-http-e2e:
 	$(require_env)
 	@set -a; . ./.env; set +a; uv run --locked python tooling/run_scout_http_e2e.py --suite http
@@ -90,3 +93,16 @@ scout-http-e2e:
 scout-dns-adversarial-check:
 	$(require_env)
 	@set -a; . ./.env; set +a; uv run --locked python tooling/run_scout_http_e2e.py --suite dns
+
+scout-dev-setup:
+	python3 tooling/scout_dev.py setup
+
+scout-dev-status:
+	python3 tooling/scout_dev.py status
+
+scout-dev-authorize-single-fixture:
+	python3 tooling/scout_dev.py authorize-single-fixture
+
+scout-authoring-acceptance:
+	@test -x .venv/bin/python || { echo 'Run make scout-dev-setup first.'; exit 2; }
+	.venv/bin/python tooling/scout_dev.py accept-single-fixture

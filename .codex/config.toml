@@ -1,0 +1,31 @@
+[mcp_servers.data_mozaic_scout]
+url = "http://127.0.0.1:8765/mcp"
+bearer_token_env_var = "SCOUT_BROKER_TOKEN"
+enabled = true
+required = true
+enabled_tools = [
+  "scout_preflight",
+  "scout_start",
+  "scout_fetch",
+  "scout_record_finding",
+  "scout_propose",
+  "scout_status",
+  "scout_export_transcript",
+  "scout_bc15_replay",
+  "scout_bc15_accept",
+  "scout_bc15_status",
+  "scout_bc15_get_manifest",
+  "scout_bc15_get_report",
+]
+default_tools_approval_mode = "prompt"
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+
+# Convenience only; an administrator must enforce the same filter through
+# Codex requirements because project configuration is agent-writable.
+[shell_environment_policy]
+inherit = "all"
+ignore_default_excludes = true
+
+[shell_environment_policy.filters]
+SCOUT_BROKER_TOKEN = "exclude"

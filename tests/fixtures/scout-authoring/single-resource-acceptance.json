@@ -1,0 +1,20 @@
+{
+  "expectation_schema": "capture-acquisition-expectations/v1",
+  "source": {"source_id": "e2e-catalog-single", "revision": "single-resource-v1"},
+  "start": {
+    "requested_url": "https://catalog.fixture.test/api/catalog",
+    "effective_url": "https://catalog.fixture.test/api/catalog"
+  },
+  "required_pages": [
+    {
+      "requested_url": "https://catalog.fixture.test/api/catalog",
+      "effective_url": "https://catalog.fixture.test/api/catalog",
+      "sha256": "2e9d815e55105f447fe00f1ed4498f345a0a31424295dd57204a781b78e7347f",
+      "size_bytes": 65,
+      "contains": ["s-200", "Standalone catalog record"]
+    }
+  ],
+  "required_links": [],
+  "max_requests": 2,
+  "max_pages": 1
+}

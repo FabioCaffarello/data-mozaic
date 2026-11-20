@@ -1,5 +1,5 @@
 {
-  "transcript_schema": "scout-transcript-draft/v1",
+  "transcript_schema": "scout-transcript-draft/v2",
   "producer": {
     "bounded_context": "BC14",
     "tool_host": "data-mozaic-scout-mcp/1"
@@ -20,7 +20,9 @@
     "source_id": "catalog-test",
     "revision": "revision-1",
     "origin": "https://catalog.test",
-    "path_prefixes": ["/"],
+    "path_prefixes": [
+      "/"
+    ],
     "budgets": {
       "max_requests": 5,
       "max_pages": 3,
@@ -31,7 +33,9 @@
     "source_id": "catalog-test",
     "revision": "revision-1",
     "origin": "https://catalog.test",
-    "path_prefixes": ["/"],
+    "path_prefixes": [
+      "/"
+    ],
     "budgets": {
       "max_requests": 5,
       "max_pages": 3,
@@ -42,27 +46,41 @@
     "contract_version": "1.0.0",
     "proposal_id": "proposal-catalog-1",
     "session_id": "session-catalog-1",
-    "source": {"source_id": "catalog-test", "revision": "revision-1"},
+    "source": {
+      "source_id": "catalog-test",
+      "revision": "revision-1"
+    },
     "summary": "Read the observed catalog pages and preserve their raw responses.",
-    "finding_ids": ["finding-catalog-1", "finding-catalog-2", "finding-catalog-3"],
-    "evidence_manifest_ids": ["evidence-page-1", "evidence-page-2"],
+    "finding_ids": [
+      "finding-catalog-1",
+      "finding-catalog-2",
+      "finding-catalog-3"
+    ],
+    "evidence_manifest_ids": [
+      "evidence-page-1",
+      "evidence-page-2"
+    ],
     "assumptions": [],
-    "risks": ["Fixture replay does not establish production behavior."],
-    "required_capabilities": ["http-read"]
+    "risks": [
+      "Fixture replay does not establish production behavior."
+    ],
+    "required_capabilities": [
+      "http-read"
+    ]
   },
   "evidence": [
     {
       "artifact_id": "artifact-page-1",
-      "sha256": "956ca70c1430ba75e36531c3e379d22dea13d88f8c0d01458958ebbfa432fde8",
-      "size_bytes": 94,
+      "sha256": "f7e40f48346cf6021f75329a44f4fe9e51c33169f56289514c649a8c0f80fd74",
+      "size_bytes": 136,
       "kind": "http_response",
       "redaction": "none",
       "manifest_id": "evidence-page-1"
     },
     {
       "artifact_id": "artifact-page-2",
-      "sha256": "62bb4a67b6a0da1115e33c14ef727da2d2cebd4f23965484a432f737be377835",
-      "size_bytes": 82,
+      "sha256": "fd07cffcad81f5a0d454fb3e916a1cf18f56244f806e196f5be17a5c8375bee2",
+      "size_bytes": 104,
       "kind": "http_response",
       "redaction": "none",
       "manifest_id": "evidence-page-2"
@@ -80,17 +98,24 @@
     {
       "finding_id": "finding-catalog-1",
       "classification": "observed",
-      "evidence_refs": ["evidence-page-1", "evidence-page-2"]
+      "evidence_refs": [
+        "evidence-page-1",
+        "evidence-page-2"
+      ]
     },
     {
       "finding_id": "finding-catalog-2",
       "classification": "hypothesized",
-      "evidence_refs": ["evidence-page-1"]
+      "evidence_refs": [
+        "evidence-page-1"
+      ]
     },
     {
       "finding_id": "finding-catalog-3",
       "classification": "hypothesized",
-      "evidence_refs": ["evidence-page-2"]
+      "evidence_refs": [
+        "evidence-page-2"
+      ]
     }
   ],
   "pages": [
@@ -98,17 +123,37 @@
       "url": "https://catalog.test/",
       "evidence_ref": "evidence-page-1",
       "artifact_id": "artifact-page-1",
-      "sha256": "956ca70c1430ba75e36531c3e379d22dea13d88f8c0d01458958ebbfa432fde8",
-      "size_bytes": 94,
-      "discovered_links": ["https://catalog.test/items/page-2"]
+      "sha256": "f7e40f48346cf6021f75329a44f4fe9e51c33169f56289514c649a8c0f80fd74",
+      "size_bytes": 136,
+      "discovered_links": [
+        "https://catalog.test/items/page-2"
+      ],
+      "requested_url": "https://catalog.test/",
+      "observation_id": "observation-page-1",
+      "sequence": 1,
+      "request_count": 1,
+      "discovered_from_observation_ids": []
     },
     {
       "url": "https://catalog.test/items/page-2",
       "evidence_ref": "evidence-page-2",
       "artifact_id": "artifact-page-2",
-      "sha256": "62bb4a67b6a0da1115e33c14ef727da2d2cebd4f23965484a432f737be377835",
-      "size_bytes": 82,
-      "discovered_links": []
+      "sha256": "fd07cffcad81f5a0d454fb3e916a1cf18f56244f806e196f5be17a5c8375bee2",
+      "size_bytes": 104,
+      "discovered_links": [],
+      "requested_url": "https://catalog.test/items/page-2",
+      "observation_id": "observation-page-2",
+      "sequence": 2,
+      "request_count": 1,
+      "discovered_from_observation_ids": [
+        "observation-page-1"
+      ]
     }
-  ]
+  ],
+  "navigation": {
+    "start_requested_url": "https://catalog.test/",
+    "start_effective_url": "https://catalog.test/",
+    "sequence_complete": true,
+    "observation_count": 2
+  }
 }

@@ -1,0 +1,35 @@
+{
+  "expectation_schema": "capture-acquisition-expectations/v1",
+  "source": {
+    "source_id": "catalog-test",
+    "revision": "revision-1"
+  },
+  "start": {
+    "requested_url": "https://catalog.test/",
+    "effective_url": "https://catalog.test/"
+  },
+  "required_pages": [
+    {
+      "requested_url": "https://catalog.test/",
+      "effective_url": "https://catalog.test/",
+      "sha256": "3547456c7bcc529f14662821b1754fd7e14730c2b32e3f503cb0b540380d0a1e",
+      "size_bytes": 331,
+      "contains": ["Hermetic catalog"]
+    },
+    {
+      "requested_url": "https://catalog.test/items/page-2",
+      "effective_url": "https://catalog.test/items/page-2",
+      "sha256": "4bc61db4c4e03fa857d9dc89eb7a3af4ceae70d17c25ae21716c81bbff39b9a4",
+      "size_bytes": 153,
+      "contains": ["Second fixture page"]
+    }
+  ],
+  "required_links": [
+    {
+      "from_effective_url": "https://catalog.test/",
+      "to_requested_url": "https://catalog.test/items/page-2"
+    }
+  ],
+  "max_requests": 4,
+  "max_pages": 2
+}

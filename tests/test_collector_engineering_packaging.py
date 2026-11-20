@@ -58,14 +58,22 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
             "PlaybookProposal.schema.json": hashlib.sha256(
                 (ROOT / "contracts/scout/v1/PlaybookProposal.schema.json").read_bytes()
             ).hexdigest(),
-            "ScoutSessionTranscript.schema.json": hashlib.sha256(
+            "ScoutSessionTranscript.v1.schema.json": hashlib.sha256(
                 (
                     ROOT
                     / "contracts/scout/transcript/draft/v1/ScoutSessionTranscript.schema.json"
                 ).read_bytes()
             ).hexdigest(),
+            "ScoutSessionTranscript.v2.schema.json": hashlib.sha256(
+                (
+                    ROOT
+                    / "contracts/scout/transcript/draft/v2/ScoutSessionTranscript.schema.json"
+                ).read_bytes()
+            ).hexdigest(),
         }
-        with tempfile.TemporaryDirectory(prefix="bc15-isolated-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="bc15 isolated with spaces "
+        ) as temporary:
             external = Path(temporary)
             distributions = external / "dist"
             subprocess.run(
@@ -140,7 +148,7 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                             "root=files('collector_engineering').joinpath('schemas'); "
                             "print(json.dumps({name: hashlib.sha256(root.joinpath(name).read_bytes()).hexdigest() "
                             "for name in ('CapturePlaybook.schema.json','PlaybookProposal.schema.json',"
-                            "'ScoutSessionTranscript.schema.json')}))"
+                            "'ScoutSessionTranscript.v1.schema.json','ScoutSessionTranscript.v2.schema.json')}))"
                         ),
                     ],
                     cwd=external,
@@ -156,14 +164,6 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                 for command in (
                     ["draft", str(transcript_path), "--output", str(draft_path)],
                     ["validate", str(draft_path)],
-                    [
-                        "replay",
-                        str(draft_path),
-                        "--fixtures",
-                        str(fixture_copy),
-                        "--report",
-                        str(external / f"replay-{suffix}.json"),
-                    ],
                 ):
                     subprocess.run(
                         [
@@ -182,6 +182,32 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                         capture_output=True,
                         text=True,
                     )
+
+                for command in (
+                    ["replay", str(draft_path)],
+                    ["accept", str(draft_path), str(transcript_path)],
+                ):
+                    rejected = subprocess.run(
+                        [
+                            str(python),
+                            "-c",
+                            (
+                                "import runpy,sys; "
+                                f"sys.path.insert(0, {str(runtime_dependencies)!r}); "
+                                "runpy.run_module('collector_engineering',run_name='__main__')"
+                            ),
+                            *command,
+                        ],
+                        cwd=external,
+                        env=clean_env,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(2, rejected.returncode, rejected.stderr)
+                    self.assertIn("invalid choice", rejected.stderr)
+                self.assertFalse((external / f"raw-{suffix}").exists())
+                self.assertFalse((external / f"acceptance-raw-{suffix}").exists())
 
 
 if __name__ == "__main__":

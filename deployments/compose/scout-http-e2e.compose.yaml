@@ -7,13 +7,13 @@ services:
       - ${SCOUT_HTTP_E2E_SQUID_CONFIG:?Set generated Squid E2E configuration}:/etc/squid/squid.conf:ro
       - ../../config/scout/egress-e2e-domains.txt:/etc/squid/allowed-domains.txt:ro
     ports:
-      - "127.0.0.1:${SCOUT_HTTP_E2E_PROXY_PORT:-3137}:3128"
+      - "127.0.0.1:${SCOUT_HTTP_E2E_PROXY_PORT:-3128}:3128"
     depends_on:
       dns-fixture:
         condition: service_healthy
     networks:
       e2e:
-        ipv4_address: 172.30.91.2
+        ipv4_address: ${SCOUT_HTTP_E2E_SQUID_IP:?Set the isolated E2E Squid IP}
 
   https-fixture:
     image: python:3.12-slim
@@ -29,7 +29,7 @@ services:
       - /certs/server.key
     networks:
       e2e:
-        ipv4_address: 172.30.91.10
+        ipv4_address: ${SCOUT_HTTP_E2E_FIXTURE_IP:?Set the isolated E2E fixture IP}
         aliases:
           - catalog.fixture.test
 
@@ -53,7 +53,7 @@ services:
       - "127.0.0.1:${SCOUT_HTTP_E2E_DNS_CONTROL_PORT:-8053}:8053"
     networks:
       e2e:
-        ipv4_address: 172.30.91.53
+        ipv4_address: ${SCOUT_HTTP_E2E_DNS_IP:?Set the isolated E2E DNS IP}
 
   blocked-sink:
     image: python:3.12-slim
@@ -67,7 +67,7 @@ services:
     command: ["python", "/sink.py"]
     networks:
       e2e:
-        ipv4_address: 172.30.91.11
+        ipv4_address: ${SCOUT_HTTP_E2E_SINK_IP:?Set the isolated E2E sink IP}
 
 networks:
   e2e:
@@ -76,4 +76,4 @@ networks:
     internal: false
     ipam:
       config:
-        - subnet: 172.30.91.0/24
+        - subnet: ${SCOUT_HTTP_E2E_SUBNET:?Set the isolated E2E subnet}

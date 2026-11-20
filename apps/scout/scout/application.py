@@ -45,6 +45,23 @@ class HTTPExplorationOutcome:
     truncated: bool
 
 
+@dataclass(frozen=True)
+class ReplayFixturePage:
+    """Verified BC14 evidence page prepared for local BC15 replay."""
+
+    url: str
+    status: int
+    content_type: str
+    evidence_ref: str
+    artifact_id: str
+    sha256: str
+    size_bytes: int
+    body: bytes
+    requested_url: str
+    sequence: int
+    request_count: int
+
+
 class ScoutApplication:
     def __init__(
         self,
@@ -343,6 +360,23 @@ class ScoutApplication:
             page.content_type,
             page.title,
             tuple(link.url for link in page.links),
+            requested_url=page.url,
+            exploration_sequence=1
+            + sum(
+                item.exploration_sequence is not None for item in session.observations
+            ),
+            discovered_from_observation_ids=tuple(
+                item.observation_id
+                for item in sorted(
+                    (
+                        item
+                        for item in session.observations
+                        if item.exploration_sequence is not None
+                    ),
+                    key=lambda item: item.exploration_sequence or 0,
+                )
+                if page.url in item.links
+            ),
         )
         session.observe(observation, decision, now, page.elapsed_seconds)
         manifest_id = (
@@ -507,7 +541,8 @@ class ScoutApplication:
         if not session.authorization.scope.allows(normalized.origin, normalized.path):
             raise AuthorizationError("target is outside the approved source scope")
         if any(
-            observation.url == normalized.url for observation in session.observations
+            normalized.url in {observation.url, observation.requested_url}
+            for observation in session.observations
         ):
             raise IntegrityError("session already contains an observation for this URL")
         intent = {
@@ -639,6 +674,24 @@ class ScoutApplication:
             result.title,
             tuple(result.links),
             result.extraction_version,
+            normalized.url,
+            1
+            + sum(
+                item.exploration_sequence is not None for item in session.observations
+            ),
+            tuple(
+                item.observation_id
+                for item in sorted(
+                    (
+                        item
+                        for item in session.observations
+                        if item.exploration_sequence is not None
+                    ),
+                    key=lambda item: item.exploration_sequence or 0,
+                )
+                if normalized.url in item.links
+            ),
+            result.request_count,
         )
         session.observe(
             observation,
@@ -867,7 +920,7 @@ class ScoutApplication:
         if self.repository.has_incomplete_commands(session_id):
             raise IntegrityError("session has an in-progress or uncertain command")
         if len(decision.scope.origins) != 1:
-            raise IntegrityError("transcript v1 requires one approved origin")
+            raise IntegrityError("transcript draft requires one approved origin")
         evidence_ids = {manifest.manifest_id for manifest in session.manifests}
         finding_ids = {finding.finding_id for finding in session.findings}
         if (
@@ -912,9 +965,39 @@ class ScoutApplication:
                         "manifest_id": manifest.manifest_id,
                     }
                 )
-        for observation in sorted(
-            session.observations, key=lambda item: item.observation_id
-        ):
+        export_observations = sorted(
+            (
+                observation
+                for observation in session.observations
+                if observation.artifact_id in artifact_metadata
+            ),
+            key=lambda item: (
+                item.exploration_sequence is None,
+                item.exploration_sequence or item.observation_id,
+            ),
+        )
+        session_http_observations = sorted(
+            (
+                observation
+                for observation in session.observations
+                if observation.exploration_sequence is not None
+            ),
+            key=lambda item: item.exploration_sequence or 0,
+        )
+        http_observations = [
+            item
+            for item in export_observations
+            if item.exploration_sequence is not None
+        ]
+        if http_observations and len(http_observations) != len(export_observations):
+            raise IntegrityError(
+                "transcript mixes sequenced HTTP and fixture observations"
+            )
+        if session_http_observations and not http_observations:
+            raise IntegrityError(
+                "transcript proposal omits all sequenced HTTP observations"
+            )
+        for observation in export_observations:
             if observation.artifact_id not in artifact_metadata:
                 continue
             manifest_id = manifests_by_artifact.get(observation.artifact_id)
@@ -923,16 +1006,27 @@ class ScoutApplication:
                 raise IntegrityError(
                     "observation lacks a transcript-ready manifest or URL"
                 )
-            pages.append(
-                {
-                    "url": observation.url,
-                    "evidence_ref": manifest_id,
-                    "artifact_id": artifact.artifact_id,
-                    "sha256": artifact.sha256,
-                    "size_bytes": artifact.size_bytes,
-                    "discovered_links": sorted(set(observation.links)),
-                }
-            )
+            page = {
+                "url": observation.url,
+                "evidence_ref": manifest_id,
+                "artifact_id": artifact.artifact_id,
+                "sha256": artifact.sha256,
+                "size_bytes": artifact.size_bytes,
+                "discovered_links": sorted(set(observation.links)),
+            }
+            if observation.exploration_sequence is not None:
+                page.update(
+                    {
+                        "requested_url": observation.requested_url,
+                        "observation_id": observation.observation_id,
+                        "sequence": observation.exploration_sequence,
+                        "request_count": observation.request_count,
+                        "discovered_from_observation_ids": list(
+                            observation.discovered_from_observation_ids
+                        ),
+                    }
+                )
+            pages.append(page)
         findings = [
             {
                 "finding_id": finding.finding_id,
@@ -962,8 +1056,15 @@ class ScoutApplication:
             "path_prefixes": prefixes,
             "budgets": budgets,
         }
+        if not pages:
+            raise IntegrityError("transcript lacks captured evidence pages")
+        selected_sequences = [page["sequence"] for page in pages if "sequence" in page]
         transcript = {
-            "transcript_schema": "scout-transcript-draft/v1",
+            "transcript_schema": (
+                "scout-transcript-draft/v2"
+                if http_observations
+                else "scout-transcript-draft/v1"
+            ),
             "producer": {
                 "bounded_context": "BC14",
                 "tool_host": "data-mozaic-scout-mcp/1",
@@ -994,6 +1095,14 @@ class ScoutApplication:
                 "approval_authentication": "local-reference-not-cryptographically-signed",
             },
         }
+        if http_observations:
+            transcript["navigation"] = {
+                "start_requested_url": session.start_requested_url,
+                "start_effective_url": session.start_effective_url,
+                "sequence_complete": selected_sequences
+                == list(range(1, len(session_http_observations) + 1)),
+                "observation_count": len(session_http_observations),
+            }
         self._trace(
             "scout.transcript.exported",
             session.session_id,
@@ -1001,6 +1110,73 @@ class ScoutApplication:
             session.state.value,
         )
         return transcript
+
+    def export_replay_fixtures(
+        self, session_id: str, principal: str, now: datetime
+    ) -> tuple[ReplayFixturePage, ...]:
+        """Return authorized, proposal-scoped custody bytes for offline replay."""
+        transcript = self.export_transcript(session_id, principal, now)
+        session, decision = self.authorized_session(session_id, principal, now)
+        artifact_by_id = {
+            artifact.artifact_id: artifact
+            for manifest in session.manifests
+            if manifest.manifest_id
+            in set(session.proposal.manifest_ids if session.proposal else ())
+            for artifact in manifest.artifacts
+        }
+        observation_by_artifact = {
+            observation.artifact_id: observation for observation in session.observations
+        }
+        pages = []
+        for page in transcript["pages"]:
+            artifact = artifact_by_id.get(page["artifact_id"])
+            observation = observation_by_artifact.get(page["artifact_id"])
+            if (
+                artifact is None
+                or observation is None
+                or observation.url != page["url"]
+                or observation.status is None
+                or observation.content_type is None
+                or artifact.kind != "http_response"
+                or artifact.custody_status != CUSTODY_STATUS_AVAILABLE
+                or artifact.size_bytes is None
+                or artifact.size_bytes > min(decision.max_response_bytes, 2_000_000)
+                or not self.custody.verify(artifact)
+            ):
+                raise EvidenceUnavailableError(
+                    "replay fixture is outside proposal scope or unavailable"
+                )
+            try:
+                body = self.custody.read(artifact)
+            except Exception as error:
+                raise EvidenceUnavailableError(
+                    "replay fixture custody read failed"
+                ) from error
+            if (
+                body is None
+                or len(body) != artifact.size_bytes
+                or hashlib.sha256(body).hexdigest() != artifact.sha256
+                or len(body) > min(decision.max_response_bytes, 2_000_000)
+            ):
+                raise EvidenceUnavailableError(
+                    "replay fixture bytes failed integrity verification"
+                )
+            pages.append(
+                ReplayFixturePage(
+                    url=page["url"],
+                    status=observation.status,
+                    content_type=observation.content_type,
+                    evidence_ref=page["evidence_ref"],
+                    artifact_id=artifact.artifact_id,
+                    sha256=artifact.sha256,
+                    size_bytes=artifact.size_bytes,
+                    body=body,
+                    requested_url=observation.requested_url or observation.url,
+                    sequence=observation.exploration_sequence or 0,
+                    request_count=observation.request_count,
+                )
+            )
+        return tuple(pages)
 
     def reconcile_custody_intent(self, artifact_id: str) -> str:
         """Resolve an uncertain BC06 write by its durable identity and digest."""

@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import logging
+import os
+import re
+import secrets
+import stat
 from datetime import UTC, datetime
+from pathlib import Path
 
 import anyio
 from mcp.server import Server
@@ -39,7 +45,291 @@ def command_identity(
     return "cmd-" + slot_digest, f"mcp:{tool_name}:{slot_digest}", fingerprint
 
 
-def create_server(application: ScoutApplication, principal: str) -> Server:
+def _write_replay_fixtures(
+    pages, artifact_root: Path, session_id: str
+) -> tuple[Path, str]:
+    if not artifact_root.is_absolute() or not re.fullmatch(
+        r"[A-Za-z0-9_-]{1,128}", session_id
+    ):
+        raise ValueError("replay fixture output configuration is invalid")
+    if "O_NOFOLLOW" not in os.__dict__ or "O_DIRECTORY" not in os.__dict__:
+        raise ValueError("safe descriptor-relative fixture export is unsupported")
+    if ".." in artifact_root.parts:
+        raise ValueError("replay fixture root cannot contain parent traversal")
+
+    def open_directory(path: Path) -> int:
+        descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for component in path.parts[1:]:
+                try:
+                    child = os.open(
+                        component,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=descriptor,
+                    )
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(component, 0o700, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass
+                    child = os.open(
+                        component,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=descriptor,
+                    )
+                os.close(descriptor)
+                descriptor = child
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def check_private_directory(descriptor: int) -> None:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o077
+        ):
+            raise ValueError(
+                "replay fixture directories must be owner-only directories"
+            )
+
+    def open_child(parent: int, name: str) -> int:
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=parent,
+            )
+        except FileNotFoundError:
+            try:
+                os.mkdir(name, 0o700, dir_fd=parent)
+            except FileExistsError:
+                pass
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=parent,
+            )
+        try:
+            check_private_directory(descriptor)
+            os.fsync(parent)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return descriptor
+
+    root_fd = open_directory(artifact_root)
+    try:
+        check_private_directory(root_fd)
+        session_fd = open_child(root_fd, session_id)
+        try:
+            fixture_fd = open_child(session_fd, "captured-fixtures")
+        finally:
+            os.close(session_fd)
+    finally:
+        os.close(root_fd)
+    try:
+        try:
+            lock_fd = os.open(
+                ".export.lock",
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
+                0o600,
+                dir_fd=fixture_fd,
+            )
+        except FileExistsError:
+            lock_fd = os.open(
+                ".export.lock",
+                os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=fixture_fd,
+            )
+        lock_metadata = os.fstat(lock_fd)
+        if (
+            not stat.S_ISREG(lock_metadata.st_mode)
+            or lock_metadata.st_uid != os.geteuid()
+            or lock_metadata.st_mode & 0o077
+        ):
+            raise ValueError("fixture export lock has unsafe ownership or mode")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        for stale_name in os.listdir(fixture_fd):
+            if not stale_name.startswith(".pending-"):
+                continue
+            stale_fd = os.open(
+                stale_name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=fixture_fd,
+            )
+            stale_metadata = os.fstat(stale_fd)
+            os.close(stale_fd)
+            if (
+                not stat.S_ISREG(stale_metadata.st_mode)
+                or stale_metadata.st_uid != os.geteuid()
+                or stale_metadata.st_mode & 0o077
+            ):
+                raise ValueError("stale fixture temporary has unsafe ownership or mode")
+            os.unlink(stale_name, dir_fd=fixture_fd)
+        index_pages = []
+        for page in pages:
+            filename = f"{page.sha256}.body"
+            if (
+                hashlib.sha256(page.body).hexdigest() != page.sha256
+                or len(page.body) != page.size_bytes
+            ):
+                raise ValueError("replay fixture bytes failed their evidence digest")
+            try:
+                existing_fd = os.open(
+                    filename,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=fixture_fd,
+                )
+            except FileNotFoundError:
+                temporary_body = ".pending-body-" + secrets.token_hex(16)
+                body_fd = os.open(
+                    temporary_body,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=fixture_fd,
+                )
+                try:
+                    with os.fdopen(body_fd, "wb") as stream:
+                        stream.write(page.body)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    try:
+                        os.link(
+                            temporary_body,
+                            filename,
+                            src_dir_fd=fixture_fd,
+                            dst_dir_fd=fixture_fd,
+                            follow_symlinks=False,
+                        )
+                    except FileExistsError:
+                        pass
+                    os.fsync(fixture_fd)
+                finally:
+                    try:
+                        os.unlink(temporary_body, dir_fd=fixture_fd)
+                    except FileNotFoundError:
+                        pass
+                body_fd = os.open(
+                    filename, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fixture_fd
+                )
+            else:
+                body_fd = existing_fd
+            metadata = os.fstat(body_fd)
+            existing = b""
+            try:
+                while chunk := os.read(body_fd, 1024 * 1024):
+                    existing += chunk
+            except OSError as error:
+                raise ValueError(
+                    "existing replay fixture could not be verified"
+                ) from error
+            finally:
+                os.close(body_fd)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or metadata.st_mode & 0o077
+                or existing != page.body
+                or hashlib.sha256(existing).hexdigest() != page.sha256
+            ):
+                raise ValueError(
+                    "existing replay fixture failed ownership, mode or digest verification"
+                )
+            index_pages.append(
+                {
+                    "url": page.url,
+                    "requested_url": page.requested_url,
+                    "effective_url": page.url,
+                    "sequence": page.sequence,
+                    "request_count": page.request_count,
+                    "status": page.status,
+                    "content_type": page.content_type,
+                    "evidence_ref": page.evidence_ref,
+                    "sha256": page.sha256,
+                    "body_file": filename,
+                }
+            )
+        rendered = (
+            json.dumps(
+                {"complete": True, "pages": index_pages},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        temporary_name = ".pending-" + secrets.token_hex(16)
+        try:
+            descriptor = os.open(
+                temporary_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=fixture_fd,
+            )
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(rendered)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(
+                    temporary_name,
+                    "index.json",
+                    src_dir_fd=fixture_fd,
+                    dst_dir_fd=fixture_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                existing_fd = os.open(
+                    "index.json",
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=fixture_fd,
+                )
+                try:
+                    metadata = os.fstat(existing_fd)
+                    existing = os.read(existing_fd, 4_000_001)
+                except OSError as error:
+                    raise ValueError(
+                        "existing fixture index could not be verified"
+                    ) from error
+                finally:
+                    os.close(existing_fd)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != os.geteuid()
+                    or metadata.st_mode & 0o077
+                    or existing != rendered
+                ):
+                    raise ValueError(
+                        "existing fixture index is incomplete or differs from this export"
+                    )
+            os.fsync(fixture_fd)
+        finally:
+            try:
+                os.unlink(temporary_name, dir_fd=fixture_fd)
+            except FileNotFoundError:
+                pass
+        return artifact_root / session_id / "captured-fixtures", hashlib.sha256(
+            rendered
+        ).hexdigest()
+    finally:
+        if "lock_fd" in locals():
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
+        os.close(fixture_fd)
+
+
+def create_server(
+    application: ScoutApplication,
+    principal: str,
+    artifact_root: Path | None = None,
+    protected_replay_executor=None,
+    acceptance_expectations: dict[tuple[str, str], dict] | None = None,
+    single_use_approval_source: tuple[str, str] | None = None,
+) -> Server:
     """Create a tool server bound to launcher-owned local identity and adapters."""
     if not principal:
         raise ValueError("local development principal is required")
@@ -62,6 +352,7 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
             DiscoveryStructureError,
         )
         from ..tools.url_policy import TargetRejected
+        from .protected_replay import ProtectedReplayError
 
         if isinstance(
             error,
@@ -80,6 +371,8 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
             code = "version_or_idempotency_conflict"
         elif isinstance(error, IntegrityError):
             code = "invalid_command"
+        elif isinstance(error, ProtectedReplayError):
+            code = "protected_executor_failure"
         else:
             code = "operation_failed"
         _LOG.warning("scout.tool.failed code=%s type=%s", code, type(error).__name__)
@@ -256,6 +549,125 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
             },
         ),
     ]
+    if protected_replay_executor is None:
+        # Test-only/legacy composition. The production launcher fails closed
+        # unless its protected executor is initialized before exposing tools.
+        tools.append(
+            Tool(
+                name="scout_export_replay_fixtures",
+                description="Test-only fixture export for trusted local callers; not enabled in the protected Codex composition.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                        }
+                    },
+                    "required": ["session_id"],
+                    "additionalProperties": False,
+                },
+            )
+        )
+    if protected_replay_executor is not None:
+        tools.extend(
+            [
+                Tool(
+                    name="scout_bc15_replay",
+                    description="Run the submitted CapturePlaybook through the protected offline BC15 executor. Output locations are executor-owned; raw bodies are not returned.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "draft_yaml": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 24000,
+                            },
+                        },
+                        "required": ["session_id", "draft_yaml"],
+                        "additionalProperties": False,
+                    },
+                ),
+                Tool(
+                    name="scout_bc15_accept",
+                    description="Run protected offline BC15 replay and independent acquisition acceptance for the configured source oracle.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "draft_yaml": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 24000,
+                            },
+                        },
+                        "required": ["session_id", "draft_yaml"],
+                        "additionalProperties": False,
+                    },
+                ),
+                Tool(
+                    name="scout_bc15_status",
+                    description="Return the state of a protected BC15 run owned by this authorized session.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "run_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+                        },
+                        "required": ["session_id", "run_id"],
+                        "additionalProperties": False,
+                    },
+                ),
+                Tool(
+                    name="scout_bc15_get_manifest",
+                    description="Return the raw artifact manifest metadata for a protected BC15 run. Body bytes are never returned.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "run_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+                        },
+                        "required": ["session_id", "run_id"],
+                        "additionalProperties": False,
+                    },
+                ),
+                Tool(
+                    name="scout_bc15_get_report",
+                    description="Return the bounded report metadata for a protected BC15 run. Body bytes are never returned.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "run_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+                        },
+                        "required": ["session_id", "run_id"],
+                        "additionalProperties": False,
+                    },
+                ),
+            ]
+        )
     by_name = {tool.name: tool for tool in tools}
 
     @server.list_tools()
@@ -289,13 +701,28 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
                     "path_prefixes": list(effective.path_prefixes),
                     "methods": list(effective.methods),
                     "max_requests": effective.max_requests,
+                    "max_pages": min(effective.max_requests, 20),
+                    "max_response_bytes": decision.max_response_bytes,
                     "max_duration_seconds": effective.max_duration_seconds,
                     "approval_expires_at": decision.expires_at.isoformat(),
                 }
             if name == "scout_start":
                 command_id, _, _ = command_identity(principal, name, arguments)
+                source = SourceRef(arguments["source_id"], arguments["revision"])
+                if (
+                    protected_replay_executor is not None
+                    and single_use_approval_source
+                    == (source.source_id, source.revision)
+                ):
+                    decision = application.policy.decide(principal, source, now())
+                    protected_replay_executor.claim_approval_once(
+                        principal,
+                        source.source_id,
+                        source.revision,
+                        decision.expires_at.isoformat(),
+                    )
                 session = application.start_incremental(
-                    source=SourceRef(arguments["source_id"], arguments["revision"]),
+                    source=source,
                     objective=arguments["objective"],
                     principal=principal,
                     command_id=command_id,
@@ -447,6 +874,117 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
                     "transcript_json": rendered,
                     "sha256": hashlib.sha256(encoded).hexdigest(),
                 }
+            if name == "scout_export_replay_fixtures":
+                if protected_replay_executor is not None or artifact_root is None:
+                    raise ValueError(
+                        "fixture export is not available in protected mode"
+                    )
+                pages = application.export_replay_fixtures(
+                    arguments["session_id"], principal, now()
+                )
+                fixture_root, index_sha256 = _write_replay_fixtures(
+                    pages, artifact_root, arguments["session_id"]
+                )
+                return {
+                    "ok": True,
+                    "session_id": arguments["session_id"],
+                    "fixtures_dir": str(fixture_root),
+                    "index_sha256": index_sha256,
+                    "pages": [
+                        {
+                            "url": page.url,
+                            "requested_url": page.requested_url,
+                            "sequence": page.sequence,
+                            "evidence_ref": page.evidence_ref,
+                            "sha256": page.sha256,
+                            "size_bytes": page.size_bytes,
+                            "request_count": page.request_count,
+                        }
+                        for page in pages
+                    ],
+                }
+            if name in {"scout_bc15_replay", "scout_bc15_accept"}:
+                transcript = application.export_transcript(
+                    arguments["session_id"], principal, now()
+                )
+                validate_transcript(transcript)
+                source = transcript["session"]["source"]
+                action = "accept" if name == "scout_bc15_accept" else "replay"
+                expectations = {}
+                if action == "accept":
+                    expectation_map = acceptance_expectations or {}
+                    expectations = expectation_map.get(
+                        (source["source_id"], source["revision"])
+                    )
+                    if expectations is None:
+                        raise ValueError(
+                            "no trusted acceptance oracle is configured for this source"
+                        )
+                pages = application.export_replay_fixtures(
+                    arguments["session_id"], principal, now()
+                )
+                run_id, report = await anyio.to_thread.run_sync(
+                    lambda: protected_replay_executor.execute(
+                        action=action,
+                        session_id=arguments["session_id"],
+                        principal=principal,
+                        draft_yaml=arguments["draft_yaml"],
+                        transcript=transcript,
+                        pages=pages,
+                        expectations=expectations,
+                    )
+                )
+                if _report_contains_raw_bytes(report):
+                    raise ValueError("protected BC15 report contains disallowed data")
+                report_bytes = json.dumps(
+                    report, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
+                if len(report_bytes) > 256_000:
+                    raise ValueError("protected BC15 report exceeds the output limit")
+                return {
+                    "ok": True,
+                    "run_id": run_id,
+                    "state": "passed",
+                    "report": report,
+                }
+            if name in {
+                "scout_bc15_status",
+                "scout_bc15_get_manifest",
+                "scout_bc15_get_report",
+            }:
+                application.status_incremental(
+                    arguments["session_id"], principal, now()
+                )
+                run = protected_replay_executor.get_run(arguments["run_id"])
+                if (
+                    run is None
+                    or run["principal"] != principal
+                    or run["session_id"] != arguments["session_id"]
+                ):
+                    return {"ok": False, "error": {"code": "run_unavailable"}}
+                if run["state"] == "expired":
+                    return {"ok": False, "error": {"code": "run_expired"}}
+                if name == "scout_bc15_status":
+                    return {
+                        "ok": True,
+                        "run_id": arguments["run_id"],
+                        "state": run["state"],
+                    }
+                if name == "scout_bc15_get_manifest":
+                    report = (run["report"] or {}).get(
+                        "replay_execution", run["report"] or {}
+                    )
+                    return {
+                        "ok": True,
+                        "run_id": arguments["run_id"],
+                        "manifest": report.get("raw_manifest"),
+                        "raw_outputs": report.get("raw_outputs", []),
+                    }
+                return {
+                    "ok": True,
+                    "run_id": arguments["run_id"],
+                    "report": run["report"],
+                }
             return {"ok": False, "error": {"code": "unknown_tool"}}
         except Exception as error:  # noqa: BLE001 - adapter returns typed tool failures
             return failure(error)
@@ -455,6 +993,18 @@ def create_server(application: ScoutApplication, principal: str) -> Server:
     # also makes unknown tools a typed denial if a client bypasses tools/list.
     del by_name
     return server
+
+
+def _report_contains_raw_bytes(value) -> bool:
+    if isinstance(value, dict):
+        return any(
+            key in {"body", "body_base64", "raw_body", "content_bytes"}
+            or _report_contains_raw_bytes(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_report_contains_raw_bytes(item) for item in value)
+    return False
 
 
 async def run_stdio(server: Server) -> None:

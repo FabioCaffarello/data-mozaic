@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -23,6 +24,8 @@ from psycopg.conninfo import make_conninfo
 from psycopg.sql import SQL, Identifier
 
 ROOT = Path(__file__).resolve().parents[2]
+FIXTURE_IP = os.environ.get("SCOUT_HTTP_E2E_FIXTURE_IP", "172.30.91.10")
+SINK_IP = os.environ.get("SCOUT_HTTP_E2E_SINK_IP", "172.30.91.11")
 sys.path.insert(0, str(ROOT / "apps" / "scout"))
 
 from scout.adapters.local_custody import LocalFileEvidenceCustody
@@ -81,15 +84,31 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
             query["name"] == name and query["type"] == qtype for query in queries
         )
 
+    @staticmethod
+    async def run_cli(*arguments, env):
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "collector_engineering",
+            *arguments,
+            cwd=ROOT,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        return process.returncode, stdout.decode(), stderr.decode()
+
     def test_authorized_https_mcp_custody_transcript_and_restart_replay(self):
         async def scenario():
             from scout.domain import SourceRef
 
             source = SourceRef("e2e-catalog", "revision-7")
+            start_url = "https://catalog.fixture.test/docs/page"
             self.configure_dns(
                 {
                     "catalog.fixture.test": {
-                        "A": ["172.30.91.10"],
+                        "A": [FIXTURE_IP],
                         "ttl": 60,
                     },
                 }
@@ -139,6 +158,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 ],
             }
             policy_path.write_text(json.dumps(policy), encoding="utf-8")
+            policy_path.chmod(0o600)
 
             env = os.environ.copy()
             env.update(
@@ -148,13 +168,16 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                     "SCOUT_LOCAL_PRINCIPAL": principal,
                     "SCOUT_HOST_POLICY_FILE": str(policy_path),
                     "SCOUT_EVIDENCE_ROOT": str(custody_root),
+                    "SCOUT_ARTIFACT_ROOT": str(
+                        Path(os.environ["SCOUT_HTTP_E2E_TEMP"]) / "review-artifacts"
+                    ),
                     "SCOUT_EGRESS_PROXY": os.environ["SCOUT_HTTP_E2E_PROXY_URL"],
                     "SSL_CERT_FILE": os.environ["SCOUT_HTTP_E2E_CA_FILE"],
                 }
             )
             params = StdioServerParameters(
                 command=sys.executable,
-                args=["-m", "scout.tool_host"],
+                args=[str(ROOT / "tests" / "mcp_authoring_stdio_fixture.py")],
                 env=env,
             )
             source_args = {
@@ -173,6 +196,19 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
             ):
                 await client.initialize()
                 tools = {item.name: item for item in (await client.list_tools()).tools}
+                self.assertTrue(
+                    {
+                        "scout_preflight",
+                        "scout_start",
+                        "scout_fetch",
+                        "scout_record_finding",
+                        "scout_propose",
+                        "scout_export_transcript",
+                        "scout_bc15_replay",
+                        "scout_bc15_accept",
+                    }
+                    <= set(tools)
+                )
                 self.assertIn("scout_fetch", tools)
                 self.assertFalse(
                     tools["scout_fetch"].inputSchema["additionalProperties"]
@@ -182,6 +218,29 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                     {"session_id", "expected_version", "url"},
                 )
 
+                denied_preflight = await client.call_tool(
+                    "scout_preflight",
+                    {"source_id": "unregistered", "revision": "revision-7"},
+                )
+                denied_preflight_value = json.loads(denied_preflight.content[0].text)
+                self.assertFalse(denied_preflight_value["ok"])
+                preflight = await client.call_tool(
+                    "scout_preflight",
+                    {"source_id": source.source_id, "revision": source.revision},
+                )
+                preflight_value = json.loads(preflight.content[0].text)
+                self.assertTrue(preflight_value["ok"], preflight_value)
+                self.assertEqual(
+                    preflight_value["origins"], ["https://catalog.fixture.test"]
+                )
+                self.assertEqual(preflight_value["path_prefixes"], ["/docs"])
+                self.assertEqual(preflight_value["max_requests"], 4)
+                self.assertEqual(preflight_value["max_pages"], 4)
+                self.assertEqual(preflight_value["max_response_bytes"], 32768)
+                self.assertTrue(
+                    start_url.startswith("https://catalog.fixture.test/docs/")
+                )
+
                 started = await client.call_tool("scout_start", source_args)
                 started_value = json.loads(started.content[0].text)
                 self.assertTrue(started_value["ok"], started_value)
@@ -189,7 +248,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 fetch_args = {
                     "session_id": session_id,
                     "expected_version": 0,
-                    "url": "https://catalog.fixture.test/docs/page",
+                    "url": start_url,
                 }
                 injected = await client.call_tool(
                     "scout_fetch", fetch_args | {"principal": "attacker"}
@@ -212,13 +271,35 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 self.assertIsNotNone(artifact)
                 body = custody.read(artifact)
                 self.assertIsNotNone(body)
-                import hashlib
-
                 self.assertEqual(
                     hashlib.sha256(body).hexdigest(), artifact_ref["sha256"]
                 )
                 self.assertEqual(len(body), artifact_ref["size_bytes"])
                 self.assertIn(b"fixture-secret-value", body)
+
+                next_result = await client.call_tool(
+                    "scout_fetch",
+                    {
+                        "session_id": session_id,
+                        "expected_version": 1,
+                        "url": "https://catalog.fixture.test/docs/next",
+                    },
+                )
+                next_page = json.loads(next_result.content[0].text)
+                self.assertTrue(next_page["ok"], next_page)
+                self.assertIn("Alpha record", next_page["text"])
+                self.assertIn("Beta record", next_page["text"])
+                out_of_scope = await client.call_tool(
+                    "scout_fetch",
+                    {
+                        "session_id": session_id,
+                        "expected_version": 2,
+                        "url": "https://catalog.fixture.test/private/records",
+                    },
+                )
+                out_of_scope_value = json.loads(out_of_scope.content[0].text)
+                self.assertFalse(out_of_scope_value["ok"])
+                self.assertEqual(out_of_scope_value["error"]["code"], "policy_denied")
 
                 retry = await client.call_tool("scout_fetch", fetch_args)
                 replay = json.loads(retry.content[0].text)
@@ -228,12 +309,15 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                     "scout_record_finding",
                     {
                         "session_id": session_id,
-                        "expected_version": 1,
-                        "statement": "The controlled catalog page links to its next page.",
+                        "expected_version": 2,
+                        "statement": "The catalog exposes linked HTML pages, and the captured next page contains records r-100 and r-101.",
                         "epistemic_status": "observation",
                         "confidence": 1.0,
-                        "manifest_ids": [first["manifest_id"]],
-                        "verification_note": "Observed in captured HTTPS fixture bytes.",
+                        "manifest_ids": [
+                            first["manifest_id"],
+                            next_page["manifest_id"],
+                        ],
+                        "verification_note": "The listing link and both record labels were observed in custody-backed HTTPS response text.",
                     },
                 )
                 finding_value = json.loads(finding.content[0].text)
@@ -242,13 +326,26 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                     "scout_propose",
                     {
                         "session_id": session_id,
-                        "expected_version": 2,
-                        "summary": "Draft the controlled catalog capture.",
+                        "expected_version": 3,
+                        "summary": "Fetch the catalog start page, discover its same-scope next-page link, and retain bounded raw listing responses for offline review.",
                         "finding_ids": [finding_value["finding_ids"][-1]],
-                        "manifest_ids": [first["manifest_id"]],
-                        "assumptions": ["The response is a local test fixture."],
-                        "risks": ["Local adapters are not production integrations."],
-                        "required_capabilities": ["http.fetch", "links.discover"],
+                        "manifest_ids": [
+                            first["manifest_id"],
+                            next_page["manifest_id"],
+                        ],
+                        "assumptions": [
+                            "The observed listing link represents the next bounded page in this controlled fixture."
+                        ],
+                        "risks": [
+                            "Pagination conventions beyond the captured page remain unverified.",
+                            "Browser-rendered JavaScript and production BC01/BC06/BC11 adapters are outside this test.",
+                        ],
+                        "required_capabilities": [
+                            "http.fetch",
+                            "links.discover",
+                            "pagination.bounded",
+                            "output.raw",
+                        ],
                     },
                 )
                 self.assertTrue(json.loads(proposal.content[0].text)["ok"])
@@ -258,6 +355,15 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 exported_value = json.loads(exported.content[0].text)
                 self.assertTrue(exported_value["ok"], exported_value)
                 transcript = json.loads(exported_value["transcript_json"])
+                self.assertEqual(
+                    "scout-transcript-draft/v2", transcript["transcript_schema"]
+                )
+                self.assertEqual(
+                    start_url, transcript["navigation"]["start_requested_url"]
+                )
+                self.assertEqual(
+                    [1, 2], [page["sequence"] for page in transcript["pages"]]
+                )
                 self.assertFalse(transcript["redaction"]["raw_content_included"])
                 self.assertEqual(
                     transcript["session"]["source"],
@@ -272,12 +378,59 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 self.assertNotIn(
                     "fixture-secret-value", exported_value["transcript_json"]
                 )
+                transcript_sha256 = exported_value["sha256"]
+                self.assertEqual(
+                    hashlib.sha256(
+                        exported_value["transcript_json"].encode("utf-8")
+                    ).hexdigest(),
+                    transcript_sha256,
+                )
+                draft_input = await asyncio.create_subprocess_exec(
+                    str(ROOT / ".venv/bin/python"),
+                    "-c",
+                    "import json,sys; from collector_engineering.playbooks import build_draft,dump_yaml; print(dump_yaml(build_draft(json.load(sys.stdin))))",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+                draft_stdout, draft_stderr = await draft_input.communicate(
+                    exported_value["transcript_json"].encode("utf-8")
+                )
+                self.assertEqual(draft_input.returncode, 0, draft_stderr.decode())
+                protected_draft = draft_stdout.decode("utf-8")
+                replay_call = await client.call_tool(
+                    "scout_bc15_replay",
+                    {"session_id": session_id, "draft_yaml": protected_draft},
+                )
+                replay_call_value = json.loads(replay_call.content[0].text)
+                self.assertTrue(replay_call_value["ok"], replay_call_value)
+                self.assertEqual("passed", replay_call_value["state"])
+                replay_report = replay_call_value["report"]
+                self.assertEqual(2, len(replay_report["replayed_pages"]))
+                self.assertNotIn("fixture-secret-value", replay_call.content[0].text)
+                accept_call = await client.call_tool(
+                    "scout_bc15_accept",
+                    {"session_id": session_id, "draft_yaml": protected_draft},
+                )
+                accept_call_value = json.loads(accept_call.content[0].text)
+                self.assertTrue(accept_call_value["ok"], accept_call_value)
+                acceptance_report = accept_call_value["report"]
+                self.assertEqual(
+                    "accepted",
+                    acceptance_report["acquisition_acceptance"]["state"],
+                )
 
             persisted = self.repository.get_session(session_id)
             self.assertEqual(persisted.principal, principal)
             self.assertEqual(persisted.source, source)
-            self.assertEqual(len(persisted.observations), 1)
-            self.assertEqual(persisted.remaining_requests, 3)
+            self.assertEqual(len(persisted.observations), 2)
+            self.assertEqual(
+                [1, 2],
+                [item.exploration_sequence for item in persisted.observations],
+            )
+            self.assertEqual(start_url, persisted.start_requested_url)
+            self.assertEqual(persisted.remaining_requests, 2)
             self.assertEqual(
                 persisted.observations[0].extraction_version, "scout-text-v1"
             )
@@ -290,8 +443,8 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                     "SELECT count(*) FROM scout_navigation_budget_requests WHERE session_id=%s",
                     (session_id,),
                 ).fetchone()[0]
-            self.assertEqual(budget, (1,))
-            self.assertEqual(request_count, 1)
+            self.assertEqual(budget, (2,))
+            self.assertEqual(request_count, 2)
 
             async with (
                 stdio_client(params) as (read, write),
@@ -303,6 +456,113 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 )
                 restarted_value = json.loads(after_restart.content[0].text)
                 self.assertEqual(restarted_value, first)
+
+            artifact_root = (
+                Path(os.environ["SCOUT_HTTP_E2E_TEMP"])
+                / "review-artifacts"
+                / session_id
+            )
+            artifact_root.mkdir(parents=True, exist_ok=True)
+            transcript_path = artifact_root / "transcript.json"
+            transcript_path.write_text(
+                exported_value["transcript_json"], encoding="utf-8"
+            )
+            (artifact_root / "transcript.sha256").write_text(
+                transcript_sha256 + "\n", encoding="ascii"
+            )
+            (artifact_root / "session-metadata.json").write_text(
+                json.dumps(
+                    {
+                        "session": transcript["session"],
+                        "approved_scope": transcript["approved_scope"],
+                        "producer": transcript["producer"],
+                        "transcript_sha256": transcript_sha256,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            for filename, value in (
+                ("evidence-manifest.json", transcript["evidence"]),
+                ("findings.json", transcript["findings"]),
+                ("playbook-proposal.json", transcript["proposal"]),
+            ):
+                (artifact_root / filename).write_text(
+                    json.dumps(value, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+
+            env["PYTHONPATH"] = os.pathsep.join(
+                [
+                    str(ROOT / "apps" / "collector-engineering"),
+                    str(ROOT / "apps" / "scout"),
+                ]
+            )
+            draft_path = artifact_root / "capture-playbook.yaml"
+            draft_code, _, draft_stderr = await self.run_cli(
+                "draft",
+                str(transcript_path),
+                "--output",
+                str(draft_path),
+                env=env,
+            )
+            self.assertEqual(draft_code, 0, draft_stderr)
+
+            validation_code, validation_stdout, validation_stderr = await self.run_cli(
+                "validate", str(draft_path), env=env
+            )
+            self.assertEqual(validation_code, 0, validation_stderr)
+            (artifact_root / "validation-report.json").write_text(
+                json.dumps(
+                    {
+                        "state": "passed",
+                        "command": "collector_engineering validate capture-playbook.yaml",
+                        "stdout": validation_stdout.strip(),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            replay_path = artifact_root / "replay-report.json"
+            replay_path.write_text(json.dumps(replay_report), encoding="utf-8")
+            self.assertEqual(replay_report["state"], "passed")
+            self.assertEqual(len(replay_report["replayed_pages"]), 2)
+            self.assertEqual(replay_report["failures"], [])
+            acceptance_path = artifact_root / "acquisition-acceptance.json"
+            acceptance_path.write_text(json.dumps(acceptance_report), encoding="utf-8")
+            acceptance = acceptance_report
+            self.assertEqual("passed", acceptance["structural_validation"]["state"])
+            self.assertEqual("passed", acceptance["replay_execution"]["state"])
+            self.assertEqual("accepted", acceptance["acquisition_acceptance"]["state"])
+            self.assertFalse(acceptance["acquisition_acceptance"]["records_extracted"])
+            (artifact_root / "review-summary.md").write_text(
+                "\n".join(
+                    [
+                        "# Scout review summary",
+                        "",
+                        f"- Session: `{session_id}`",
+                        f"- Source: `{source.source_id}` revision `{source.revision}`",
+                        f"- Transcript SHA-256: `{transcript_sha256}`",
+                        f"- Proposal: `{transcript['proposal']['proposal_id']}` (received by BC15; not approval)",
+                        "- Findings: 1 observed finding tied to two custody evidence manifests.",
+                        "- BC15 draft validation: passed.",
+                        "- Offline fixture replay: passed for 2 captured HTTPS pages.",
+                        "- Security: page prompt injection remained untrusted data; out-of-scope fetch was denied.",
+                        "- Limits: deterministic MCP/container test, not a live Codex run; BC01/BC06/BC11 are local adapters; Codex workspace-write must deny Docker daemon access.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            for path in artifact_root.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(
+                        b"fixture-secret-value", path.read_bytes(), path.name
+                    )
 
             return session_id
 
@@ -320,7 +580,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
 
         self.configure_dns(
             {
-                "single.fixture.test": {"A": ["172.30.91.10"], "ttl": 60},
+                "single.fixture.test": {"A": [FIXTURE_IP], "ttl": 60},
             }
         )
         with mock.patch.dict(
@@ -338,7 +598,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                     "ttl": 60,
                 },
                 "cname-edge.fixture.test": {
-                    "A": ["172.30.91.10"],
+                    "A": [FIXTURE_IP],
                     "ttl": 60,
                 },
             }
@@ -354,17 +614,17 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
         cases = (
             (
                 "private.fixture.test",
-                {"private.fixture.test": {"A": ["172.30.91.11"]}},
+                {"private.fixture.test": {"A": [SINK_IP]}},
             ),
             (
                 "mixed-a.fixture.test",
-                {"mixed-a.fixture.test": {"A": ["172.30.91.10", "172.30.91.11"]}},
+                {"mixed-a.fixture.test": {"A": [FIXTURE_IP, SINK_IP]}},
             ),
             (
                 "mixed-aaaa.fixture.test",
                 {
                     "mixed-aaaa.fixture.test": {
-                        "A": ["172.30.91.10"],
+                        "A": [FIXTURE_IP],
                         "AAAA": ["::1"],
                     }
                 },
@@ -373,14 +633,14 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 "special.fixture.test",
                 {
                     "special.fixture.test": {
-                        "A": ["172.30.91.10"],
-                        "AAAA": ["::ffff:172.30.91.11", "5f00::1"],
+                        "A": [FIXTURE_IP],
+                        "AAAA": [f"::ffff:{SINK_IP}", "5f00::1"],
                     }
                 },
             ),
             (
                 "retry.fixture.test",
-                {"retry.fixture.test": {"A": ["203.0.113.7", "172.30.91.11"]}},
+                {"retry.fixture.test": {"A": ["203.0.113.7", SINK_IP]}},
             ),
         )
         for host, zones in cases:
@@ -393,9 +653,9 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
         self.configure_dns(
             {
                 "rebinding.fixture.test": {
-                    "A": ["172.30.91.10"],
+                    "A": [FIXTURE_IP],
                     "ttl": 0,
-                    "next": {"A": ["172.30.91.11"], "ttl": 60},
+                    "next": {"A": [SINK_IP], "ttl": 60},
                 }
             }
         )
@@ -483,6 +743,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            policy_path.chmod(0o600)
             env = os.environ.copy()
             env.update(
                 {
@@ -497,7 +758,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
             )
             params = StdioServerParameters(
                 command=sys.executable,
-                args=["-m", "scout.tool_host"],
+                args=[str(ROOT / "tests" / "mcp_authoring_stdio_fixture.py")],
                 env=env,
             )
 
@@ -526,7 +787,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                             "rcode": 2,
                             "A": [],
                             "ttl": 0,
-                            "next": {"A": ["172.30.91.11"], "ttl": 0},
+                            "next": {"A": [SINK_IP], "ttl": 0},
                         }
                     }
                 )
@@ -563,8 +824,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                         and item["rcode"] == 0
                         and item["ordinal"] > first_a[0]["ordinal"]
                         and any(
-                            answer.get("value") == "172.30.91.11"
-                            for answer in item["answers"]
+                            answer.get("value") == SINK_IP for answer in item["answers"]
                         )
                         for item in first_operation_responses
                     ),
@@ -585,7 +845,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 self.configure_dns(
                     {
                         "catalog.fixture.test": {
-                            "A": ["172.30.91.10"],
+                            "A": [FIXTURE_IP],
                             "ttl": 60,
                         }
                     }
@@ -636,7 +896,7 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
         async def scenario():
             proxy = os.environ["SCOUT_HTTP_E2E_PROXY_URL"]
             transport = AiohttpSquidTransport(proxy)
-            self.configure_dns({"private.fixture.test": {"A": ["172.30.91.11"]}})
+            self.configure_dns({"private.fixture.test": {"A": [SINK_IP]}})
             with self.assertRaises(aiohttp.ClientHttpProxyError) as denied:
                 await transport.get("https://private.fixture.test/", 1024, 2)
             self.assertEqual(denied.exception.status, 403)

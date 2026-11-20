@@ -8,4 +8,8 @@ Each finding must cite one or more durable evidence manifest IDs. Preserve the d
 | `hypothesized` | Interpretation or proposed strategy not yet independently checked. |
 | `independently_verified` | Checked with a separate method and separately identified evidence. |
 
+The current `scout_record_finding` v1 MCP contract accepts `observation` or `hypothesis`; it has no independent-verification method. Do not label a finding independently verified in this workflow. Transcript and draft projections use `observed`/`hypothesized` to preserve that distinction.
+
+`scout_export_transcript` returns metadata only. Protected replay tools reauthorize the session, retrieve proposal-scoped bytes through BC14/BC06, and pass verified bytes to the isolated BC15 executor without exposing fixture paths to the model. Raw output remains in the executor's private named volume; MCP returns only report and manifest metadata. Never paste raw content into a review report.
+
 The CapturePlaybook draft copies finding IDs, classifications, and evidence references. It does not change BC14 ownership of observations or Scout v1 contracts. A draft, successful fixture replay, or BC15 receipt does not approve a source policy or release a bot.
