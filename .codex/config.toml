@@ -20,3 +20,12 @@ enabled_tools = [
 default_tools_approval_mode = "prompt"
 startup_timeout_sec = 30
 tool_timeout_sec = 120
+
+# Convenience only; an administrator must enforce the same filter through
+# Codex requirements because project configuration is agent-writable.
+[shell_environment_policy]
+inherit = "all"
+ignore_default_excludes = true
+
+[shell_environment_policy.filters]
+SCOUT_BROKER_TOKEN = "exclude"

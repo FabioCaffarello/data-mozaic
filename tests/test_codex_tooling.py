@@ -28,6 +28,14 @@ class CodexToolingTests(unittest.TestCase):
             server["url"],
             requirements["mcp_servers"]["data_mozaic_scout"]["identity"]["url"],
         )
+        self.assertEqual(
+            "exclude",
+            requirements["shell_environment_policy"]["filters"]["SCOUT_BROKER_TOKEN"],
+        )
+        self.assertEqual(
+            "exclude",
+            config["shell_environment_policy"]["filters"]["SCOUT_BROKER_TOKEN"],
+        )
 
     def test_workspace_stdio_launcher_is_disabled(self):
         with tempfile.TemporaryDirectory(prefix="checkout with spaces ") as temporary:

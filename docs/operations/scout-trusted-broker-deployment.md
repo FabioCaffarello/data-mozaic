@@ -23,7 +23,7 @@ python3 tooling/verify_scout_bundle.py /release/scout-broker
 shasum -a 256 /release/scout-broker/manifest.json
 ```
 
-The bundle contains broker and observability wheels, a hash-locked dependency file and target-platform wheelhouse, the exported worker image, worker manifest, file hashes, source commit/tree-input digest, lockfile digest, Python/SDK versions, base image reference, and immutable final worker image ID. The build script does not sign the bundle. Its in-bundle hashes detect accidental changes but do not authenticate the bundle if an attacker replaces both manifest and files. The operator must compare the manifest SHA-256 or a release signature through an independent trusted channel before installation. Never install the current dirty-tree build described in this PR as a privileged release.
+The builders reject dirty or untracked worktrees. The bundle contains broker and observability wheels, a hash-locked dependency file and target-platform wheelhouse, the exported worker image, worker manifest, file hashes, full source commit and Git tree, source-input digest, lockfile and exported-requirements digests, Python/SDK versions, base image reference, and immutable final worker image ID. The build script does not sign or attest the bundle. Its in-bundle hashes detect accidental changes but do not authenticate the bundle if an attacker replaces both manifest and files. The operator must compare the manifest SHA-256 or release signature through an independent trusted channel before installation. Never install the earlier dirty-tree staging artifact as a privileged release.
 
 `install_scout_bundle.sh BUNDLE_DIR STAGING_PREFIX` installs only into a new unprivileged directory. It does not use sudo, load a Docker image, create a service, or write administrative policy. The operator performs those operations only after independent review. The MCP broker never builds an image; it accepts only the operator-configured image ID (`sha256:…`), verifies that exact ID exists in the configured Docker context, and uses it for every worker.
 
@@ -42,11 +42,28 @@ The bundle contains broker and observability wheels, a hash-locked dependency fi
 2. Docker Desktop exposes its daemon through a logged-in user's socket/context. There is no separate daemon UID equivalent to native Linux in this setup. The broker may need to run as the desktop user, so same-UID filesystem mode bits do not isolate it from Codex. This platform is unsupported unless the effective Codex shell sandbox denies every Docker endpoint and an enforced managed MCP policy prevents project config from starting any unapproved STDIO process. Verify actual process identity, socket paths, and access after service and Codex restart.
 3. Fix the Docker context and endpoint from operator-owned config. For example, Docker Desktop may use `desktop-linux` and a user socket under `~/.docker/run`; do not infer the endpoint from this example. The broker verifies the context's inspected endpoint against the configured Unix socket and rejects non-Unix endpoints.
 
-For both platforms, configure owner-only absolute paths for the policy, local evidence, artifact, acceptance-oracle and SQLite files. Set the PostgreSQL DSN and bearer token through the service manager's protected secret channel, never command arguments, project files, MCP parameters, or logs. The token must not be available to model-generated shell commands. If Codex's effective environment filtering cannot be shown to keep it out of shell commands, do not enable the service. The present project config obtains it from `SCOUT_BROKER_TOKEN`; this behavior must be tested on the provisioned Codex profile.
+## Rollback
+
+Keep the prior root-owned release directory and worker image until the new version passes its operator checks. To roll back, stop the service (`systemctl stop ...` on Linux or the operator-managed `launchctl` job on macOS), restore the prior versioned executable/config reference and matching worker image ID, then restart and check authenticated `/healthz` and the service log. Keep the SQLite registry and labeled volumes intact; do not run global Docker cleanup or remove volumes during rollback. This change currently keeps registry schema version `1`; if a future release changes it incompatibly, stop and take an operator-controlled SQLite backup before upgrade, and use that backup only with the matching prior binary. Confirm MCP tool availability and policy again after Codex restart.
+
+For both platforms, configure owner-only absolute paths for the policy, local evidence, artifact, acceptance-oracle and SQLite files. Set the PostgreSQL DSN and bearer token through the service manager's protected secret channel, never command arguments, project files, MCP parameters, or logs. The MCP bearer token authenticates only the fixed broker API; it grants no Docker API access by itself. The project Codex config resolves it from `SCOUT_BROKER_TOKEN`, so that variable is present in the Codex process.
+
+**Codex CLI 0.170.0 defaults shell subprocesses to inheriting the full parent environment and sets `ignore_default_excludes=true`; variables named `*_TOKEN` are therefore not implicitly removed.** The project config now excludes `SCOUT_BROKER_TOKEN` as a convenience, but the agent can edit that file. The exact filter is also in the managed requirements example and must be enforced by the administrator:
+
+```toml
+[shell_environment_policy]
+inherit = "all"
+ignore_default_excludes = true
+
+[shell_environment_policy.filters]
+SCOUT_BROKER_TOKEN = "exclude"
+```
+
+The Codex-provided macOS sandbox test with a synthetic token confirmed the filtered child environment omitted the variable; a `ps` process-inspection attempt was denied in that sandbox. This does not prove an active managed policy or every same-UID process-inspection path. Verify the effective managed filter and repeat the synthetic probe after provisioning/restart. If the shell can obtain the token, or the filter is not present in administrator-managed requirements, do not enable the broker. The CLI's 0.170.0 defaults are visible in the [versioned Codex source](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/protocol/src/config_types.rs).
 
 ## Codex administrative requirements
 
-The sample [codex-requirements.example.toml](../../config/scout/codex-requirements.example.toml) identifies the exact server name and URL. In Codex CLI 0.170.0, an active non-empty `mcp_servers` requirements map disables direct configured servers whose name or transport identity does not match. Plugin-provided MCP servers need their own managed plugin requirements or must be disabled; do not assume the direct MCP map covers plugin servers. Do not add wildcards.
+The sample [codex-requirements.example.toml](../../config/scout/codex-requirements.example.toml) identifies the exact server name and URL and excludes the broker token from shell subprocesses. In Codex CLI 0.170.0, an active non-empty `mcp_servers` requirements map disables direct configured servers whose name or transport identity does not match. Requirements' keyed shell environment filters can enforce token exclusion; project-local configuration cannot serve as that authority. Plugin-provided MCP servers need their own managed plugin requirements or must be disabled; do not assume the direct MCP map covers plugin servers. Do not add wildcards.
 
 - Linux/Unix: an administrator installs `/etc/codex/requirements.toml` (administrator-owned, not writable by Codex). The CLI also recognizes legacy `/etc/codex/managed_config.toml`.
 - macOS: use only a forced MDM preference `com.openai.codex:requirements_toml_base64`; an ordinary user preference is not administrative enforcement.
@@ -63,3 +80,5 @@ Retain release/source hashes, worker image ID, package manifest SHA, service UID
 The direct BC15 writer remains a trusted in-process API and does not defend against a same-UID process moving its output directory. Only the protected broker/container composition is the supported untrusted-agent path. The worker has no network or host bind mounts; volumes remain daemon-managed and are removed only after ownership-label verification. Docker administrators, daemon compromise, container escape, and disk exhaustion beyond configured run-count/retention limits remain out of scope.
 
 The real synthetic Codex fixture approval is expired. Do not start a real Codex fixture session until the owner explicitly grants a valid one-use approval.
+
+For the future one-use request, ask the owner to authorize only `e2e-catalog-single` / `single-resource-v1`: one HTTPS `GET` to `https://catalog.fixture.test/api/catalog`, at most one request and one page, at most 4096 response bytes, 120 seconds maximum session duration, one execution only, and approval expiry no later than 30 minutes after grant. Deny all other sources and public/external destinations. Do not write this approval into policy or start a session until the owner explicitly grants it.

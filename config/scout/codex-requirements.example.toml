@@ -3,3 +3,13 @@
 # the repository: project configuration is agent-writable.
 [mcp_servers.data_mozaic_scout.identity]
 url = "http://127.0.0.1:8765/mcp"
+
+# Codex CLI 0.170.0 defaults shell subprocesses to inheriting the full parent
+# environment and does not apply the legacy KEY/SECRET/TOKEN excludes by default.
+# This managed filter is required when using bearer_token_env_var.
+[shell_environment_policy]
+inherit = "all"
+ignore_default_excludes = true
+
+[shell_environment_policy.filters]
+SCOUT_BROKER_TOKEN = "exclude"
