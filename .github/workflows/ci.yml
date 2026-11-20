@@ -73,6 +73,13 @@ jobs:
           SCOUT_HTTP_E2E_SQUID_CONFIG: /tmp/nonexistent-squid.conf
           SCOUT_HTTP_E2E_PROXY_PORT: "3137"
           SCOUT_HTTP_E2E_DNS_CONTROL_PORT: "8053"
+          # Compose interpolates all required addresses even for `down`.
+          # This unique, unused private subnet is only for parsing cleanup config.
+          SCOUT_HTTP_E2E_SUBNET: 172.29.255.0/24
+          SCOUT_HTTP_E2E_SQUID_IP: 172.29.255.2
+          SCOUT_HTTP_E2E_FIXTURE_IP: 172.29.255.10
+          SCOUT_HTTP_E2E_SINK_IP: 172.29.255.11
+          SCOUT_HTTP_E2E_DNS_IP: 172.29.255.53
         run: |
           docker compose \
             --project-name "$SCOUT_HTTP_E2E_PROJECT" \
