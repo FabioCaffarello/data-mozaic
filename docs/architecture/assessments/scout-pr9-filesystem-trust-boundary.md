@@ -109,7 +109,7 @@ The existing-index branch in `_write_replay_fixtures` now closes `index.json` in
 | Agent write attempt against the actual broker files | Not run; preserving the user's real files. Synthetic repository-root write succeeded under Codex `workspace-write`, proving the workspace trust premise is false |
 | Codex shell access to configured Docker contexts | Denied at OS socket connect in Codex 0.170.0 `workspace-write`; ordinary same-UID host process connected to both endpoints |
 | Project MCP STDIO server adversarial call | Not run; current launcher executes checkout code and builds through Docker before serving, so it is not a safe probe target |
-| Remote Linux required checks on changed code | Not run; no commit or push |
+| Remote Linux required checks on changed code | Not run; a local commit exists but was not pushed |
 
 The first and second already-documented Codex sessions remain useful evidence for distinct discovery and standalone acquisition strategies. The protocol now routes replay through the protected tools, so those sessions do not validate the new executor boundary.
 
@@ -139,3 +139,5 @@ Local macOS results: `make ci`, `make check`, `make test-integration` (21 Postgr
 The managed requirements example and a negative Codex CLI probe are prepared but not installed or run. The exact HTTP handshake has not been checked against Codex CLI 0.170.0 after deployment. macOS and Linux service ownership and effective Docker socket denial by the Codex process remain unverified. Direct API writer same-UID directory replacement remains a documented vulnerability and is not the supported protected path. The fixture authorization remains expired; no real Codex fixture call occurred.
 
 **Decision remains NO-GO** for trusted deployment, publication as a security-complete implementation, real fixture acceptance, merge, or independent security sign-off. Required human/operator actions: provision a reviewed and independently authenticated bundle outside the checkout; load the worker image; configure and protect service state/secrets and service identity; enforce the exact Codex managed MCP requirement (including blocking added STDIO/alternate URL); run socket/filesystem/config tampering probes through both sandboxed shell and MCP STDIO; verify service/Codex restart; run Linux CI on a reviewed published SHA; and grant fresh one-use fixture approval before real Codex acceptance.
+
+Local commit: `5226b6ec89439f195a29c497dd4742136de9adb2` (`feat(scout): add trusted Streamable HTTP broker`). The branch is one commit ahead of its remote; no push or merge was performed. The workflow includes the protected HTTP and executor checks, but no remote check has run for this commit.
