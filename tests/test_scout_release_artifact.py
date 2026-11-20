@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tooling.scout_release_artifact import runtime_config_differences
 from tooling.verify_scout_bundle import verify_bundle
 
 COMMIT = "1" * 40
@@ -246,6 +247,21 @@ class ReleaseBundleVerificationTests(unittest.TestCase):
     def test_wrong_platform_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "target platform mismatch"):
             self._verify(target="linux/arm64")
+
+    def test_runtime_config_comparison_normalizes_empty_docker_fields(self):
+        self.assertEqual(
+            [],
+            runtime_config_differences(
+                {"Entrypoint": ["worker"], "Env": None},
+                {"Entrypoint": ["worker"]},
+            ),
+        )
+        self.assertEqual(
+            ["Entrypoint"],
+            runtime_config_differences(
+                {"Entrypoint": ["worker"]}, {"Entrypoint": ["other"]}
+            ),
+        )
 
     def test_incompatible_wheel_is_rejected(self):
         (

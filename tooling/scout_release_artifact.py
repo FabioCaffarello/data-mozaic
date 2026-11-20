@@ -7,6 +7,35 @@ import json
 import tarfile
 from pathlib import Path, PurePosixPath
 
+RUNTIME_CONFIG_FIELDS = (
+    "Entrypoint",
+    "Cmd",
+    "User",
+    "WorkingDir",
+    "Env",
+    "Volumes",
+    "ExposedPorts",
+    "Labels",
+    "Healthcheck",
+    "OnBuild",
+    "Shell",
+    "StopSignal",
+)
+
+
+def runtime_config_differences(left: dict, right: dict) -> list[str]:
+    """Compare Docker's runtime-relevant config fields across JSON encodings."""
+
+    differences = []
+    for field in RUNTIME_CONFIG_FIELDS:
+        left_value = left.get(field)
+        right_value = right.get(field)
+        if left_value in (None, {}, []) and right_value in (None, {}, []):
+            continue
+        if left_value != right_value:
+            differences.append(field)
+    return differences
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()

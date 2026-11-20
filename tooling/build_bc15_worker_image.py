@@ -12,9 +12,17 @@ import uuid
 from pathlib import Path
 
 try:
-    from .scout_release_artifact import architecture_for_platform, archive_image_config
+    from .scout_release_artifact import (
+        architecture_for_platform,
+        archive_image_config,
+        runtime_config_differences,
+    )
 except ImportError:  # direct execution via `python tooling/build_bc15_worker_image.py`
-    from scout_release_artifact import architecture_for_platform, archive_image_config
+    from scout_release_artifact import (
+        architecture_for_platform,
+        archive_image_config,
+        runtime_config_differences,
+    )
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -215,9 +223,13 @@ def main() -> int:
             ):
                 raise SystemExit("exported Docker archive has the wrong platform")
             expected_runtime = built.get("Config", {})
-            if archive_meta["runtime_config"] != expected_runtime:
+            runtime_differences = runtime_config_differences(
+                archive_meta["runtime_config"], expected_runtime
+            )
+            if runtime_differences:
                 raise SystemExit(
-                    "exported image runtime config differs from built image"
+                    "exported image runtime config differs in: "
+                    + ", ".join(runtime_differences)
                 )
 
             build_tags = built.get("RepoTags") or []
@@ -286,8 +298,14 @@ def main() -> int:
                 or imported.get("Architecture") != expected_arch
             ):
                 raise SystemExit("imported worker image identity or platform differs")
-            if imported.get("Config", {}) != expected_runtime:
-                raise SystemExit("imported image runtime config differs")
+            runtime_differences = runtime_config_differences(
+                imported.get("Config", {}), expected_runtime
+            )
+            if runtime_differences:
+                raise SystemExit(
+                    "imported image runtime config differs in: "
+                    + ", ".join(runtime_differences)
+                )
 
             if args.docker_host != args.verify_docker_host:
                 subprocess.run(

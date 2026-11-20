@@ -13,6 +13,7 @@ try:
     from .scout_release_artifact import (
         architecture_for_platform,
         archive_image_config,
+        runtime_config_differences,
         sha256_file,
         verify_wheelhouse,
     )
@@ -20,6 +21,7 @@ except ImportError:  # direct execution via `python tooling/verify_scout_bundle.
     from scout_release_artifact import (
         architecture_for_platform,
         archive_image_config,
+        runtime_config_differences,
         sha256_file,
         verify_wheelhouse,
     )
@@ -213,10 +215,10 @@ def verify_bundle(
     )
     for key in ("entrypoint", "cmd", "user", "working_dir"):
         _fail(image[key] == worker.get(key), f"worker {key} mismatch")
-    _fail(
-        image["runtime_config"] == worker.get("runtime_config"),
-        "worker runtime config differs from archive",
+    runtime_differences = runtime_config_differences(
+        image["runtime_config"], worker.get("runtime_config", {})
     )
+    _fail(not runtime_differences, "worker runtime config differs from archive")
     _fail(
         worker.get("dockerfile_sha256") == sha256_file(dockerfile),
         "worker Dockerfile source mismatch",
@@ -276,10 +278,10 @@ def verify_bundle(
             "imported worker image platform mismatch",
         )
         imported_config = imported.get("Config", {})
-        _fail(
-            imported_config == worker.get("runtime_config"),
-            "imported worker runtime config mismatch",
+        runtime_differences = runtime_config_differences(
+            imported_config, worker.get("runtime_config", {})
         )
+        _fail(not runtime_differences, "imported worker runtime config mismatch")
         for key, field in (
             ("Entrypoint", "entrypoint"),
             ("Cmd", "cmd"),
