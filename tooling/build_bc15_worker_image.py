@@ -39,6 +39,23 @@ def source_digest() -> str:
     return hash_value.hexdigest()
 
 
+def git_identity() -> tuple[str, str]:
+    status = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=ROOT,
+        text=True,
+    )
+    if status:
+        raise SystemExit("worker release build requires a clean Git worktree")
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+    tree = subprocess.check_output(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, text=True
+    ).strip()
+    return commit, tree
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -48,6 +65,7 @@ def main() -> int:
     args = parser.parse_args()
     if "@sha256:" not in args.base_image:
         parser.error("base image must be pinned with @sha256 digest")
+    commit, git_tree = git_identity()
     output = args.output.resolve()
     if output.exists():
         parser.error("output directory already exists")
@@ -117,9 +135,8 @@ def main() -> int:
             subprocess.run([docker, "save", image_id], check=True, stdout=stream)
         manifest = {
             "format": 1,
-            "source_commit": subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
-            ).strip(),
+            "source_commit": commit,
+            "git_tree": git_tree,
             "source_tree_digest_sha256": source_digest(),
             "uv_lock_sha256": digest(ROOT / "uv.lock"),
             "base_image": args.base_image,

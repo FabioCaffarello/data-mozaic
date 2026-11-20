@@ -45,11 +45,29 @@ def source_digest() -> str:
     return digest.hexdigest()
 
 
+def git_identity() -> tuple[str, str]:
+    status = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=ROOT,
+        text=True,
+    )
+    if status:
+        raise SystemExit("broker release build requires a clean Git worktree")
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+    tree = subprocess.check_output(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, text=True
+    ).strip()
+    return commit, tree
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--worker-bundle", type=Path, required=True)
     args = parser.parse_args()
+    commit, git_tree = git_identity()
     worker_manifest_path = args.worker_bundle.resolve() / "worker-manifest.json"
     worker_archive = args.worker_bundle.resolve() / "bc15-worker-image.tar"
     if not worker_manifest_path.is_file() or not worker_archive.is_file():
@@ -57,6 +75,11 @@ def main() -> int:
             "--worker-bundle must contain worker-manifest.json and bc15-worker-image.tar"
         )
     worker_manifest = json.loads(worker_manifest_path.read_text(encoding="utf-8"))
+    if (
+        worker_manifest.get("source_commit") != commit
+        or worker_manifest.get("git_tree") != git_tree
+    ):
+        parser.error("worker image must be built from this exact clean Git commit")
     if (
         not worker_manifest["worker_image_id"].startswith("sha256:")
         or len(worker_manifest["worker_image_id"]) != 71
@@ -133,9 +156,6 @@ def main() -> int:
             check=True,
             stdout=subprocess.DEVNULL,
         )
-    commit = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
-    ).strip()
     lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
     sdk = next(
         package["version"] for package in lock["package"] if package["name"] == "mcp"
@@ -144,8 +164,10 @@ def main() -> int:
         "format": 1,
         "artifact": "data-mozaic-scout-trusted-mcp-broker",
         "source_commit": commit,
+        "git_tree": git_tree,
         "source_tree_digest_sha256": source_digest(),
         "uv_lock_sha256": sha256(ROOT / "uv.lock"),
+        "requirements_sha256": sha256(requirements),
         "python": platform.python_version(),
         "platform": platform.platform(),
         "mcp_sdk": sdk,
