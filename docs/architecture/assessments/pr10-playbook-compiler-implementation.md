@@ -41,7 +41,7 @@ Required fast gate: `make ci` (which runs `make sync` and `make check`). It pass
 
 `make check` passed after the locked dependencies were synced, including lint, format, docs, naming, architecture, and unit tests.
 
-`make collector-playbook-examples` passed on macOS. Its OS sandbox socket probe was denied by `sandbox-exec`; each positive generated bot ran with network denied and matched its independent oracle. The Linux CI Integration Security Gate runs the same target using a non-root Docker container with `--network none`, read-only root, memory/CPU/PID limits, and restricted mounts. That Linux CI run has not been observed in this local session.
+`make collector-playbook-examples` passed on macOS. Its OS sandbox socket probe was denied by `sandbox-exec`; each positive generated bot ran with network denied and matched its independent oracle. The Linux CI Integration Security Gate runs the same target using a non-root Docker container with `--network none`, read-only root, memory/CPU/PID limits, and restricted mounts. The first published run exposed an editable-package import issue in the container; after mounting the versioned runtime source read-only, the Linux run `45063064428` passed the sandbox probe, all four positive/negative examples, and the complete Integration Security Gate on commit `c3d73d2`.
 
 ## Capability matrix and deferred work
 
@@ -57,7 +57,7 @@ Required fast gate: `make ci` (which runs `make sync` and `make check`). It pass
 ## Limitations and publication readiness
 
 - P0: none identified in the implemented synthetic offline path; production execution remains intentionally unavailable.
-- P1: no observed Linux CI run yet; macOS local execution has no equivalent memory cap. The CI Docker gate is required before merge.
+- P1: none remain after the Linux runtime import fix. macOS local execution still has no equivalent memory cap; Linux Docker isolation is the required CI evidence.
 - P2: evidence fixtures and selector match counts cannot establish semantic correctness. Independent expected records and human review remain necessary.
 - P2: build digests are not signatures and do not constitute authorization or release approval.
 - P3: no field normalization beyond trim/collapse-whitespace and strict scalar conversion; no date/locale inference, browser, authentication, live HTTP, Scrapy, Playwright, or release governance.
