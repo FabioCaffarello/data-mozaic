@@ -19,6 +19,8 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
+from .syntax import PlaybookError, UniqueKeyLoader
+
 _SCHEMAS = files("collector_engineering").joinpath("schemas")
 SCHEMA = json.loads(_SCHEMAS.joinpath("CapturePlaybook.schema.json").read_text())
 PROPOSAL_SCHEMA = json.loads(
@@ -34,36 +36,13 @@ TRANSCRIPT_SCHEMAS = {
 }
 
 
-class PlaybookError(ValueError):
-    """Input cannot safely produce or validate a playbook draft."""
-
-
 try:
     import fcntl as _fcntl
 except ImportError:  # pragma: no cover - platform-specific fail-closed path
     _fcntl = None
 
 
-class _UniqueKeyLoader(yaml.SafeLoader):
-    pass
-
-
-def _mapping_without_duplicate_keys(loader: _UniqueKeyLoader, node, deep=False):
-    mapping = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        if not isinstance(key, str):
-            raise PlaybookError("YAML mapping keys must be strings")
-        if key in mapping:
-            raise PlaybookError(f"duplicate YAML key: {key}")
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
-_UniqueKeyLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-    _mapping_without_duplicate_keys,
-)
+_UniqueKeyLoader = UniqueKeyLoader
 
 
 def _parse_yaml(text: str) -> dict:

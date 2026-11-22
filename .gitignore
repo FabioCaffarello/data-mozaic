@@ -9,5 +9,6 @@ __pycache__/
 .local/scout-egress-domains.txt
 .local/scout-mcp.env
 .local/uv-cache/
+.local/pr10-builds/
 node_modules/
 target/

@@ -1,0 +1,15 @@
+{
+  "backend_id": "python-http-reference",
+  "backend_version": "1.0.0",
+  "profile_version": "capability-profile/v1",
+  "capabilities": [
+    "html.css_select",
+    "http.fetch.fixture",
+    "json.path_restricted",
+    "links.discover.fixture",
+    "output.raw.reference",
+    "output.records.jsonl",
+    "pagination.bounded.fixture",
+    "records.extract"
+  ]
+}

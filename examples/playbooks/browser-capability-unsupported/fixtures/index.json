@@ -1,0 +1,7 @@
+{
+  "complete": true,
+  "source": {"source_id": "synthetic-rendered-page", "revision": "fixture-1"},
+  "pages": [
+    {"url":"https://browser.fixture.test/app","status":200,"content_type":"text/html","evidence_ref":"e-browser-1","body_file":"page.html","sha256":"2f88abe61bbf0bfdff4fd8ecbf76503ef06ee8d5b7887090e8d569eee9987e5f","size_bytes":103}
+  ]
+}

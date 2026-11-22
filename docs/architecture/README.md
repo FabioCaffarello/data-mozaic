@@ -39,5 +39,7 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 30. [Scout Codex functional remediation — independent acceptance](assessments/scout-codex-functional-remediation.md)
 31. [PR #9 BC15 filesystem trust boundary — security closure](assessments/scout-pr9-filesystem-trust-boundary.md)
 32. [ADR 017 — Scout trusted MCP deployment](decisions/017-scout-trusted-mcp-deployment.md)
+33. [ADR 018 — Collector Playbook v2, Typed IR, and Python Reference backend](decisions/018-collector-playbook-ir-and-reference-backend.md)
+34. [PR #10 — Playbook v2 and Python Bot Compiler implementation evidence](assessments/pr10-playbook-compiler-implementation.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.

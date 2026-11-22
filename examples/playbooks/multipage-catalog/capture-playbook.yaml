@@ -1,0 +1,60 @@
+dsl_version: capture-playbook-draft/v2
+playbook_id: bounded-multipage-catalog
+status: draft
+source:
+  source_id: synthetic-multipage-catalog
+  revision: fixture-1
+  origin: https://pages.fixture.test
+  path_prefixes: [/catalog]
+objective: Read the first two observed catalog pages and extract item identifiers and names.
+proposal_ref: proposal-multipage
+findings:
+  - finding_id: finding-multipage-navigation
+    classification: observed
+    evidence_refs: [e-multi-1, e-multi-2, e-multi-3]
+evidence:
+  - {evidence_ref: e-multi-1, sha256: a9dbaa245167be2e326af875a4501b3ae00380e9a95787943558858dddb1ee76}
+  - {evidence_ref: e-multi-2, sha256: 342fa6b2944b42c02e62e2b4e98ce8417aaaba48663d974b2a31bfe27c21cd1a}
+  - {evidence_ref: e-multi-3, sha256: 161072f8141967b118d47fa8eb4314f29a2b0b952580c5f74b74787428849724}
+capabilities: [http.fetch.fixture, links.discover.fixture, pagination.bounded.fixture, html.css_select, records.extract, output.records.jsonl]
+budgets: {max_requests: 2, max_pages: 2, max_response_bytes: 1024, max_records: 10, max_output_bytes: 1000000}
+failure_policy: {missing_fixture: fail, invalid_record: fail, missing_required_field: fail, conversion_error: fail}
+output_contract:
+  record_type: object
+  fields:
+    id: {type: string, required: true}
+    name: {type: string, required: true}
+operations:
+  - id: start
+    op: http.fetch/v1
+    url: https://pages.fixture.test/catalog/
+    content_type: text/html
+    evidence_refs: [e-multi-1]
+  - id: discovered
+    op: links.discover/v1
+    document: {operation: start, port: document}
+    selector: a.next
+    attribute: href
+    max_links: 5
+    evidence_refs: [e-multi-1]
+  - id: pages
+    op: pagination.bounded/v1
+    links: {operation: discovered, port: links}
+    max_pages: 2
+    stop_when_no_links: true
+  - id: items
+    op: select.html_records/v1
+    documents: {operation: pages, port: documents}
+    selector: article.item
+    cardinality: many
+    max_matches: 10
+    evidence_refs: [e-multi-1, e-multi-2]
+  - id: extract
+    op: extract.fields/v1
+    records: {operation: items, port: records}
+    fields:
+      id: {source: attribute, attribute: data-id, type: string, required: true, normalize: [trim]}
+      name: {source: text, selector: .name, type: string, required: true, normalize: [trim]}
+  - id: emit
+    op: output.records/v1
+    records: {operation: extract, port: records}

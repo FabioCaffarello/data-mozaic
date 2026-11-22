@@ -1,6 +1,7 @@
 """Bootstrap diagnostics and explicit synthetic-source authorization checks."""
 
 import json
+import os
 import stat
 import subprocess
 import tempfile
@@ -32,6 +33,27 @@ from tooling.scout_dev import (
 
 
 class ScoutDevBootstrapTests(unittest.TestCase):
+    @staticmethod
+    def _isolated_git_environment() -> dict[str, str]:
+        environment = os.environ.copy()
+        inherited_git_state = {
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_PREFIX",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_COUNT",
+        }
+        for key in tuple(environment):
+            if key in inherited_git_state or key.startswith(
+                ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+            ):
+                environment.pop(key)
+        return environment
+
     def test_network_command_guard_allows_url_parsing_but_rejects_clients(self):
         self.assertFalse(
             _looks_like_direct_network_command(
@@ -115,7 +137,8 @@ class ScoutDevBootstrapTests(unittest.TestCase):
 
     def make_checkout(self, root: Path) -> Path:
         root.mkdir(parents=True)
-        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        environment = self._isolated_git_environment()
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True, env=environment)
         subprocess.run(
             [
                 "git",
@@ -130,9 +153,13 @@ class ScoutDevBootstrapTests(unittest.TestCase):
             ],
             cwd=root,
             check=True,
+            env=environment,
         )
         subprocess.run(
-            ["git", "checkout", "--detach", "-q", "HEAD"], cwd=root, check=True
+            ["git", "checkout", "--detach", "-q", "HEAD"],
+            cwd=root,
+            check=True,
+            env=environment,
         )
         return root
 
@@ -143,7 +170,10 @@ class ScoutDevBootstrapTests(unittest.TestCase):
             root = self.make_checkout(Path(temporary) / "repo with spaces")
             nested = root / "apps" / "scout source"
             nested.mkdir(parents=True)
-            self.assertEqual(root.resolve(), find_repository_root(nested))
+            with mock.patch.dict(
+                os.environ, self._isolated_git_environment(), clear=True
+            ):
+                self.assertEqual(root.resolve(), find_repository_root(nested))
 
     def test_local_template_setup_is_private_idempotent_and_does_not_authorize(self):
         with tempfile.TemporaryDirectory(prefix="scout local setup ") as temporary:

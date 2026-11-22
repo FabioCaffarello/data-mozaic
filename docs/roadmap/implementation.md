@@ -30,6 +30,10 @@ Conectar somente `scout_fetch` ao host, com URL dentro do source/revision da ses
 
 O PR #9 introduz skill Codex, MCP e BC15 local. A remediação preserva Scout v1 e CapturePlaybook draft v1, mas evolui explicitamente o DTO interno BC14→BC15 para transcript draft v2, pois a sequência inicial não existia em v1. Adiciona replay de `output.raw`, acceptance contra expectativas independentes, wrapper BC15 compatível com workspace-write e publicação privada de fixtures descriptor-relative. Duas sessões reais locais do Codex passaram acceptance em fixtures HTTPS independentes, incluindo uma variação sem paginação; os resultados e limites estão no [assessment de remediação e aceitação](../architecture/assessments/scout-codex-functional-remediation.md). A execução real permanece um gate manual por ambiente; testes determinísticos não a substituem. Isso não promove ACK, não implementa isolamento global do processo, Playwright, compilador ou runtime.
 
+## PR #10 — CapturePlaybook v2 e compiler vertical
+
+PR #10 preserva a DSL v1 e adiciona draft/v2, validação semântica com diagnostics estáveis, `collector-ir/v1`, profile versionado Python HTTP Reference, código Python específico da IR e BotBuild local verificável. A runtime resolve somente fixtures com digest e não abre rede. HTML, catálogo limitado, JSON e autoria local Codex têm exemplos/oracles independentes; o caso browser valida semanticamente e falha no capability checker. Ver evidências e limitações em [exemplos executáveis](../../examples/playbooks/README.md), [runbook BC15](../operations/capture-playbook-drafts.md) e [ADR 018](../architecture/decisions/018-collector-playbook-ir-and-reference-backend.md). Isso não fecha os gates do deployment Scout, não implementa Scrapy/Playwright, não cria BotRelease e não autoriza captura produtiva.
+
 ## Próximo limite — adapters proprietários e adoção controlada
 
 Integrar somente fontes e approvals fornecidas pelos owners BC01/BC11 e custódia/traces por BC06, com revisão dos contratos de receipts e validação de transcript pelo CLI BC15. Não implementar produção até haver política operacional e gates de egress e sandbox do agente.

@@ -1,0 +1,7 @@
+{
+  "complete": true,
+  "source": {"source_id": "synthetic-json-api", "revision": "fixture-1"},
+  "pages": [
+    {"url":"https://api.fixture.test/v1/items","status":200,"content_type":"application/json","evidence_ref":"e-json-1","body_file":"api.json","sha256":"b5c983dbe4a6116b70fafc773c92d24f5224c5fbc633f9241299a81bb938ecd2","size_bytes":143}
+  ]
+}
