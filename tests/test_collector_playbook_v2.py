@@ -19,6 +19,7 @@ from collector_engineering.playbook_v2 import (
     build_typed_ir,
     canonical_json,
     load_playbook_v2,
+    parse_playbook,
     validate_playbook_v2,
 )
 from collector_engineering.playbooks import (
@@ -31,8 +32,12 @@ from collector_engineering.reference_runtime import (
     RuntimeFailure,
     _convert,
     _html,
+    _json_path,
     _reserve_output,
+    discover_links,
     fetch_fixture,
+    paginate,
+    select_json_records,
     write_raw_references,
 )
 from jsonschema import Draft202012Validator
@@ -80,10 +85,20 @@ class CapturePlaybookV2Tests(unittest.TestCase):
         )
 
     def test_parser_rejects_duplicate_yaml_keys(self):
-        from collector_engineering.playbook_v2 import parse_playbook
-
         with self.assertRaisesRegex(PlaybookError, "duplicate YAML key"):
             parse_playbook("dsl_version: x\ndsl_version: y\n")
+        with self.assertRaisesRegex(PlaybookError, "anchors and aliases"):
+            parse_playbook("value: &shared text\ncopy: *shared\n")
+        with self.assertRaisesRegex(PlaybookError, "PLAYBOOK_PARSE_ERROR"):
+            parse_playbook("value: !!python/object/apply:os.system ['id']\n")
+        with self.assertRaisesRegex(PlaybookError, "PLAYBOOK_TOO_LARGE"):
+            parse_playbook("x: " + ("a" * 1_000_001))
+        document = copy.deepcopy(self.parsed.document)
+        document["operations"][0]["id"] = []
+        self.assertIn("SCHEMA_INVALID", self.codes(validate_playbook_v2(document)))
+        document = copy.deepcopy(self.parsed.document)
+        document["findings"][0]["finding_id"] = []
+        self.assertIn("SCHEMA_INVALID", self.codes(validate_playbook_v2(document)))
 
     def test_fixture_index_is_bounded_and_malformed_entries_are_diagnostics(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -110,6 +125,13 @@ class CapturePlaybookV2Tests(unittest.TestCase):
         self.assertEqual(2, result["match_count"])
         self.assertEqual(1, len(result["samples"]))
         self.assertFalse(result["semantic_correctness_proven"])
+        no_matches = try_selector(
+            self.fixture_root,
+            "https://html.fixture.test/catalog/",
+            ".missing-card",
+            evidence_ref="e-html-1",
+        )
+        self.assertEqual("SELECTOR_NO_MATCHES", no_matches["diagnostic"]["code"])
         invalid = try_selector(
             self.fixture_root,
             "https://html.fixture.test/catalog/",
@@ -131,6 +153,33 @@ class CapturePlaybookV2Tests(unittest.TestCase):
             _convert(None, decimal_field, "price")
         with self.assertRaisesRegex(RuntimeFailure, "FIELD_CONVERSION_INVALID"):
             _convert(Decimal("1e1000"), decimal_field, "price")
+        with self.assertRaisesRegex(RuntimeFailure, "JSON_PATH_INVALID"):
+            _json_path(["first", "second"], "/-1", expand=False)
+
+    def test_json_extraction_rejects_duplicate_keys_and_noncanonical_array_indices(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            context = RuntimeContext.create(
+                str(self.fixture_root),
+                str(Path(temporary).resolve() / "output"),
+                self.parsed.document["source"],
+                self.parsed.document["budgets"],
+            )
+            with self.assertRaisesRegex(RuntimeFailure, "JSON_DOCUMENT_INVALID"):
+                select_json_records(
+                    context,
+                    {
+                        "body": b'{"items":[{"id":"first","id":"second"}]}',
+                        "evidence_ref": "e-json",
+                    },
+                    array_path="/items/*",
+                    max_matches=10,
+                    evidence_refs=["e-json"],
+                )
+        for path in ("/-1", "/+1", "/01", "/ 1"):
+            with self.assertRaisesRegex(RuntimeFailure, "JSON_PATH_INVALID"):
+                _json_path(["zero", "one"], path, expand=False)
 
     def test_output_byte_budget_is_enforced(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -171,6 +220,48 @@ class CapturePlaybookV2Tests(unittest.TestCase):
                     evidence_refs=["e-html-1"],
                 )
 
+    def test_runtime_binds_fixture_index_to_compiled_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            for file in self.fixture_root.iterdir():
+                (fixtures / file.name).write_bytes(file.read_bytes())
+            index_path = fixtures / "index.json"
+            index = json.loads(index_path.read_text())
+            expected_page = index["pages"][0]
+            expected = {
+                **{
+                    key: expected_page[key]
+                    for key in (
+                        "url",
+                        "evidence_ref",
+                        "sha256",
+                        "content_type",
+                        "status",
+                    )
+                },
+                "size_bytes": len((fixtures / expected_page["body_file"]).read_bytes()),
+                "source_id": index["source"]["source_id"],
+                "source_revision": index["source"]["revision"],
+            }
+            context = RuntimeContext.create(
+                str(fixtures),
+                str(root / "output"),
+                self.parsed.document["source"],
+                self.parsed.document["budgets"],
+                [expected],
+            )
+            index["pages"][0]["sha256"] = "0" * 64
+            index_path.write_text(json.dumps(index))
+            with self.assertRaisesRegex(RuntimeFailure, "FIXTURE_IDENTITY_MISMATCH"):
+                fetch_fixture(
+                    context,
+                    url=expected["url"],
+                    content_type=expected["content_type"],
+                    evidence_refs=[expected["evidence_ref"]],
+                )
+
     def test_unknown_operator_and_version_are_stable_diagnostics(self):
         document = copy.deepcopy(self.parsed.document)
         document["operations"][0]["op"] = "plugin.run/v1"
@@ -200,6 +291,64 @@ class CapturePlaybookV2Tests(unittest.TestCase):
             self.assertTrue(
                 {"FIXTURE_DIGEST_MISMATCH", "FIXTURE_EVIDENCE_MISMATCH"}
                 & self.codes(result)
+            )
+
+    def test_fetch_fixture_binding_and_output_sink_cardinality(self):
+        document = copy.deepcopy(self.parsed.document)
+        document["operations"][0]["url"] = "https://html.fixture.test/other/"
+        self.assertIn(
+            "FETCH_FIXTURE_MISSING",
+            self.codes(validate_playbook_v2(document, fixture_root=self.fixture_root)),
+        )
+        document = copy.deepcopy(self.parsed.document)
+        document["operations"][0]["evidence_refs"] = ["evidence-other"]
+        self.assertIn(
+            "FETCH_EVIDENCE_MISMATCH",
+            self.codes(validate_playbook_v2(document, fixture_root=self.fixture_root)),
+        )
+        document = copy.deepcopy(self.parsed.document)
+        duplicate = copy.deepcopy(document["operations"][-2])
+        duplicate["id"] = "emit-again"
+        duplicate["records"]["operation"] = "extract"
+        document["operations"].append(duplicate)
+        self.assertIn(
+            "OUTPUT_SINK_CARDINALITY", self.codes(validate_playbook_v2(document))
+        )
+
+    def test_pagination_deduplicates_seed_and_links(self):
+        parsed = load_playbook_v2(EXAMPLES / "multipage-catalog/capture-playbook.yaml")
+        fixtures = EXAMPLES / "multipage-catalog/fixtures"
+        with tempfile.TemporaryDirectory() as temporary:
+            context = RuntimeContext.create(
+                str(fixtures),
+                str(Path(temporary).resolve() / "output"),
+                parsed.document["source"],
+                parsed.document["budgets"],
+            )
+            seed = fetch_fixture(
+                context,
+                url="https://pages.fixture.test/catalog/",
+                content_type="text/html",
+                evidence_refs=["e-multi-1"],
+            )
+            link_set = discover_links(
+                context,
+                seed,
+                selector="a.next",
+                max_links=5,
+                evidence_refs=["e-multi-1"],
+            )
+            link_set["urls"] = [seed["url"], *link_set["urls"], *link_set["urls"]]
+            before = context.requests_used
+            pages = paginate(context, link_set, max_pages=2)
+            self.assertEqual(2, len(pages))
+            self.assertEqual(before + 1, context.requests_used)
+            self.assertEqual(
+                [
+                    "https://pages.fixture.test/catalog/",
+                    "https://pages.fixture.test/catalog/page-2",
+                ],
+                [page["url"] for page in pages],
             )
 
     def test_bindings_ports_types_fields_cardinality_and_selector_have_diagnostics(
@@ -276,6 +425,12 @@ class CapturePlaybookV2Tests(unittest.TestCase):
         document = copy.deepcopy(self.parsed.document)
         document["budgets"]["max_requests"] = 0
         self.assertIn("SCHEMA_INVALID", self.codes(validate_playbook_v2(document)))
+        document = copy.deepcopy(self.parsed.document)
+        document["budgets"]["max_response_bytes"] = 10
+        self.assertIn(
+            "BUDGET_OVERFLOW",
+            self.codes(validate_playbook_v2(document, fixture_root=self.fixture_root)),
+        )
         multi = load_playbook_v2(EXAMPLES / "multipage-catalog/capture-playbook.yaml")
         document = copy.deepcopy(multi.document)
         document["budgets"]["max_pages"] = 1
@@ -352,6 +507,19 @@ class CapturePlaybookV2Tests(unittest.TestCase):
                     value["operation"] = ids[value["operation"]]
         renamed_ir = build_typed_ir(renamed, fixture_root=self.fixture_root)
         compile(generate_python(renamed_ir), "hyphenated-operation-ids.py", "exec")
+
+        injected = copy.deepcopy(html_ir.document)
+        selector = "article.product'\n__import__('os').system('touch /tmp/payload')#"
+        selected = next(
+            node
+            for node in injected["nodes"]
+            if node["operator_type"] == "select.html_records"
+        )
+        selected["inputs"]["selector"] = selector
+        generated = generate_python(type(html_ir)(injected)).decode("utf-8")
+        compile(generated, "selector-is-data.py", "exec")
+        self.assertIn(repr(selector), generated)
+        self.assertNotIn("\n__import__('os')", generated)
 
     def test_build_manifest_is_deterministic_and_verifier_detects_tampering(self):
         with tempfile.TemporaryDirectory() as temporary:

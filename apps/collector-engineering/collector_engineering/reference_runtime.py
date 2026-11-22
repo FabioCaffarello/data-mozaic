@@ -13,6 +13,8 @@ from urllib.parse import urljoin, urlsplit
 
 from selectolax.lexbor import LexborHTMLParser, SelectolaxError
 
+from .syntax import strict_json_loads
+
 RUNTIME_VERSION = "python-http-reference-runtime/1.0.0"
 _INTEGER = re.compile(r"^[+-]?(?:0|[1-9][0-9]*)$")
 _DECIMAL = re.compile(r"^[+-]?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
@@ -30,6 +32,7 @@ class RuntimeContext:
     output_root: Path
     source: dict[str, Any]
     budgets: dict[str, int]
+    expected_fixtures: dict[str, dict[str, Any]]
     pages_used: int = 0
     requests_used: int = 0
     bytes_used: int = 0
@@ -43,10 +46,14 @@ class RuntimeContext:
         output_root: str,
         source: dict[str, Any],
         budgets: dict[str, int],
+        expected_fixtures: list[dict[str, Any]] | None = None,
     ):
         fixtures = _safe_directory(Path(fixture_root), must_exist=True)
         output = _safe_directory(Path(output_root), must_exist=False)
-        return cls(fixtures, output, source, budgets)
+        expected_by_url = {
+            item["url"]: dict(item) for item in (expected_fixtures or [])
+        }
+        return cls(fixtures, output, source, budgets, expected_by_url)
 
 
 def _safe_directory(path: Path, *, must_exist: bool) -> Path:
@@ -132,11 +139,13 @@ def _fixture_index(ctx: RuntimeContext) -> dict[str, Any]:
     path = ctx.fixture_root / "index.json"
     if path.is_symlink() or not path.is_file():
         raise RuntimeFailure("FIXTURE_INDEX_MISSING", "fixture index is missing")
-    if path.stat().st_size > 1_000_000:
-        raise RuntimeFailure("FIXTURE_INDEX_TOO_LARGE", "fixture index exceeds 1 MB")
     try:
-        index = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        if path.stat().st_size > 1_000_000:
+            raise RuntimeFailure(
+                "FIXTURE_INDEX_TOO_LARGE", "fixture index exceeds 1 MB"
+            )
+        index = strict_json_loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise RuntimeFailure("FIXTURE_INDEX_INVALID", str(error)) from error
     if (
         not isinstance(index, dict)
@@ -146,12 +155,30 @@ def _fixture_index(ctx: RuntimeContext) -> dict[str, Any]:
         raise RuntimeFailure(
             "FIXTURE_INDEX_INVALID", "fixture index must contain at most 200 pages"
         )
+    fixture_source = index.get("source")
+    if (
+        not isinstance(fixture_source, dict)
+        or fixture_source.get("source_id") != ctx.source["source_id"]
+        or fixture_source.get("revision") != ctx.source["revision"]
+    ):
+        raise RuntimeFailure(
+            "SOURCE_REVISION_MISMATCH",
+            "fixture index source/revision differs from the compiled source",
+        )
+    seen_urls: set[str] = set()
     total_size = 0
     for number, page in enumerate(index["pages"]):
         if not isinstance(page, dict):
             raise RuntimeFailure(
                 "FIXTURE_INDEX_INVALID", f"fixture page {number} must be an object"
             )
+        page_url = page.get("url")
+        if not isinstance(page_url, str) or not page_url or page_url in seen_urls:
+            raise RuntimeFailure(
+                "FIXTURE_INDEX_INVALID",
+                f"fixture page {number} has a missing or duplicate URL",
+            )
+        seen_urls.add(page_url)
         body_name = page.get("body_file")
         if not isinstance(body_name, str) or not body_name:
             raise RuntimeFailure(
@@ -184,12 +211,46 @@ def _fixture_index(ctx: RuntimeContext) -> dict[str, Any]:
             raise RuntimeFailure(
                 "FIXTURE_BUDGET_EXCEEDED", "fixture bodies exceed 24 MB"
             )
+        size_bytes = page.get("size_bytes")
         if (
-            page.get("size_bytes") is not None
-            and page["size_bytes"] != body_path.stat().st_size
+            not isinstance(size_bytes, int)
+            or isinstance(size_bytes, bool)
+            or size_bytes != body_path.stat().st_size
+            or not isinstance(page.get("evidence_ref"), str)
+            or not page.get("evidence_ref")
+            or not isinstance(page.get("sha256"), str)
+            or not isinstance(page.get("content_type"), str)
+            or not isinstance(page.get("status"), int)
+            or isinstance(page.get("status"), bool)
         ):
             raise RuntimeFailure(
-                "FIXTURE_SIZE_MISMATCH", f"fixture page {number} size does not match"
+                "FIXTURE_METADATA_INVALID",
+                f"fixture page {number} metadata is incomplete or inconsistent",
+            )
+    for expected_url, expected in ctx.expected_fixtures.items():
+        actual = next(
+            (page for page in index["pages"] if page.get("url") == expected_url), None
+        )
+        if (
+            actual is None
+            or any(
+                actual.get(key) != expected.get(key)
+                for key in (
+                    "evidence_ref",
+                    "sha256",
+                    "size_bytes",
+                    "content_type",
+                    "status",
+                )
+            )
+            or (
+                expected.get("source_id") != fixture_source.get("source_id")
+                or expected.get("source_revision") != fixture_source.get("revision")
+            )
+        ):
+            raise RuntimeFailure(
+                "FIXTURE_IDENTITY_MISMATCH",
+                f"fixture identity differs from compiled build: {expected_url}",
             )
     if index.get("complete") is not True:
         raise RuntimeFailure(
@@ -212,6 +273,12 @@ def fetch_fixture(
     )
     if page is None:
         raise RuntimeFailure("FIXTURE_NOT_FOUND", f"no offline fixture for {url}")
+    expected = ctx.expected_fixtures.get(url)
+    if ctx.expected_fixtures and expected is None:
+        raise RuntimeFailure(
+            "FIXTURE_NOT_IN_BUILD",
+            f"URL was not included in compiled fixture identities: {url}",
+        )
     body_name = page["body_file"]
     body_relative = Path(body_name)
     body_path = ctx.fixture_root / body_relative
@@ -236,6 +303,11 @@ def fetch_fixture(
     digest = hashlib.sha256(body).hexdigest()
     if digest != page.get("sha256"):
         raise RuntimeFailure("FIXTURE_DIGEST_MISMATCH", f"digest mismatch for {url}")
+    if expected is not None and digest != expected.get("sha256"):
+        raise RuntimeFailure(
+            "FIXTURE_IDENTITY_MISMATCH",
+            f"fixture digest differs from compiled build: {url}",
+        )
     if page.get("evidence_ref") not in evidence_refs:
         raise RuntimeFailure(
             "EVIDENCE_NOT_REFERENCED", f"fixture evidence not bound to fetch: {url}"
@@ -311,9 +383,13 @@ def paginate(
             "BUDGET_PAGES_EXCEEDED", "pagination exceeds the page budget"
         )
     documents = [link_set["seed"]]
+    visited = {link_set["seed"]["url"]}
     for url in link_set["urls"]:
         if len(documents) >= max_pages:
             break
+        if url in visited:
+            continue
+        visited.add(url)
         seed_ref = link_set["seed"]["evidence_ref"]
         index = _fixture_index(ctx)
         page = next((item for item in index["pages"] if item.get("url") == url), None)
@@ -416,6 +492,11 @@ def _json_path(value: Any, path: str, *, expand: bool) -> list[tuple[Any, str]]:
             key = segment.replace("~1", "/").replace("~0", "~")
             if "~" in key and re.search(r"~(?![01])", segment):
                 raise RuntimeFailure("JSON_PATH_INVALID", "invalid JSON pointer escape")
+            if isinstance(item, list) and not re.fullmatch(r"0|[1-9][0-9]*", key):
+                raise RuntimeFailure(
+                    "JSON_PATH_INVALID",
+                    "array indices must be canonical non-negative integers",
+                )
             try:
                 next_item = item[int(key)] if isinstance(item, list) else item[key]
             except (KeyError, IndexError, ValueError, TypeError) as error:
@@ -440,8 +521,8 @@ def select_json_records(
             "EVIDENCE_NOT_REFERENCED", "JSON selection has no evidence binding"
         )
     try:
-        root = json.loads(document["body"], parse_float=Decimal)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        root = strict_json_loads(document["body"], parse_float=Decimal)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise RuntimeFailure("JSON_DOCUMENT_INVALID", str(error)) from error
     values = _json_path(root, array_path, expand=True)
     if len(values) > max_matches or len(values) > ctx.budgets["max_records"]:

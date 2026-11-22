@@ -37,9 +37,9 @@ Generated source binds each IR operation to a concrete Python step and uses the 
 
 ## Commands and results
 
-Required fast gate: `make ci` (which runs `make sync` and `make check`). It passed on the implementation worktree. The resulting unit run reported 189 tests, 26 skipped. Skips were existing opt-in PostgreSQL, Docker E2E, and protected replay cases whose environment gates were not configured; they are not counted as executed.
+Required fast gate: `make ci` (which runs `make sync` and `make check`). It passed on the implementation worktree. The resulting unit run reported 193 tests, 26 skipped. Skips were existing opt-in PostgreSQL, Docker E2E, and protected replay cases whose environment gates were not configured; they are not counted as executed.
 
-`make check` initially failed because the worktree environment had not been synced and Scout dependencies were absent. After `make ci` installed the locked dependencies, `make check` passed, including lint, format, docs, naming, architecture, and unit tests.
+`make check` passed after the locked dependencies were synced, including lint, format, docs, naming, architecture, and unit tests.
 
 `make collector-playbook-examples` passed on macOS. Its OS sandbox socket probe was denied by `sandbox-exec`; each positive generated bot ran with network denied and matched its independent oracle. The Linux CI Integration Security Gate runs the same target using a non-root Docker container with `--network none`, read-only root, memory/CPU/PID limits, and restricted mounts. That Linux CI run has not been observed in this local session.
 

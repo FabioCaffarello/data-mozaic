@@ -5,17 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 from selectolax.lexbor import SelectolaxError
 
-from .syntax import PlaybookError, UniqueKeyLoader
+from .syntax import PlaybookError, UniqueKeyLoader, strict_json_loads
 
 SCHEMA = json.loads(
     files("collector_engineering")
@@ -115,6 +116,8 @@ def load_playbook_v2(path: Path) -> ParsedPlaybook:
 
 
 def _schema_diagnostics(document: dict[str, Any]) -> list[Diagnostic]:
+    if not isinstance(document, dict):
+        return [Diagnostic("SCHEMA_INVALID", "$", "playbook root must be an object")]
     if document.get("dsl_version") != DSL_VERSION:
         return [
             Diagnostic(
@@ -160,7 +163,7 @@ def _schema_diagnostics(document: dict[str, Any]) -> list[Diagnostic]:
     ids = [
         item.get("id")
         for item in document.get("operations", [])
-        if isinstance(item, dict)
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
     ]
     if len(ids) != len(set(ids)):
         result.append(
@@ -171,7 +174,7 @@ def _schema_diagnostics(document: dict[str, Any]) -> list[Diagnostic]:
     finding_ids = [
         item.get("finding_id")
         for item in document.get("findings", [])
-        if isinstance(item, dict)
+        if isinstance(item, dict) and isinstance(item.get("finding_id"), str)
     ]
     if len(finding_ids) != len(set(finding_ids)):
         result.append(
@@ -182,7 +185,7 @@ def _schema_diagnostics(document: dict[str, Any]) -> list[Diagnostic]:
     evidence_ids = [
         item.get("evidence_ref")
         for item in document.get("evidence", [])
-        if isinstance(item, dict)
+        if isinstance(item, dict) and isinstance(item.get("evidence_ref"), str)
     ]
     if len(evidence_ids) != len(set(evidence_ids)):
         result.append(
@@ -282,8 +285,8 @@ def _fixture_evidence(
     except OSError as error:
         return {}, [Diagnostic("FIXTURE_INDEX_INVALID", "$.evidence", str(error))]
     try:
-        index = json.loads(index_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        index = strict_json_loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         return {}, [Diagnostic("FIXTURE_INDEX_INVALID", "$.evidence", str(error))]
     if (
         not isinstance(index, dict)
@@ -296,6 +299,21 @@ def _fixture_evidence(
                 "FIXTURE_INDEX_INVALID",
                 "$.evidence",
                 "fixture index must contain at most 200 pages",
+            )
+        ]
+    fixture_source = index.get("source")
+    if (
+        not isinstance(fixture_source, dict)
+        or not isinstance(fixture_source.get("source_id"), str)
+        or not fixture_source.get("source_id")
+        or not isinstance(fixture_source.get("revision"), str)
+        or not fixture_source.get("revision")
+    ):
+        return {}, [
+            Diagnostic(
+                "FIXTURE_SOURCE_INVALID",
+                "$.fixtures.source",
+                "fixture index must declare source_id and revision",
             )
         ]
     page_map: dict[str, dict[str, Any]] = {}
@@ -365,12 +383,31 @@ def _fixture_evidence(
             )
             break
         declared_size = page.get("size_bytes")
-        if declared_size is not None and declared_size != len(body):
+        if (
+            not isinstance(declared_size, int)
+            or isinstance(declared_size, bool)
+            or declared_size != len(body)
+        ):
             diagnostics.append(
                 Diagnostic(
                     "FIXTURE_SIZE_MISMATCH",
                     f"$.fixtures[{number}].size_bytes",
                     "declared fixture size differs from the body",
+                )
+            )
+            continue
+        if (
+            not isinstance(page.get("status"), int)
+            or isinstance(page.get("status"), bool)
+            or not isinstance(page.get("content_type"), str)
+            or not isinstance(page.get("evidence_ref"), str)
+            or not page.get("evidence_ref")
+        ):
+            diagnostics.append(
+                Diagnostic(
+                    "FIXTURE_METADATA_INVALID",
+                    f"$.fixtures[{number}]",
+                    "fixture page must declare integer status, content_type, and evidence_ref",
                 )
             )
             continue
@@ -452,10 +489,10 @@ def validate_playbook_v2(
         index_path = fixture_root / "index.json"
         if fixture_pages and index_path.is_file() and not index_path.is_symlink():
             try:
-                candidate = json.loads(index_path.read_text(encoding="utf-8"))
+                candidate = strict_json_loads(index_path.read_text(encoding="utf-8"))
                 if isinstance(candidate, dict):
                     index = candidate
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
                 pass
         fixture_source = index.get("source", {})
         if (
@@ -488,6 +525,167 @@ def validate_playbook_v2(
                     )
                 )
                 evidence_sufficient = False
+        for index, operation in enumerate(document["operations"]):
+            if operation["op"] != "http.fetch/v1":
+                continue
+            fixture = fixture_pages.get(operation["url"])
+            if fixture is None:
+                diagnostics.append(
+                    Diagnostic(
+                        "FETCH_FIXTURE_MISSING",
+                        f"$.operations[{index}].url",
+                        "fetch URL has no exact fixture in the verified index",
+                    )
+                )
+                evidence_sufficient = False
+                continue
+            if fixture.get("evidence_ref") not in operation["evidence_refs"]:
+                diagnostics.append(
+                    Diagnostic(
+                        "FETCH_EVIDENCE_MISMATCH",
+                        f"$.operations[{index}].evidence_refs",
+                        "fetch evidence refs do not identify its exact fixture",
+                    )
+                )
+                evidence_sufficient = False
+            elif fixture.get("sha256") != evidence.get(fixture["evidence_ref"]):
+                diagnostics.append(
+                    Diagnostic(
+                        "FETCH_EVIDENCE_MISMATCH",
+                        f"$.operations[{index}].evidence_refs",
+                        "fetch evidence digest does not match its exact fixture",
+                    )
+                )
+                evidence_sufficient = False
+            if fixture.get("content_type") != operation["content_type"]:
+                diagnostics.append(
+                    Diagnostic(
+                        "FIXTURE_CONTENT_TYPE_MISMATCH",
+                        f"$.operations[{index}].content_type",
+                        "fetch content type differs from the exact fixture",
+                    )
+                )
+                evidence_sufficient = False
+            if fixture.get("status") != 200:
+                diagnostics.append(
+                    Diagnostic(
+                        "FIXTURE_STATUS_INVALID",
+                        f"$.operations[{index}].url",
+                        "reference backend requires fixture status 200",
+                    )
+                )
+                evidence_sufficient = False
+            if len(fixture["body"]) > document["budgets"]["max_response_bytes"]:
+                diagnostics.append(
+                    Diagnostic(
+                        "BUDGET_OVERFLOW",
+                        "$.budgets.max_response_bytes",
+                        f"fixture response for {operation['url']!r} exceeds the byte budget",
+                    )
+                )
+
+        # Validate discovered links against the same exact fixture index that
+        # the offline pagination runtime will consume.
+        for index, operation in enumerate(document["operations"]):
+            if operation["op"] != "links.discover/v1":
+                continue
+            pagination = next(
+                (
+                    candidate
+                    for candidate in document["operations"]
+                    if candidate["op"] == "pagination.bounded/v1"
+                    and candidate["links"]["operation"] == operation["id"]
+                ),
+                None,
+            )
+            document_fetch = by_id.get(operation["document"]["operation"])
+            if document_fetch is None or document_fetch["op"] != "http.fetch/v1":
+                continue
+            seed = fixture_pages.get(document_fetch["url"])
+            if seed is None or seed.get("content_type") != "text/html":
+                continue
+            try:
+                from .reference_runtime import RuntimeFailure, _html
+
+                candidates = _html(seed["body"]).css(operation["selector"])
+                discovered = []
+                for candidate in candidates:
+                    href = candidate.attributes.get("href")
+                    if not href:
+                        continue
+                    url = urljoin(seed["url"], href)
+                    if not _within_scope(url, source):
+                        diagnostics.append(
+                            Diagnostic(
+                                "SCOPE_EXPANSION",
+                                f"$.operations[{index}].selector",
+                                f"discovered URL {url!r} is outside source scope",
+                            )
+                        )
+                        evidence_sufficient = False
+                        continue
+                    if url not in discovered:
+                        discovered.append(url)
+                if len(discovered) > operation["max_links"]:
+                    diagnostics.append(
+                        Diagnostic(
+                            "BUDGET_OVERFLOW",
+                            f"$.operations[{index}].max_links",
+                            "fixture link count exceeds max_links",
+                        )
+                    )
+                if pagination is not None:
+                    visited = {seed["url"]}
+                    targets = []
+                    for url in discovered:
+                        if url in visited:
+                            continue
+                        visited.add(url)
+                        if len(targets) >= pagination["max_pages"] - 1:
+                            break
+                        targets.append(url)
+                    for target_url in targets:
+                        target = fixture_pages.get(target_url)
+                        if target is None:
+                            diagnostics.append(
+                                Diagnostic(
+                                    "PAGINATION_FIXTURE_MISSING",
+                                    f"$.operations[{index}].selector",
+                                    f"observed page {target_url!r} has no verified fixture",
+                                )
+                            )
+                            evidence_sufficient = False
+                        elif target.get("discovered_from") != seed.get("evidence_ref"):
+                            diagnostics.append(
+                                Diagnostic(
+                                    "PAGINATION_LINK_UNPROVEN",
+                                    f"$.operations[{index}].selector",
+                                    f"fixture {target_url!r} is not linked from seed evidence",
+                                )
+                            )
+                            evidence_sufficient = False
+                    observed_bytes = len(seed["body"]) + sum(
+                        len(fixture_pages[url]["body"])
+                        for url in targets
+                        if url in fixture_pages
+                    )
+                    if observed_bytes > document["budgets"]["max_response_bytes"]:
+                        diagnostics.append(
+                            Diagnostic(
+                                "BUDGET_OVERFLOW",
+                                "$.budgets.max_response_bytes",
+                                "bounded pagination fixtures exceed the aggregate response byte budget",
+                            )
+                        )
+            except (RuntimeFailure, SelectolaxError, ValueError) as error:
+                diagnostics.append(
+                    Diagnostic(
+                        "SELECTOR_INVALID",
+                        f"$.operations[{index}].selector",
+                        str(error),
+                    )
+                )
+                evidence_sufficient = False
 
     outputs: dict[str, dict[str, str]] = {}
     dependencies: dict[str, set[str]] = {
@@ -496,6 +694,8 @@ def validate_playbook_v2(
     inferred_capabilities: set[str] = set()
     extraction_seen = False
     output_seen = False
+    output_records_count = 0
+    output_raw_count = 0
     for index, operation in enumerate(operations):
         op = operation["op"]
         node_id = operation["id"]
@@ -634,8 +834,10 @@ def validate_playbook_v2(
                     )
         elif op == "output.records/v1":
             output_seen = True
+            output_records_count += 1
             outputs[node_id] = {"report": "ExecutionReport"}
         elif op == "output.raw/v1":
+            output_raw_count += 1
             outputs[node_id] = {"references": "RawReferences"}
 
         for name, binding in _bindings(operation):
@@ -802,7 +1004,7 @@ def validate_playbook_v2(
                     ]
                     matches = 0
                     for fixture in fixtures:
-                        value = json.loads(fixture["body"])
+                        value = strict_json_loads(fixture["body"])
                         matches += len(_json_path(value, path, expand=True))
                     if fixture_root is not None and matches == 0:
                         evidence_sufficient = False
@@ -901,7 +1103,9 @@ def validate_playbook_v2(
                                 for node in nodes
                             )
                         else:
-                            value = json.loads(fixture["body"], parse_float=Decimal)
+                            value = strict_json_loads(
+                                fixture["body"], parse_float=Decimal
+                            )
                             selected_records.extend(
                                 {
                                     "kind": "json",
@@ -991,6 +1195,14 @@ def validate_playbook_v2(
                 "OUTPUT_PIPELINE_INCOMPLETE",
                 "$.operations",
                 "v2 requires extract.fields and output.records operations",
+            )
+        )
+    if output_records_count != 1 or output_raw_count > 1:
+        diagnostics.append(
+            Diagnostic(
+                "OUTPUT_SINK_CARDINALITY",
+                "$.operations",
+                "v2 supports exactly one output.records and at most one output.raw",
             )
         )
 
@@ -1129,19 +1341,24 @@ def build_typed_ir(
             )
             remaining.remove(node)
     return TypedIR(
-        {
-            "ir_version": IR_VERSION,
-            "playbook_id": document["playbook_id"],
-            "source": document["source"],
-            "capabilities": sorted(
-                set(document["capabilities"]),
-                key=lambda cap: _CAPABILITY_ORDER.index(cap),
-            ),
-            "budgets": document["budgets"],
-            "failure_policy": document["failure_policy"],
-            "output_contract": document["output_contract"],
-            "nodes": ordered,
-        }
+        deepcopy(
+            {
+                "ir_version": IR_VERSION,
+                "playbook_id": document["playbook_id"],
+                "source": document["source"],
+                "evidence": sorted(
+                    document["evidence"], key=lambda item: item["evidence_ref"]
+                ),
+                "capabilities": sorted(
+                    set(document["capabilities"]),
+                    key=lambda cap: _CAPABILITY_ORDER.index(cap),
+                ),
+                "budgets": document["budgets"],
+                "failure_policy": document["failure_policy"],
+                "output_contract": document["output_contract"],
+                "nodes": ordered,
+            }
+        )
     )
 
 

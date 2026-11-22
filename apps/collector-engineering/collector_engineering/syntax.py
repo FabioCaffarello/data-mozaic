@@ -2,11 +2,29 @@
 
 from __future__ import annotations
 
+import json
+
 import yaml
 
 
 class PlaybookError(ValueError):
     """Input cannot safely produce, validate, or execute a playbook."""
+
+
+def strict_json_loads(text: str | bytes, **kwargs):
+    """Decode JSON while rejecting duplicate object keys."""
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    if "object_pairs_hook" in kwargs:
+        raise TypeError("object_pairs_hook is controlled by strict_json_loads")
+    return json.loads(text, object_pairs_hook=unique_object, **kwargs)
 
 
 class UniqueKeyLoader(yaml.SafeLoader):

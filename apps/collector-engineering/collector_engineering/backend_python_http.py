@@ -45,7 +45,9 @@ def check_capabilities(ir: TypedIR) -> list[dict[str, str]]:
     ]
 
 
-def generate_python(ir: TypedIR) -> bytes:
+def generate_python(
+    ir: TypedIR, *, fixture_identities: list[dict[str, Any]] | None = None
+) -> bytes:
     variables = {
         node["operation_id"]: f"v_{index}"
         for index, node in enumerate(ir.document["nodes"])
@@ -59,10 +61,11 @@ def generate_python(ir: TypedIR) -> bytes:
         "",
         "SOURCE = " + repr(ir.document["source"]),
         "BUDGETS = " + repr(ir.document["budgets"]),
+        "EXPECTED_FIXTURES = " + repr(fixture_identities or []),
         "IR_VERSION = " + repr(ir.document["ir_version"]),
         "",
         "def run(fixture_root: str, output_root: str):",
-        "    ctx = RuntimeContext.create(fixture_root, output_root, SOURCE, BUDGETS)",
+        "    ctx = RuntimeContext.create(fixture_root, output_root, SOURCE, BUDGETS, EXPECTED_FIXTURES)",
     ]
     for node in ir.document["nodes"]:
         op = f"{node['operator_type']}/{node['operator_version']}"
@@ -185,7 +188,6 @@ def compile_build(
         )
     # Capability rejection happens before the output directory is created.
     destination = _safe_output_path(output)
-    source = generate_python(ir)
     lock_digest = hashlib.sha256(lockfile.read_bytes()).hexdigest()
     normalized_playbook = canonical_json(parsed.document)
     fixture_index = json.loads(
@@ -198,13 +200,18 @@ def compile_build(
                 "url": page["url"],
                 "evidence_ref": page["evidence_ref"],
                 "sha256": page["sha256"],
-                "size_bytes": page.get("size_bytes"),
+                "size_bytes": (fixture_root / page["body_file"]).stat().st_size,
+                "content_type": page["content_type"],
+                "status": page["status"],
+                "source_id": fixture_index["source"]["source_id"],
+                "source_revision": fixture_index["source"]["revision"],
             }
             for page in fixture_index["pages"]
             if page.get("evidence_ref") in evidence_refs
         ],
         key=lambda item: (item["url"], item["evidence_ref"]),
     )
+    source = generate_python(ir, fixture_identities=fixtures)
     files = {
         "bot.py": source,
         "config/offline.json": canonical_json(

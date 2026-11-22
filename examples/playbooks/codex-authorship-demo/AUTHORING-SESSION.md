@@ -40,6 +40,6 @@ sandbox-exec -p '(version 1)(allow default)(deny network*)' .venv/bin/python /pr
 uv run --locked --package mozaic-collector-engineering python -m collector_engineering compare examples/playbooks/codex-authorship-demo/expected-records.jsonl /private/tmp/dm-codex-authored-output/records.jsonl
 ```
 
-Results: `verify-build` passed with build ID `4ef46590acb7a84e88c4422a42666343dbc937fb53df206359150dd80d6a51b1`; the generated bot ran with macOS network access denied by `sandbox-exec`; it emitted two records and one request/page; independent byte comparison passed for both expected records. The final `make collector-playbook-examples` rerun reproduced that build ID and passed the independent comparison again.
+Results: `verify-build` passed with build ID `dee153c3ec85b8d76f83db8063c54fac41c9171525b81ce8764faf41938b23d9`; the generated bot ran with macOS network access denied by `sandbox-exec`; it emitted two records and one request/page; independent byte comparison passed for both expected records. The final `make collector-playbook-examples` rerun reproduced that build ID and passed the independent comparison again.
 
 This demonstrates local synthetic-fixture authorship in the Codex development session. It is distinct from automated compiler tests and does not prove operational authorization for remote sources. PR #9 Scout deployment gates remain outside this demonstration and are still required for any real source session.

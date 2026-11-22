@@ -11,6 +11,7 @@ from typing import Any
 from selectolax.lexbor import SelectolaxError
 
 from .reference_runtime import RuntimeFailure, _html, _safe_directory
+from .syntax import strict_json_loads
 
 MAX_SAMPLE_COUNT = 5
 MAX_SAMPLE_CHARS = 180
@@ -26,8 +27,8 @@ def _load_fixture(fixture_root: Path, url: str) -> tuple[dict[str, Any], bytes]:
     if index_path.stat().st_size > 1_000_000:
         raise RuntimeFailure("FIXTURE_INDEX_TOO_LARGE", "fixture index exceeds 1 MB")
     try:
-        index = json.loads(index_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        index = strict_json_loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise RuntimeFailure("FIXTURE_INDEX_INVALID", str(error)) from error
     if (
         not isinstance(index, dict)
@@ -109,8 +110,13 @@ def inspect_fixture(fixture_root: Path, url: str) -> dict[str, Any]:
         }
     elif page.get("content_type") == "application/json":
         try:
-            value = json.loads(body)
-        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
+            value = strict_json_loads(body)
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            ValueError,
+            RecursionError,
+        ) as error:
             raise RuntimeFailure("JSON_DOCUMENT_INVALID", str(error)) from error
         result["structure"] = _json_shape(value)
     else:
@@ -195,6 +201,14 @@ def try_selector(
     return _bounded_json(
         {
             "valid_selector": True,
+            "diagnostic": (
+                {
+                    "code": "SELECTOR_NO_MATCHES",
+                    "message": "selector is valid CSS but matched no elements in this fixture",
+                }
+                if count == 0
+                else None
+            ),
             "selector": selector,
             "match_count": count,
             "observed_cardinality": "zero"
