@@ -78,6 +78,7 @@ def _run_network_isolated(command: list[str]) -> subprocess.CompletedProcess[str
         output.chmod(0o777)
         python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
         site_packages = Path(sys.prefix) / "lib" / python_version / "site-packages"
+        runtime_source = Path(__file__).resolve().parent.parent
         if not site_packages.is_dir():
             raise PlaybookError(
                 "[NETWORK_SANDBOX_UNAVAILABLE] cannot locate locked Python runtime packages for Docker"
@@ -104,13 +105,15 @@ def _run_network_isolated(command: list[str]) -> subprocess.CompletedProcess[str
             "--mount",
             f"type=bind,src={site_packages},dst=/deps,readonly",
             "--mount",
+            f"type=bind,src={runtime_source},dst=/runtime,readonly",
+            "--mount",
             f"type=bind,src={build_bot.parent},dst=/build,readonly",
             "--mount",
             f"type=bind,src={fixtures},dst=/fixtures,readonly",
             "--mount",
             f"type=bind,src={output},dst=/output",
             "--env",
-            "PYTHONPATH=/deps",
+            "PYTHONPATH=/deps:/runtime",
             f"python:{sys.version_info.major}.{sys.version_info.minor}-slim",
             "python",
             "-B",

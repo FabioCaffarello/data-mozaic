@@ -37,7 +37,7 @@ Generated source binds each IR operation to a concrete Python step and uses the 
 
 ## Commands and results
 
-Required fast gate: `make ci` (which runs `make sync` and `make check`). It passed on the implementation worktree. The resulting unit run reported 193 tests, 26 skipped. Skips were existing opt-in PostgreSQL, Docker E2E, and protected replay cases whose environment gates were not configured; they are not counted as executed.
+Required fast gate: `make ci` (which runs `make sync` and `make check`). It passed on the implementation worktree. The latest review run reported 194 tests, 26 skipped. Skips were existing opt-in PostgreSQL, Docker E2E, and protected replay cases whose environment gates were not configured; they are not counted as executed.
 
 `make check` passed after the locked dependencies were synced, including lint, format, docs, naming, architecture, and unit tests.
 

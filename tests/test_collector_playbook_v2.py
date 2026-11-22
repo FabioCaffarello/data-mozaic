@@ -5,7 +5,9 @@ import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
+import collector_engineering.__main__ as collector_cli
 from collector_engineering.authoring_tools import inspect_fixture, try_selector
 from collector_engineering.backend_python_http import (
     check_capabilities,
@@ -350,6 +352,48 @@ class CapturePlaybookV2Tests(unittest.TestCase):
                 ],
                 [page["url"] for page in pages],
             )
+
+    def test_linux_docker_runner_mounts_the_versioned_runtime_read_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            site_packages = (
+                root
+                / "lib"
+                / f"python{collector_cli.sys.version_info.major}.{collector_cli.sys.version_info.minor}"
+                / "site-packages"
+            )
+            site_packages.mkdir(parents=True)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            (root / "build").mkdir()
+            output = root / "output"
+            command = [
+                collector_cli.sys.executable,
+                str(root / "build" / "bot.py"),
+                "--fixtures",
+                str(fixtures),
+                "--output",
+                str(output),
+            ]
+            completed = collector_cli.subprocess.CompletedProcess(command, 0, "", "")
+            with (
+                patch.object(collector_cli.sys, "platform", "linux"),
+                patch.object(collector_cli.sys, "prefix", str(root)),
+                patch.object(
+                    collector_cli.shutil, "which", return_value="/usr/bin/docker"
+                ),
+                patch.object(
+                    collector_cli.subprocess, "run", return_value=completed
+                ) as run,
+            ):
+                collector_cli._run_network_isolated(command)
+            docker_command = run.call_args.args[0]
+            runtime_source = Path(collector_cli.__file__).resolve().parent.parent
+            self.assertIn(
+                f"type=bind,src={runtime_source},dst=/runtime,readonly",
+                docker_command,
+            )
+            self.assertIn("PYTHONPATH=/deps:/runtime", docker_command)
 
     def test_bindings_ports_types_fields_cardinality_and_selector_have_diagnostics(
         self,
