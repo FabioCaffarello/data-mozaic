@@ -155,6 +155,17 @@ class CapturePlaybookV2Tests(unittest.TestCase):
             _convert(None, decimal_field, "price")
         with self.assertRaisesRegex(RuntimeFailure, "FIELD_CONVERSION_INVALID"):
             _convert(Decimal("1e1000"), decimal_field, "price")
+        optional_string = {"type": "string", "required": False, "normalize": []}
+        self.assertIsNone(_convert(None, optional_string, "optional"))
+        self.assertEqual(
+            "café 東京",
+            _convert("café 東京", optional_string, "unicode"),
+        )
+        boolean_field = {"type": "boolean", "required": True, "normalize": []}
+        self.assertTrue(_convert("true", boolean_field, "enabled"))
+        self.assertFalse(_convert("false", boolean_field, "enabled"))
+        with self.assertRaisesRegex(RuntimeFailure, "FIELD_CONVERSION_INVALID"):
+            _convert("True", boolean_field, "enabled")
         with self.assertRaisesRegex(RuntimeFailure, "JSON_PATH_INVALID"):
             _json_path(["first", "second"], "/-1", expand=False)
 
@@ -179,6 +190,16 @@ class CapturePlaybookV2Tests(unittest.TestCase):
                     max_matches=10,
                     evidence_refs=["e-json"],
                 )
+            self.assertEqual(
+                [],
+                select_json_records(
+                    context,
+                    {"body": b'{"items":[]}', "evidence_ref": "e-json"},
+                    array_path="/items/*",
+                    max_matches=10,
+                    evidence_refs=["e-json"],
+                ),
+            )
         for path in ("/-1", "/+1", "/01", "/ 1"):
             with self.assertRaisesRegex(RuntimeFailure, "JSON_PATH_INVALID"):
                 _json_path(["zero", "one"], path, expand=False)
@@ -476,6 +497,21 @@ class CapturePlaybookV2Tests(unittest.TestCase):
             self.codes(validate_playbook_v2(document, fixture_root=self.fixture_root)),
         )
         multi = load_playbook_v2(EXAMPLES / "multipage-catalog/capture-playbook.yaml")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            multi_fixtures = EXAMPLES / "multipage-catalog/fixtures"
+            for file in multi_fixtures.iterdir():
+                (root / file.name).write_bytes(file.read_bytes())
+            index_path = root / "index.json"
+            index = json.loads(index_path.read_text())
+            index["pages"] = [
+                page for page in index["pages"] if page["url"].endswith("/")
+            ]
+            index_path.write_text(json.dumps(index))
+            self.assertIn(
+                "PAGINATION_FIXTURE_MISSING",
+                self.codes(validate_playbook_v2(multi, fixture_root=root)),
+            )
         document = copy.deepcopy(multi.document)
         document["budgets"]["max_pages"] = 1
         self.assertIn("BUDGET_OVERFLOW", self.codes(validate_playbook_v2(document)))
@@ -596,6 +632,90 @@ class CapturePlaybookV2Tests(unittest.TestCase):
             (root / "builds" / "first" / "bot.py").write_text("# changed")
             with self.assertRaisesRegex(PlaybookError, "BUILD_DIGEST_MISMATCH"):
                 verify_build(root / "builds" / "first")
+
+    def test_build_verifier_rejects_missing_symlink_and_incompatible_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            build = root / "build"
+            compile_build(
+                self.parsed,
+                fixture_root=self.fixture_root,
+                output=build,
+                lockfile=LOCKFILE,
+            )
+            runtime_metadata = build / "runtime-reference.json"
+            saved_runtime_metadata = runtime_metadata.read_bytes()
+            runtime_metadata.unlink()
+            with self.assertRaisesRegex(PlaybookError, "BUILD_FILE_SET_MISMATCH"):
+                verify_build(build)
+            runtime_metadata.write_bytes(saved_runtime_metadata)
+
+            outside = root / "outside.txt"
+            outside.write_text("outside")
+            bot = build / "bot.py"
+            saved_bot = bot.read_bytes()
+            bot.unlink()
+            bot.symlink_to(outside)
+            with self.assertRaisesRegex(PlaybookError, "BUILD_FILE_UNSAFE"):
+                verify_build(build)
+            bot.unlink()
+            bot.write_bytes(saved_bot)
+
+            manifest_path = build / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["backend_version"] = "incompatible"
+            manifest_path.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(PlaybookError, "BUILD_VERSION_UNSUPPORTED"):
+                verify_build(build)
+
+    def test_build_rejects_existing_destination_dependency_change_and_partial_write(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            existing = root / "existing"
+            existing.mkdir()
+            with self.assertRaisesRegex(PlaybookError, "BUILD_ALREADY_EXISTS"):
+                compile_build(
+                    self.parsed,
+                    fixture_root=self.fixture_root,
+                    output=existing,
+                    lockfile=LOCKFILE,
+                )
+
+            changed_lock = root / "uv.lock"
+            changed_lock.write_bytes(LOCKFILE.read_bytes() + b"# changed\n")
+            changed_build = root / "changed-lock-build"
+            compile_build(
+                self.parsed,
+                fixture_root=self.fixture_root,
+                output=changed_build,
+                lockfile=changed_lock,
+            )
+            with self.assertRaisesRegex(
+                PlaybookError, "BUILD_DEPENDENCIES_UNSUPPORTED"
+            ):
+                verify_build(changed_build)
+
+            partial_build = root / "partial-build"
+            original_open = Path.open
+
+            def fail_readme(path, *args, **kwargs):
+                if path == partial_build / "README.md":
+                    raise OSError("synthetic disk write failure")
+                return original_open(path, *args, **kwargs)
+
+            with (
+                patch.object(Path, "open", autospec=True, side_effect=fail_readme),
+                self.assertRaisesRegex(OSError, "synthetic disk write failure"),
+            ):
+                compile_build(
+                    self.parsed,
+                    fixture_root=self.fixture_root,
+                    output=partial_build,
+                    lockfile=LOCKFILE,
+                )
+            self.assertFalse(partial_build.exists())
 
     def test_capability_failure_publishes_no_build(self):
         parsed = load_playbook_v2(
