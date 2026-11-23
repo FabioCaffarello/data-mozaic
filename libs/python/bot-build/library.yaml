@@ -1,0 +1,19 @@
+name: mozaic-bot-build
+language: python
+owner: bc15-bot-build-contract
+responsibility: "Stdlib-only BotBuild manifest identity and file integrity verification"
+excludes:
+  - "Playbook semantic validation, compiler behavior, and capability policy"
+  - "Publisher signatures, execution authorization, and release approval"
+visibility: internal
+stability: experimental
+consumers:
+  - "apps/collector-engineering (Python Reference and Scrapy BotBuild verification)"
+  - "apps/workers/scrapy-collector (assembly and pre-import verification)"
+dependencies:
+  runtime: []
+  development: []
+api_version: "0.x"
+tests:
+  command: "uv run --locked --package mozaic-bot-build python -m unittest discover -s libs/python/bot-build/tests -v"
+deprecation: "Document replacement and supported removal window before removal"

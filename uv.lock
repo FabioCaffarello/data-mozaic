@@ -11,9 +11,11 @@ resolution-markers = [
 [manifest]
 members = [
     "data-mozaic-workspace",
+    "mozaic-bot-build",
     "mozaic-collector-engineering",
     "mozaic-observability",
     "mozaic-scout",
+    "mozaic-scrapy-collector",
 ]
 
 [[package]]
@@ -1214,11 +1216,17 @@ wheels = [
 ]
 
 [[package]]
+name = "mozaic-bot-build"
+version = "0.1.0"
+source = { editable = "libs/python/bot-build" }
+
+[[package]]
 name = "mozaic-collector-engineering"
 version = "0.3.0"
 source = { editable = "apps/collector-engineering" }
 dependencies = [
     { name = "jsonschema" },
+    { name = "mozaic-bot-build" },
     { name = "pyyaml" },
     { name = "scrapy" },
     { name = "selectolax" },
@@ -1227,6 +1235,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "jsonschema", specifier = ">=4.23,<5" },
+    { name = "mozaic-bot-build", editable = "libs/python/bot-build" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "scrapy", specifier = "==2.20.0" },
     { name = "selectolax", specifier = ">=0.4.13,<0.5" },
@@ -1258,6 +1267,25 @@ requires-dist = [
     { name = "mozaic-observability", editable = "libs/python/observability" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
+]
+
+[[package]]
+name = "mozaic-scrapy-collector"
+version = "0.1.0"
+source = { editable = "apps/workers/scrapy-collector" }
+dependencies = [
+    { name = "mozaic-bot-build" },
+    { name = "pyyaml" },
+    { name = "scrapy" },
+    { name = "selectolax" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mozaic-bot-build", editable = "libs/python/bot-build" },
+    { name = "pyyaml", specifier = ">=6.0,<7" },
+    { name = "scrapy", specifier = "==2.20.0" },
+    { name = "selectolax", specifier = "==0.4.13" },
 ]
 
 [[package]]

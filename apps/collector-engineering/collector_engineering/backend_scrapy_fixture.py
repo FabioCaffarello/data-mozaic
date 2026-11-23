@@ -12,7 +12,9 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-from .backend_python_http import _safe_output_path
+from mozaic_bot_build import derive_bot_id
+
+from .backend_python_http import _platform_slug, _safe_output_path
 from .backend_python_http import verify_build as _verify_build
 from .fixture_evidence import inspect_fixture_evidence
 from .playbook_v2 import IR_VERSION, TypedIR, canonical_json
@@ -162,6 +164,7 @@ def generate_spider(
         '"""Generated Scrapy fixture bot; operations are compiled from collector-ir/v1."""',
         "import argparse",
         "import json",
+        "import os",
         "import sys",
         "import tempfile",
         "import shutil",
@@ -349,7 +352,10 @@ def generate_spider(
             "    output = Path(args.output).absolute()",
             "    if output.parent.is_symlink() or not output.parent.is_dir() or output.exists():",
             "        raise RuntimeError('[OUTPUT_PATH_UNSAFE] output parent/destination is unsafe')",
-            "    settings = Settings(values=scrapy_fixture_runtime.handler_settings(), priority='cmdline')",
+            "    settings = Settings()",
+            "    if os.environ.get('SCRAPY_SETTINGS_MODULE'):",
+            "        settings.setmodule(os.environ['SCRAPY_SETTINGS_MODULE'], priority='project')",
+            "    settings.setdict(scrapy_fixture_runtime.handler_settings(), priority='cmdline')",
             "    process = CrawlerProcess(settings=settings)",
             "    crawler = process.create_crawler(GeneratedSpider)",
             "    process.crawl(crawler, fixture_root=args.fixtures, output_root=args.output)",
@@ -382,6 +388,8 @@ def compile_build(
     fixture_root: Path,
     output: Path,
     lockfile: Path,
+    playbook_sha256: str | None = None,
+    target_platform: str | None = None,
 ) -> dict[str, Any]:
     if ir.document.get("ir_version") != IR_VERSION:
         raise PlaybookError(
@@ -423,6 +431,16 @@ def compile_build(
         raise PlaybookError(
             "[FIXTURE_EVIDENCE_MISSING] no build fixtures match the IR evidence"
         )
+    target_platform = target_platform or _platform_slug()
+    if (
+        not isinstance(target_platform, str)
+        or "/" not in target_platform
+        or any(
+            not part or not part.replace("-", "").replace("_", "").isalnum()
+            for part in target_platform.split("/", 1)
+        )
+    ):
+        raise PlaybookError("[TARGET_PLATFORM_INVALID] target platform is invalid")
     if any(
         item["source_id"] != ir.document["source"]["source_id"]
         or item["source_revision"] != ir.document["source"]["revision"]
@@ -449,9 +467,17 @@ def compile_build(
         for name, data in sorted(files_map.items())
     }
     manifest_core = {
-        "manifest_version": "bot-build-manifest/v1",
+        "manifest_version": "bot-build-manifest/v2",
+        "playbook_id": ir.document["playbook_id"],
+        "bot_id": derive_bot_id(
+            ir.document["playbook_id"], ir.document["source"]["source_id"]
+        ),
+        "source": {
+            "source_id": ir.document["source"]["source_id"],
+            "source_revision": ir.document["source"]["revision"],
+        },
         "playbook_version": "capture-playbook-draft/v2",
-        "playbook_sha256": None,
+        "playbook_sha256": playbook_sha256,
         "ir_version": IR_VERSION,
         "ir_sha256": ir.sha256,
         "backend_id": BACKEND_ID,
@@ -459,8 +485,24 @@ def compile_build(
         "capability_profile_sha256": hashlib.sha256(
             canonical_json(PROFILE)
         ).hexdigest(),
+        "capability_profile_id": "scrapy-fixture-v1",
         "compiler_version": COMPILER_VERSION,
         "runtime_identity": runtime_identity,
+        "dependency_identity": {
+            "lockfile_sha256": hashlib.sha256(lockfile.read_bytes()).hexdigest(),
+            "packages": {
+                "scrapy": importlib.metadata.version("scrapy"),
+                "selectolax": "0.4.13",
+            },
+        },
+        "compatibility": {
+            "worker_contract": "scrapy-collector/v1",
+            "execution_mode": "fixture-only",
+            "python_minor": f"{platform.python_version_tuple()[0]}.{platform.python_version_tuple()[1]}",
+            "target_platform": target_platform,
+            "scrapy": importlib.metadata.version("scrapy"),
+            "scrapy_runtime": SCRAPY_RUNTIME_VERSION,
+        },
         "toolchain": {
             "python": platform.python_version(),
             "python_implementation": platform.python_implementation(),
@@ -506,7 +548,7 @@ def verify_build(directory: Path) -> dict[str, Any]:
         raise PlaybookError(
             "[BUILD_TOOLCHAIN_UNSUPPORTED] Scrapy is not installed"
         ) from error
-    return _verify_build(
+    manifest = _verify_build(
         directory,
         expected_backend_id=BACKEND_ID,
         expected_backend_version=BACKEND_VERSION,
@@ -523,3 +565,14 @@ def verify_build(directory: Path) -> dict[str, Any]:
             "selectolax": "0.4.13",
         },
     )
+    if manifest.get("manifest_version") == "bot-build-manifest/v2":
+        if manifest.get("capability_profile_id") != "scrapy-fixture-v1":
+            raise PlaybookError("[BUILD_PROFILE_UNSUPPORTED] profile identity differs")
+        compatibility = manifest.get("compatibility", {})
+        if compatibility.get("worker_contract") != "scrapy-collector/v1":
+            raise PlaybookError("[BUILD_WORKER_UNSUPPORTED] worker contract differs")
+        if compatibility.get("execution_mode") != "fixture-only":
+            raise PlaybookError(
+                "[BUILD_EXECUTION_MODE_UNSUPPORTED] build is not fixture-only"
+            )
+    return manifest

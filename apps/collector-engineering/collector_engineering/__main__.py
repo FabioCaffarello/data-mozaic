@@ -544,6 +544,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     compile_parser.add_argument("--fixtures", type=Path, required=True)
     compile_parser.add_argument("--output", type=Path, required=True)
+    compile_parser.add_argument("--target-platform")
     verify_parser = subparsers.add_parser(
         "verify-build", help="verify BotBuild files and digests"
     )
@@ -633,6 +634,10 @@ def main(argv: list[str] | None = None) -> int:
                     fixture_root=args.fixtures,
                     output=args.output,
                     lockfile=_repo_root() / "uv.lock",
+                    playbook_sha256=hashlib.sha256(
+                        args.playbook.read_bytes()
+                    ).hexdigest(),
+                    target_platform=args.target_platform,
                 )
             else:
                 ir = build_typed_ir(parsed, fixture_root=args.fixtures)
@@ -641,6 +646,10 @@ def main(argv: list[str] | None = None) -> int:
                     fixture_root=args.fixtures,
                     output=args.output,
                     lockfile=_repo_root() / "uv.lock",
+                    playbook_sha256=hashlib.sha256(
+                        args.playbook.read_bytes()
+                    ).hexdigest(),
+                    target_platform=args.target_platform,
                 )
             _json(
                 {

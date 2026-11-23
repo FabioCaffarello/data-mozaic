@@ -1,0 +1,13 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mozaic-bot-build"
+version = "0.1.0"
+description = "Structural identity and integrity verification for immutable Data Mozaic BotBuild artifacts"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mozaic_bot_build"]
