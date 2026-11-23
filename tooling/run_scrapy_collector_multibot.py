@@ -302,7 +302,6 @@ def _local_execution_acceptance(
 
 def _docker_acceptance(assembled: Path, entries: list[dict], temp: Path) -> None:
     tag = f"data-mozaic-scrapy-multibot-{uuid.uuid4().hex[:12]}"
-    volume_name = f"scrapy-multibot-output-{uuid.uuid4().hex[:12]}"
     expected_assembly_id = json.loads(
         (assembled / "assembly.json").read_text(encoding="utf-8")
     )["assembly_id"]
@@ -324,7 +323,6 @@ def _docker_acceptance(assembled: Path, entries: list[dict], temp: Path) -> None
         str(ROOT),
     ]
     image_created = False
-    volume_created = False
     try:
         subprocess.run(build_command, check=True)
         image_created = True
@@ -353,36 +351,6 @@ def _docker_acceptance(assembled: Path, entries: list[dict], temp: Path) -> None
             raise RuntimeError(
                 "[MULTIBOT_IMAGE_IDENTITY_MISMATCH] image label differs from assembly"
             )
-        subprocess.run(
-            ["docker", "volume", "create", volume_name],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        volume_created = True
-        subprocess.run(
-            [
-                "docker",
-                "run",
-                "--rm",
-                "--platform",
-                "linux/amd64",
-                "--network",
-                "none",
-                "--mount",
-                f"type=volume,src={volume_name},dst=/out",
-                "--entrypoint",
-                "python",
-                tag,
-                "-I",
-                "-B",
-                "-c",
-                "import os; os.chown('/out', 65532, 65532); os.chmod('/out', 0o700)",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
         probe = subprocess.run(
             [
                 "docker",
@@ -436,8 +404,6 @@ def _docker_acceptance(assembled: Path, entries: list[dict], temp: Path) -> None
             "64",
             "--tmpfs",
             "/tmp:rw,nosuid,nodev,noexec,size=64m",
-            "--mount",
-            f"type=volume,src={volume_name},dst=/out",
             tag,
         ]
         listing = subprocess.run(
@@ -452,82 +418,116 @@ def _docker_acceptance(assembled: Path, entries: list[dict], temp: Path) -> None
                 "[MULTIBOT_IMAGE_CATALOG_MISMATCH] image catalog differs"
             )
         for entry in entries:
-            execution = subprocess.run(
-                [
-                    *common[:2],
-                    "--rm",
-                    *common[2:],
-                    "run",
-                    "--bot-id",
-                    entry["bot_id"],
-                    "--build-id",
-                    entry["build_id"],
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            if execution.returncode != 0:
-                raise RuntimeError(
-                    f"[MULTIBOT_CONTAINER_EXIT] {execution.returncode}: "
-                    f"{execution.stdout[-2000:]} {execution.stderr[-4000:]}"
-                )
-            result = json.loads(execution.stdout)
-            if result.get("state") != "succeeded":
-                raise RuntimeError(f"[MULTIBOT_CONTAINER_FAILED] {result}")
-            read_output = subprocess.run(
-                [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "--platform",
-                    "linux/amd64",
-                    "--network",
-                    "none",
-                    "--read-only",
-                    "--user",
-                    "65532:65532",
-                    "--mount",
-                    f"type=volume,src={volume_name},dst=/out,readonly",
-                    "--entrypoint",
-                    "python",
-                    tag,
-                    "-I",
-                    "-B",
-                    "-c",
-                    "import base64,json,pathlib,sys; d=pathlib.Path('/out')/sys.argv[1]; print(json.dumps({n:base64.b64encode((d/n).read_bytes()).decode() for n in ('records.jsonl','report.json')}))",
-                    result["execution_id"],
-                ],
+            volume_name = f"scrapy-multibot-output-{uuid.uuid4().hex[:12]}"
+            subprocess.run(
+                ["docker", "volume", "create", volume_name],
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            host_output = output_root / result["execution_id"]
-            host_output.mkdir()
-            for name, contents in json.loads(read_output.stdout).items():
-                (host_output / name).write_bytes(base64.b64decode(contents))
-            manifest = json.loads(
-                (assembled / "builds" / entry["build_id"] / "manifest.json").read_text()
-            )
-            example_id = {
-                "html-simple-catalog": "html-simple",
-                "synthetic-json-api": "json-api",
-                "bounded-multipage-catalog": "multipage-catalog",
-            }[manifest["playbook_id"]]
-            _check_records(
-                host_output,
-                ROOT / "examples/playbooks" / example_id / "expected-records.jsonl",
-                source_revision=manifest["source"]["source_revision"]
-                if example_id == "html-simple"
-                else None,
-            )
+            try:
+                volume_mount = [
+                    "--mount",
+                    f"type=volume,src={volume_name},dst=/out",
+                ]
+                subprocess.run(
+                    [
+                        *common[:2],
+                        "--rm",
+                        *common[2:-1],
+                        *volume_mount,
+                        "--entrypoint",
+                        "python",
+                        tag,
+                        "-I",
+                        "-B",
+                        "-c",
+                        "import os; os.chown('/out', 65532, 65532); os.chmod('/out', 0o700)",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                execution = subprocess.run(
+                    [
+                        *common[:2],
+                        "--rm",
+                        *common[2:-1],
+                        *volume_mount,
+                        tag,
+                        "run",
+                        "--bot-id",
+                        entry["bot_id"],
+                        "--build-id",
+                        entry["build_id"],
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if execution.returncode != 0:
+                    raise RuntimeError(
+                        f"[MULTIBOT_CONTAINER_EXIT] {execution.returncode}: "
+                        f"{execution.stdout[-2000:]} {execution.stderr[-4000:]}"
+                    )
+                result = json.loads(execution.stdout)
+                if result.get("state") != "succeeded":
+                    raise RuntimeError(f"[MULTIBOT_CONTAINER_FAILED] {result}")
+                read_output = subprocess.run(
+                    [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "--platform",
+                        "linux/amd64",
+                        "--network",
+                        "none",
+                        "--read-only",
+                        "--user",
+                        "65532:65532",
+                        "--mount",
+                        f"type=volume,src={volume_name},dst=/out,readonly",
+                        "--entrypoint",
+                        "python",
+                        tag,
+                        "-I",
+                        "-B",
+                        "-c",
+                        "import base64,json,pathlib,sys; d=pathlib.Path('/out')/sys.argv[1]; print(json.dumps({n:base64.b64encode((d/n).read_bytes()).decode() for n in ('records.jsonl','report.json')}))",
+                        result["execution_id"],
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                host_output = output_root / result["execution_id"]
+                host_output.mkdir()
+                for name, contents in json.loads(read_output.stdout).items():
+                    (host_output / name).write_bytes(base64.b64decode(contents))
+                manifest = json.loads(
+                    (
+                        assembled / "builds" / entry["build_id"] / "manifest.json"
+                    ).read_text()
+                )
+                example_id = {
+                    "html-simple-catalog": "html-simple",
+                    "synthetic-json-api": "json-api",
+                    "bounded-multipage-catalog": "multipage-catalog",
+                }[manifest["playbook_id"]]
+                _check_records(
+                    host_output,
+                    ROOT / "examples/playbooks" / example_id / "expected-records.jsonl",
+                    source_revision=manifest["source"]["source_revision"]
+                    if example_id == "html-simple"
+                    else None,
+                )
+            finally:
+                subprocess.run(
+                    ["docker", "volume", "rm", "--force", volume_name],
+                    check=False,
+                    capture_output=True,
+                )
     finally:
-        if volume_created:
-            subprocess.run(
-                ["docker", "volume", "rm", "--force", volume_name],
-                check=False,
-                capture_output=True,
-            )
         if image_created:
             subprocess.run(
                 ["docker", "image", "rm", "--force", tag],

@@ -4,6 +4,8 @@
 
 The initial profile is fixture-only. The worker does not parse CapturePlaybooks, compile IR, authorize source access, or download code dynamically. BotBuilds must be produced and reviewed before assembly.
 
+The CLI starts a fresh Python child process, but that alone is not an OS sandbox. The protected Linux conformance path is `make scrapy-collector-multibot-conformance`; it runs one selected build per container with `--network none`, a non-root UID, read-only root filesystem, resource limits, and a private output volume for each execution. There is not yet a supported production container launcher or authorization integration. Do not run untrusted BotBuild code directly on a host or in a container with default networking and shared writable output mounts.
+
 ## Commands
 
 ```sh

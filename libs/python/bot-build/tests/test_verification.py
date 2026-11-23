@@ -14,8 +14,13 @@ from mozaic_bot_build import (
 )
 
 
-def make_build(root: Path, *, manifest_version: str = "bot-build-manifest/v2") -> str:
-    runtime_files = {"__init__.py": b"", "identity.py": b"# identity\n"}
+def make_build(
+    root: Path,
+    *,
+    manifest_version: str = "bot-build-manifest/v2",
+    runtime_identity_bytes: bytes = b"# identity\n",
+) -> str:
+    runtime_files = {"__init__.py": b"", "identity.py": runtime_identity_bytes}
     runtime_hashes = {
         name: hashlib.sha256(data).hexdigest() for name, data in runtime_files.items()
     }
@@ -157,6 +162,19 @@ class BotBuildVerificationTests(unittest.TestCase):
             target.unlink()
             target.symlink_to(root / "manifest.json")
             with self.assertRaisesRegex(BotBuildVerificationError, "BUILD_FILE_UNSAFE"):
+                verify_bot_build(root, digest)
+
+    def test_rejects_oversized_runtime_before_hashing_contents(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "build"
+            root.mkdir()
+            digest = make_build(
+                root,
+                runtime_identity_bytes=b"x" * (16 * 1024 * 1024 + 1),
+            )
+            with self.assertRaisesRegex(
+                BotBuildVerificationError, "BUILD_SIZE_LIMIT_EXCEEDED"
+            ):
                 verify_bot_build(root, digest)
 
     def test_bot_identity_is_stable_for_revision_and_namespaced_by_source(self):

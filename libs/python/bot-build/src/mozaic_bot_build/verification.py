@@ -88,7 +88,7 @@ def _verify_runtime_identity(root: Path, identity: Any) -> None:
     package = identity.get("package")
     version = identity.get("version")
     files = identity.get("files")
-    digest = identity.get("sha256")
+    identity_digest = identity.get("sha256")
     if (
         not isinstance(package, str)
         or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", package)
@@ -96,24 +96,38 @@ def _verify_runtime_identity(root: Path, identity: Any) -> None:
         or not version
         or not isinstance(files, dict)
         or not files
-        or not isinstance(digest, str)
-        or not _DIGEST.fullmatch(digest)
+        or not isinstance(identity_digest, str)
+        or not _DIGEST.fullmatch(identity_digest)
     ):
         raise BotBuildVerificationError(
             "[BUILD_RUNTIME_UNSUPPORTED] invalid runtime identity"
         )
-    if hashlib.sha256(canonical_json(files)).hexdigest() != digest:
+    if hashlib.sha256(canonical_json(files)).hexdigest() != identity_digest:
         raise BotBuildVerificationError(
             "[BUILD_RUNTIME_IDENTITY_INVALID] aggregate digest differs"
         )
+    if len(files) > _MAX_GENERATED_FILES:
+        raise BotBuildVerificationError(
+            "[BUILD_SIZE_LIMIT_EXCEEDED] runtime file count exceeds verification limits"
+        )
 
-    runtime_root = root / "runtime" / package
+    runtime_parent = root / "runtime"
+    if runtime_parent.is_symlink() or not runtime_parent.is_dir():
+        raise BotBuildVerificationError(
+            "[BUILD_RUNTIME_MISSING] bundled runtime directory is missing or unsafe"
+        )
+    runtime_root = runtime_parent / package
     if runtime_root.is_symlink() or not runtime_root.is_dir():
         raise BotBuildVerificationError(
             "[BUILD_RUNTIME_MISSING] bundled runtime is missing"
         )
     expected_names: set[str] = set()
-    actual_names = {path.name for path in runtime_root.iterdir()}
+    actual_paths = list(runtime_root.iterdir())
+    if len(actual_paths) > _MAX_GENERATED_FILES:
+        raise BotBuildVerificationError(
+            "[BUILD_SIZE_LIMIT_EXCEEDED] runtime file count exceeds verification limits"
+        )
+    actual_names = {path.name for path in actual_paths}
     for name in files:
         relative = _safe_relative(name)
         if len(relative.parts) != 1 or relative.name in expected_names:
@@ -127,6 +141,7 @@ def _verify_runtime_identity(root: Path, identity: Any) -> None:
         )
 
     actual: dict[str, str] = {}
+    total_bytes = 0
     for name, expected in sorted(files.items()):
         relative = _safe_relative(name)
         if not isinstance(expected, str) or not _DIGEST.fullmatch(expected):
@@ -136,11 +151,21 @@ def _verify_runtime_identity(root: Path, identity: Any) -> None:
         path = runtime_root / relative.name
         if path.is_symlink() or not path.is_file():
             raise BotBuildVerificationError(f"[BUILD_RUNTIME_FILE_MISSING] {name}")
-        actual[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        size = path.stat().st_size
+        total_bytes += size
+        if size > _MAX_BUILD_FILE_BYTES or total_bytes > _MAX_BUILD_TOTAL_BYTES:
+            raise BotBuildVerificationError(
+                "[BUILD_SIZE_LIMIT_EXCEEDED] runtime exceeds verification limits"
+            )
+        file_digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                file_digest.update(chunk)
+        actual[name] = file_digest.hexdigest()
         if actual[name] != expected:
             raise BotBuildVerificationError(f"[BUILD_RUNTIME_DIGEST_MISMATCH] {name}")
 
-    if hashlib.sha256(canonical_json(actual)).hexdigest() != digest:
+    if hashlib.sha256(canonical_json(actual)).hexdigest() != identity_digest:
         raise BotBuildVerificationError(
             "[BUILD_RUNTIME_DIGEST_MISMATCH] aggregate runtime digest differs"
         )
