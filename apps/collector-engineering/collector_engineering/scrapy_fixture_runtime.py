@@ -237,8 +237,7 @@ def publish_output(spider: Any, output_dir: Path, *, engine: dict[str, str]) -> 
             # move it last; any failed move removes the visible destination.
             if error.errno != errno.EPERM or output_dir.exists():
                 raise
-            output_dir.mkdir(mode=0o700)
-            output_dir.chmod(0o755)
+            output_dir.mkdir(mode=0o755)
             try:
                 staged_files = list(staging.iterdir())
                 if any(
@@ -259,7 +258,6 @@ def publish_output(spider: Any, output_dir: Path, *, engine: dict[str, str]) -> 
                     key=lambda path: (path.name == "report.json", path.name)
                 )
                 for path in staged_files:
-                    path.chmod(0o644)
                     os.replace(path, output_dir / path.name)
             except BaseException:
                 shutil.rmtree(output_dir, ignore_errors=True)
