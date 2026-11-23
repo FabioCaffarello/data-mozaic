@@ -110,6 +110,10 @@ The Scrapy fixture increment adds private modules for fixture evidence inspectio
 
 No `libs/python/collector-runtime` is justified yet: no consumer outside BC15 exists. A later extraction requires a named independent consumer, an owner, stable public interfaces, allowed dependency list, contract tests against both compiler backends, wheel/install checks, and a release/compatibility policy. Keep extraction and normalization contract tests in BC15 while semantics are private; promote them only with those consumers.
 
+### BotBuild identity verification
+
+`mozaic-bot-build` is a narrow stdlib-only library with two concrete consumers: BC15's Python Reference/Scrapy verifiers and the `scrapy-collector` assembly/launcher. It checks manifest/build identity, exact file membership, runtime hashes, and safe paths before imports. It does not validate Playbook semantics, profiles, execution authorization, publisher signatures, or release approval. Consumer conformance tests exercise the same implementation from both packages. This is not a general runtime or worker SDK.
+
 For each real library, include a small `library.yaml` next to its README. The first library includes actual ownership, consumers, exclusions and dependency/test policy; the manifest remains documentation until a validator needs machine-readable enforcement. Required fields:
 
 ```yaml
