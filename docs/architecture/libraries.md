@@ -1,6 +1,6 @@
 # Library architecture
 
-**Status: Proposed.** This document defines placement and promotion rules. This increment adds one internal experimental Python library; no multi-language workspace is claimed.
+**Status: Proposed.** This document defines placement and promotion rules. The repository contains the internal experimental `mozaic-observability` Python library. BC15's extraction/runtime and engine adapters remain private modules in `apps/collector-engineering`; a second backend in the same context is not a second library consumer.
 
 ## Audit snapshot
 
@@ -103,6 +103,12 @@ Categories are logical labels and may overlap only when the library's single res
 | Developer tooling | Repository-local checks and migration tooling | Current `tooling/` is repository tooling, not a product library. |
 
 ## Manifest and extraction gate
+
+### BC15 runtime modules
+
+The Scrapy fixture increment adds private modules for fixture evidence inspection, extraction/reference runtime, Scrapy compilation/runtime and BotBuild runtime identity under `apps/collector-engineering/collector_engineering/`. Consumers are the two BC15 compilers and their generated runners. They may depend on BC15's typed IR/syntax and the explicitly locked Scrapy/parser stack; no other BC may import them, and the domain semantics do not import Scrapy types. The generated Scrapy adapter translates Scrapy `Response` bytes/metadata into the BC15 document shape at its edge.
+
+No `libs/python/collector-runtime` is justified yet: no consumer outside BC15 exists. A later extraction requires a named independent consumer, an owner, stable public interfaces, allowed dependency list, contract tests against both compiler backends, wheel/install checks, and a release/compatibility policy. Keep extraction and normalization contract tests in BC15 while semantics are private; promote them only with those consumers.
 
 For each real library, include a small `library.yaml` next to its README. The first library includes actual ownership, consumers, exclusions and dependency/test policy; the manifest remains documentation until a validator needs machine-readable enforcement. Required fields:
 

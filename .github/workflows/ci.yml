@@ -72,6 +72,8 @@ jobs:
         run: make scout-sandbox-check
       - name: Collector Playbook v2 examples in offline network sandbox
         run: make collector-playbook-examples
+      - name: Collector Python Reference and Scrapy cross-backend conformance
+        run: make collector-cross-backend-conformance
       - name: Build, import, and smoke-test Linux release bundle
         env:
           SCOUT_RELEASE_ROOT: ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}

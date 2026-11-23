@@ -387,9 +387,19 @@ class CapturePlaybookV2Tests(unittest.TestCase):
             fixtures = root / "fixtures"
             fixtures.mkdir()
             (root / "build").mkdir()
+            (root / "build" / "manifest.json").write_text(
+                json.dumps({"backend_id": "python-http-reference"})
+            )
+            runtime_package = root / "build" / "runtime" / "mozaic_bot_runtime"
+            runtime_package.mkdir(parents=True)
+            (runtime_package / "reference_runtime.py").write_text("# runtime\n")
+            runtime_package.chmod(0o700)
+            runtime_package.parent.chmod(0o700)
+            (runtime_package / "reference_runtime.py").chmod(0o600)
             output = root / "output"
             command = [
                 collector_cli.sys.executable,
+                "-B",
                 str(root / "build" / "bot.py"),
                 "--fixtures",
                 str(fixtures),
@@ -400,21 +410,35 @@ class CapturePlaybookV2Tests(unittest.TestCase):
             with (
                 patch.object(collector_cli.sys, "platform", "linux"),
                 patch.object(collector_cli.sys, "prefix", str(root)),
+                patch.object(collector_cli.os, "getuid", return_value=1001),
+                patch.object(collector_cli.os, "getgid", return_value=1002),
                 patch.object(
                     collector_cli.shutil, "which", return_value="/usr/bin/docker"
                 ),
+                patch.object(
+                    collector_cli,
+                    "verify_build",
+                    return_value={"backend_id": "python-http-reference"},
+                ) as verify,
                 patch.object(
                     collector_cli.subprocess, "run", return_value=completed
                 ) as run,
             ):
                 collector_cli._run_network_isolated(command)
+            verify.assert_called_once_with(root / "build")
+            self.assertEqual(0o755, (root / "build" / "runtime").stat().st_mode & 0o777)
+            self.assertEqual(0o755, runtime_package.stat().st_mode & 0o777)
+            self.assertEqual(
+                0o644, (runtime_package / "reference_runtime.py").stat().st_mode & 0o777
+            )
             docker_command = run.call_args.args[0]
-            runtime_source = Path(collector_cli.__file__).resolve().parent.parent
+            self.assertIn("1001:1002", docker_command)
+            self.assertNotIn("/runtime,readonly", docker_command)
+            self.assertIn("PYTHONPATH=/deps", docker_command)
             self.assertIn(
-                f"type=bind,src={runtime_source},dst=/runtime,readonly",
+                f"type=bind,src={root / 'build'},dst=/build,readonly",
                 docker_command,
             )
-            self.assertIn("PYTHONPATH=/deps:/runtime", docker_command)
 
     def test_bindings_ports_types_fields_cardinality_and_selector_have_diagnostics(
         self,
@@ -643,12 +667,14 @@ class CapturePlaybookV2Tests(unittest.TestCase):
                 output=build,
                 lockfile=LOCKFILE,
             )
-            runtime_metadata = build / "runtime-reference.json"
-            saved_runtime_metadata = runtime_metadata.read_bytes()
-            runtime_metadata.unlink()
-            with self.assertRaisesRegex(PlaybookError, "BUILD_FILE_SET_MISMATCH"):
+            runtime_file = build / "runtime/mozaic_bot_runtime/reference_runtime.py"
+            saved_runtime_file = runtime_file.read_bytes()
+            runtime_file.unlink()
+            with self.assertRaisesRegex(
+                PlaybookError, "BUILD_RUNTIME_FILE_SET_MISMATCH"
+            ):
                 verify_build(build)
-            runtime_metadata.write_bytes(saved_runtime_metadata)
+            runtime_file.write_bytes(saved_runtime_file)
 
             outside = root / "outside.txt"
             outside.write_text("outside")

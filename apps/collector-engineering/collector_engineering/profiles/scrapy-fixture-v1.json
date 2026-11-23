@@ -1,0 +1,16 @@
+{
+  "backend_id": "scrapy-fixture",
+  "backend_version": "1.0.0",
+  "execution_mode": "fixture-only",
+  "capabilities": [
+    "http.fetch.fixture",
+    "links.discover.fixture",
+    "pagination.bounded.fixture",
+    "html.css_select",
+    "json.path_restricted",
+    "records.extract",
+    "output.records.jsonl",
+    "output.raw.reference"
+  ],
+  "unsupported_capabilities": ["browser.rendered_dom"]
+}

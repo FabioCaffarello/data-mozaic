@@ -331,11 +331,13 @@ def fetch_fixture(
     ctx.bytes_used += len(body)
     return {
         "url": url,
+        "requested_url": url,
         "body": body,
         "sha256": digest,
         "evidence_ref": page["evidence_ref"],
         "content_type": content_type,
         "status": 200,
+        "page_index": ctx.pages_used - 1,
     }
 
 
@@ -383,6 +385,7 @@ def paginate(
             "BUDGET_PAGES_EXCEEDED", "pagination exceeds the page budget"
         )
     documents = [link_set["seed"]]
+    documents[0].setdefault("page_index", 0)
     visited = {link_set["seed"]["url"]}
     for url in link_set["urls"]:
         if len(documents) >= max_pages:
@@ -403,6 +406,7 @@ def paginate(
             content_type=page["content_type"],
             evidence_refs=[page["evidence_ref"]],
         )
+        document["page_index"] = len(documents)
         if page.get("discovered_from") != seed_ref:
             raise RuntimeFailure(
                 "LINK_NOT_OBSERVED",
@@ -444,7 +448,19 @@ def select_html_records(
         except SelectolaxError as error:
             raise RuntimeFailure("SELECTOR_INVALID", str(error)) from error
         for node in matches:
-            selected.append({"kind": "html", "node": node, "page": page})
+            selected.append(
+                {
+                    "kind": "html",
+                    "node": node,
+                    "page": page,
+                    "record_index": sum(
+                        1
+                        for prior in selected
+                        if prior["page"].get("page_index", 0)
+                        == page.get("page_index", 0)
+                    ),
+                }
+            )
             if (
                 len(selected) > max_matches
                 or len(selected) > ctx.budgets["max_records"]
@@ -530,8 +546,14 @@ def select_json_records(
             "BUDGET_RECORDS_EXCEEDED", "JSON selection exceeds record budget"
         )
     return [
-        {"kind": "json", "value": item, "page": document, "pointer": pointer}
-        for item, pointer in values
+        {
+            "kind": "json",
+            "value": item,
+            "page": document,
+            "pointer": pointer,
+            "record_index": index,
+        }
+        for index, (item, pointer) in enumerate(values)
     ]
 
 
@@ -646,6 +668,7 @@ def extract_fields(
     records: list[dict[str, Any]],
     *,
     fields: dict[str, dict[str, Any]],
+    operation_id: str = "extract",
 ) -> list[dict[str, Any]]:
     extracted = []
     for record in records:
@@ -655,9 +678,16 @@ def extract_fields(
         }
         page = record["page"]
         data["_provenance"] = {
+            "source_id": ctx.source["source_id"],
+            "source_revision": ctx.source["revision"],
             "source_url": page["url"],
+            "requested_url": page.get("requested_url", page["url"]),
+            "effective_url": page["url"],
             "evidence_ref": page["evidence_ref"],
             "raw_sha256": page["sha256"],
+            "operation_id": operation_id,
+            "page_index": page.get("page_index", 0),
+            "record_index": record.get("record_index", len(extracted)),
         }
         _reserve_output(ctx, len(canonical_record(data)) + 1)
         extracted.append(data)
