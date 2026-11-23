@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from collector_engineering.backend_scrapy_fixture import (
     PROFILE,
@@ -20,6 +24,7 @@ from collector_engineering.scrapy_fixture_runtime import (
     REQUEST_META_KEYS,
     RequestGuardMiddleware,
     handler_settings,
+    publish_output,
 )
 from collector_engineering.syntax import PlaybookError
 from scrapy import Request
@@ -120,6 +125,80 @@ class ScrapyFixtureBackendTests(unittest.TestCase):
                 Request("https://fixture.test/", meta={"download_handler": "anything"}),
                 None,
             )
+
+    def test_publish_output_handles_bind_mount_directory_rename_eperm(self):
+        class FakeRuntime:
+            @staticmethod
+            def write_records(context, records):
+                (context.output_root / "records.jsonl").write_bytes(b'{"id":1}\n')
+                return {"state": "passed"}
+
+            @staticmethod
+            def write_report(context, report):
+                (context.output_root / "report.json").write_text("{}\n")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "published"
+            spider = SimpleNamespace(
+                failure=None,
+                context_root=root / "context",
+                runtime_context=SimpleNamespace(output_root=root / "context"),
+                runtime_module=FakeRuntime,
+                records=[],
+                crawler=SimpleNamespace(stats=None),
+                documents=[],
+                raw_output=False,
+            )
+            real_replace = os.replace
+
+            def reject_directory_rename(source, destination):
+                if Path(source).is_dir():
+                    raise OSError(errno.EPERM, "directory rename denied")
+                return real_replace(source, destination)
+
+            with patch(
+                "collector_engineering.scrapy_fixture_runtime.os.replace",
+                side_effect=reject_directory_rename,
+            ):
+                report = publish_output(
+                    spider, output, engine={"id": "scrapy", "version": "test"}
+                )
+
+            self.assertEqual("passed", report["state"])
+            self.assertEqual(b'{"id":1}\n', (output / "records.jsonl").read_bytes())
+            self.assertTrue((output / "report.json").is_file())
+
+            failed_output = root / "failed-publish"
+            failed_spider = SimpleNamespace(
+                failure=None,
+                context_root=root / "failed-context",
+                runtime_context=SimpleNamespace(output_root=root / "failed-context"),
+                runtime_module=FakeRuntime,
+                records=[],
+                crawler=SimpleNamespace(stats=None),
+                documents=[],
+                raw_output=False,
+            )
+
+            def fail_before_report_commit(source, destination):
+                if Path(source).is_dir() or Path(source).name == "report.json":
+                    raise OSError(errno.EPERM, "publication denied")
+                return real_replace(source, destination)
+
+            with (
+                patch(
+                    "collector_engineering.scrapy_fixture_runtime.os.replace",
+                    side_effect=fail_before_report_commit,
+                ),
+                self.assertRaises(OSError),
+            ):
+                publish_output(
+                    failed_spider,
+                    failed_output,
+                    engine={"id": "scrapy", "version": "test"},
+                )
+            self.assertFalse(failed_output.exists())
 
     def test_build_verifier_detects_runtime_file_drift_missing_and_extra(self):
         with tempfile.TemporaryDirectory() as temporary:

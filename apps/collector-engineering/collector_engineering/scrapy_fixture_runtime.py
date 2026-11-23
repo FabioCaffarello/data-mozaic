@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -195,7 +196,7 @@ def canonical_record(record: dict) -> bytes:
 
 
 def publish_output(spider: Any, output_dir: Path, *, engine: dict[str, str]) -> dict:
-    """Atomically publish JSONL, raw refs, and report after a successful crawl."""
+    """Publish complete output after crawl success, rolling back failed commits."""
     if spider.failure is not None:
         raise RuntimeFailure("SCRAPY_CRAWL_FAILED", str(spider.failure))
     if output_dir.exists() or output_dir.is_symlink():
@@ -228,7 +229,41 @@ def publish_output(spider: Any, output_dir: Path, *, engine: dict[str, str]) -> 
         if spider.raw_output:
             spider.runtime_module.write_raw_references(context, spider.documents)
         spider.runtime_module.write_report(context, report)
-        os.replace(staging, output_dir)
+        try:
+            os.replace(staging, output_dir)
+        except OSError as error:
+            # Some container bind-mount implementations reject directory
+            # rename with EPERM. Preserve the report as the commit marker and
+            # move it last; any failed move removes the visible destination.
+            if error.errno != errno.EPERM or output_dir.exists():
+                raise
+            output_dir.mkdir(mode=0o700)
+            output_dir.chmod(0o755)
+            try:
+                staged_files = list(staging.iterdir())
+                if any(
+                    path.is_symlink() or not path.is_file() for path in staged_files
+                ):
+                    raise RuntimeFailure(
+                        "OUTPUT_PATH_UNSAFE", "staged output contains an unsafe entry"
+                    )
+                names = {path.name for path in staged_files}
+                expected_names = {"records.jsonl", "report.json"}
+                if spider.raw_output:
+                    expected_names.add("raw-references.json")
+                if names != expected_names:
+                    raise RuntimeFailure(
+                        "OUTPUT_PATH_UNSAFE", "staged output file set is invalid"
+                    )
+                staged_files.sort(
+                    key=lambda path: (path.name == "report.json", path.name)
+                )
+                for path in staged_files:
+                    path.chmod(0o644)
+                    os.replace(path, output_dir / path.name)
+            except BaseException:
+                shutil.rmtree(output_dir, ignore_errors=True)
+                raise
         return report
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
