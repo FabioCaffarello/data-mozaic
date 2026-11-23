@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import errno
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from collector_engineering.backend_scrapy_fixture import (
     PROFILE,
@@ -126,7 +123,7 @@ class ScrapyFixtureBackendTests(unittest.TestCase):
                 None,
             )
 
-    def test_publish_output_handles_bind_mount_directory_rename_eperm(self):
+    def test_publish_output_is_readable_by_host_and_rolls_back_failures(self):
         class FakeRuntime:
             @staticmethod
             def write_records(context, records):
@@ -136,6 +133,11 @@ class ScrapyFixtureBackendTests(unittest.TestCase):
             @staticmethod
             def write_report(context, report):
                 (context.output_root / "report.json").write_text("{}\n")
+
+        class FailingRuntime(FakeRuntime):
+            @staticmethod
+            def write_report(context, report):
+                raise OSError("injected report publication failure")
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -150,49 +152,27 @@ class ScrapyFixtureBackendTests(unittest.TestCase):
                 documents=[],
                 raw_output=False,
             )
-            real_replace = os.replace
-
-            def reject_directory_rename(source, destination):
-                if Path(source).is_dir():
-                    raise OSError(errno.EPERM, "directory rename denied")
-                return real_replace(source, destination)
-
-            with patch(
-                "collector_engineering.scrapy_fixture_runtime.os.replace",
-                side_effect=reject_directory_rename,
-            ):
-                report = publish_output(
-                    spider, output, engine={"id": "scrapy", "version": "test"}
-                )
+            report = publish_output(
+                spider, output, engine={"id": "scrapy", "version": "test"}
+            )
 
             self.assertEqual("passed", report["state"])
             self.assertEqual(b'{"id":1}\n', (output / "records.jsonl").read_bytes())
             self.assertTrue((output / "report.json").is_file())
+            self.assertEqual(0o755, output.stat().st_mode & 0o777)
 
             failed_output = root / "failed-publish"
             failed_spider = SimpleNamespace(
                 failure=None,
                 context_root=root / "failed-context",
                 runtime_context=SimpleNamespace(output_root=root / "failed-context"),
-                runtime_module=FakeRuntime,
+                runtime_module=FailingRuntime,
                 records=[],
                 crawler=SimpleNamespace(stats=None),
                 documents=[],
                 raw_output=False,
             )
-
-            def fail_before_report_commit(source, destination):
-                if Path(source).is_dir() or Path(source).name == "report.json":
-                    raise OSError(errno.EPERM, "publication denied")
-                return real_replace(source, destination)
-
-            with (
-                patch(
-                    "collector_engineering.scrapy_fixture_runtime.os.replace",
-                    side_effect=fail_before_report_commit,
-                ),
-                self.assertRaises(OSError),
-            ):
+            with self.assertRaisesRegex(OSError, "injected report publication failure"):
                 publish_output(
                     failed_spider,
                     failed_output,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import errno
 import json
 import os
 import shutil
@@ -206,7 +205,9 @@ def publish_output(spider: Any, output_dir: Path, *, engine: dict[str, str]) -> 
         raise RuntimeFailure(
             "OUTPUT_PATH_UNSAFE", "partial output destination already exists"
         )
-    staging.mkdir(mode=0o700, parents=False)
+    # The host conformance harness reads the final artifacts from this bind
+    # mount as its own uid, so the published directory must be traversable.
+    staging.mkdir(mode=0o755, parents=False)
     context = spider.runtime_context
     context.output_root = staging
     records = [record for _, record in sorted(spider.records, key=lambda pair: pair[0])]
@@ -229,50 +230,7 @@ def publish_output(spider: Any, output_dir: Path, *, engine: dict[str, str]) -> 
         if spider.raw_output:
             spider.runtime_module.write_raw_references(context, spider.documents)
         spider.runtime_module.write_report(context, report)
-        try:
-            os.replace(staging, output_dir)
-        except OSError as error:
-            # Some container bind-mount implementations reject directory
-            # rename with EPERM. Preserve the report as the commit marker and
-            # move it last; any failed move removes the visible destination.
-            if error.errno != errno.EPERM:
-                raise
-            if output_dir.exists() or output_dir.is_symlink():
-                raise RuntimeFailure(
-                    "OUTPUT_PUBLISH_TARGET_EXISTS",
-                    "directory rename was denied and the final destination already exists",
-                ) from error
-            try:
-                output_dir.mkdir(mode=0o755)
-            except OSError as fallback_error:
-                raise RuntimeFailure(
-                    "OUTPUT_PUBLISH_FALLBACK_FAILED",
-                    f"could not create final destination: {fallback_error}",
-                ) from error
-            try:
-                staged_files = list(staging.iterdir())
-                if any(
-                    path.is_symlink() or not path.is_file() for path in staged_files
-                ):
-                    raise RuntimeFailure(
-                        "OUTPUT_PATH_UNSAFE", "staged output contains an unsafe entry"
-                    )
-                names = {path.name for path in staged_files}
-                expected_names = {"records.jsonl", "report.json"}
-                if spider.raw_output:
-                    expected_names.add("raw-references.json")
-                if names != expected_names:
-                    raise RuntimeFailure(
-                        "OUTPUT_PATH_UNSAFE", "staged output file set is invalid"
-                    )
-                staged_files.sort(
-                    key=lambda path: (path.name == "report.json", path.name)
-                )
-                for path in staged_files:
-                    os.replace(path, output_dir / path.name)
-            except BaseException:
-                shutil.rmtree(output_dir, ignore_errors=True)
-                raise
+        os.replace(staging, output_dir)
         return report
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
