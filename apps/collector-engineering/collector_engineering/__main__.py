@@ -79,7 +79,10 @@ def _run_network_isolated(command: list[str]) -> subprocess.CompletedProcess[str
             return subprocess.run(
                 probe, text=True, capture_output=True, check=False, timeout=10
             )
-        build_bot = Path(command[1]).resolve()
+        # ``-B`` prevents the runner from writing bytecode into the verified,
+        # read-only BotBuild.  Resolve the script after interpreter switches.
+        script_index = 2 if len(command) > 2 and command[1] == "-B" else 1
+        build_bot = Path(command[script_index]).resolve()
         manifest_path = build_bot.parent / "manifest.json"
         try:
             build_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

@@ -399,6 +399,7 @@ class CapturePlaybookV2Tests(unittest.TestCase):
             output = root / "output"
             command = [
                 collector_cli.sys.executable,
+                "-B",
                 str(root / "build" / "bot.py"),
                 "--fixtures",
                 str(fixtures),
