@@ -17,7 +17,7 @@ class CodexToolingTests(unittest.TestCase):
         server = config["mcp_servers"]["data_mozaic_scout"]
         self.assertEqual("http://127.0.0.1:8765/mcp", server["url"])
         self.assertEqual("SCOUT_BROKER_TOKEN", server["bearer_token_env_var"])
-        self.assertTrue(server["required"])
+        self.assertFalse(server["required"])
         self.assertNotIn("command", server)
         self.assertNotIn("args", server)
         self.assertNotIn("env_vars", server)

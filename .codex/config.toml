@@ -2,7 +2,7 @@
 url = "http://127.0.0.1:8765/mcp"
 bearer_token_env_var = "SCOUT_BROKER_TOKEN"
 enabled = true
-required = true
+required = false
 enabled_tools = [
   "scout_preflight",
   "scout_start",
