@@ -70,6 +70,8 @@ jobs:
         run: make scout-dns-adversarial-check
       - name: Worker network sandbox check
         run: make scout-sandbox-check
+      - name: Collector Playbook v2 examples in offline network sandbox
+        run: make collector-playbook-examples
       - name: Build, import, and smoke-test Linux release bundle
         env:
           SCOUT_RELEASE_ROOT: ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}

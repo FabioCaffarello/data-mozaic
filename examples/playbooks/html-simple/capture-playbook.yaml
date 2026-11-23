@@ -1,0 +1,66 @@
+dsl_version: capture-playbook-draft/v2
+playbook_id: html-simple-catalog
+status: draft
+source:
+  source_id: synthetic-html-catalog
+  revision: fixture-1
+  origin: https://html.fixture.test
+  path_prefixes: [/catalog]
+objective: Extract product IDs, titles, and prices from the synthetic catalog fixture.
+proposal_ref: proposal-html-simple
+findings:
+  - finding_id: finding-html-1
+    classification: observed
+    evidence_refs: [e-html-1]
+evidence:
+  - evidence_ref: e-html-1
+    sha256: 381a89c6e465f900c15b3acf7dd150bf428458202b0a86d0f86e69595e0a32e9
+capabilities:
+  - http.fetch.fixture
+  - html.css_select
+  - records.extract
+  - output.records.jsonl
+  - output.raw.reference
+budgets:
+  max_requests: 1
+  max_pages: 1
+  max_response_bytes: 4096
+  max_records: 10
+  max_output_bytes: 1000000
+failure_policy:
+  missing_fixture: fail
+  invalid_record: fail
+  missing_required_field: fail
+  conversion_error: fail
+output_contract:
+  record_type: object
+  fields:
+    id: {type: string, required: true}
+    title: {type: string, required: true}
+    price: {type: decimal, required: true}
+operations:
+  - id: start
+    op: http.fetch/v1
+    url: https://html.fixture.test/catalog/
+    content_type: text/html
+    evidence_refs: [e-html-1]
+  - id: products
+    op: select.html_records/v1
+    documents: {operation: start, port: document}
+    selector: article.product
+    cardinality: many
+    max_matches: 10
+    evidence_refs: [e-html-1]
+  - id: extract
+    op: extract.fields/v1
+    records: {operation: products, port: records}
+    fields:
+      id: {source: attribute, attribute: data-id, type: string, required: true, normalize: [trim]}
+      title: {source: text, selector: .title, type: string, required: true, normalize: [trim, collapse_whitespace]}
+      price: {source: text, selector: .price, type: decimal, required: true, normalize: [trim]}
+  - id: emit
+    op: output.records/v1
+    records: {operation: extract, port: records}
+  - id: raw_refs
+    op: output.raw/v1
+    documents: {operation: start, port: document}

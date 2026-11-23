@@ -1,0 +1,7 @@
+{
+  "complete": true,
+  "source": {"source_id": "synthetic-authorship-demo", "revision": "fixture-1"},
+  "pages": [
+    {"url":"https://authoring.fixture.test/library/","status":200,"content_type":"text/html","evidence_ref":"e-auth-demo-1","body_file":"page.html","sha256":"d803241b53874b42fc39ddf49e4868a78ee004a308652505f6aca5a4f4b5d7fe","size_bytes":534}
+  ]
+}

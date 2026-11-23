@@ -1,0 +1,49 @@
+dsl_version: capture-playbook-draft/v2
+playbook_id: synthetic-json-api
+status: draft
+source:
+  source_id: synthetic-json-api
+  revision: fixture-1
+  origin: https://api.fixture.test
+  path_prefixes: [/v1]
+objective: Extract typed item data from the synthetic JSON array.
+proposal_ref: proposal-json-api
+findings:
+  - finding_id: finding-json-shape
+    classification: observed
+    evidence_refs: [e-json-1]
+evidence:
+  - {evidence_ref: e-json-1, sha256: b5c983dbe4a6116b70fafc773c92d24f5224c5fbc633f9241299a81bb938ecd2}
+capabilities: [http.fetch.fixture, json.path_restricted, records.extract, output.records.jsonl]
+budgets: {max_requests: 1, max_pages: 1, max_response_bytes: 1024, max_records: 10, max_output_bytes: 1000000}
+failure_policy: {missing_fixture: fail, invalid_record: fail, missing_required_field: fail, conversion_error: fail}
+output_contract:
+  record_type: object
+  fields:
+    id: {type: string, required: true}
+    quantity: {type: integer, required: true}
+    unit_price: {type: decimal, required: true}
+    enabled: {type: boolean, required: true}
+operations:
+  - id: response
+    op: http.fetch/v1
+    url: https://api.fixture.test/v1/items
+    content_type: application/json
+    evidence_refs: [e-json-1]
+  - id: items
+    op: select.json_records/v1
+    document: {operation: response, port: document}
+    array_path: /items/*
+    max_matches: 10
+    evidence_refs: [e-json-1]
+  - id: extract
+    op: extract.fields/v1
+    records: {operation: items, port: records}
+    fields:
+      id: {source: json_value, path: /id, type: string, required: true, normalize: [trim]}
+      quantity: {source: json_value, path: /quantity, type: integer, required: true, normalize: [trim]}
+      unit_price: {source: json_value, path: /unit_price, type: decimal, required: true, normalize: [trim]}
+      enabled: {source: json_value, path: /enabled, type: boolean, required: true, normalize: [trim]}
+  - id: emit
+    op: output.records/v1
+    records: {operation: extract, port: records}

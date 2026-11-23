@@ -4,10 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mozaic-collector-engineering"
-version = "0.1.0"
-description = "Draft CapturePlaybook authoring and replay for BC15"
+version = "0.2.0"
+description = "Draft CapturePlaybook authoring, typed IR, and offline Python Reference compilation for BC15"
 requires-python = ">=3.12"
-dependencies = ["jsonschema>=4.23,<5", "PyYAML>=6.0,<7"]
+dependencies = [
+    "jsonschema>=4.23,<5",
+    "PyYAML>=6.0,<7",
+    "selectolax>=0.4.13,<0.5",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["collector_engineering"]

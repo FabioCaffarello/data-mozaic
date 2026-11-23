@@ -1,0 +1,48 @@
+dsl_version: capture-playbook-draft/v2
+playbook_id: browser-capability-required
+status: draft
+source:
+  source_id: synthetic-rendered-page
+  revision: fixture-1
+  origin: https://browser.fixture.test
+  path_prefixes: [/]
+objective: Demonstrate explicit rejection of browser-rendered DOM by the HTTP fixture backend.
+proposal_ref: proposal-browser-required
+findings:
+  - finding_id: finding-browser-needed
+    classification: hypothesized
+    evidence_refs: [e-browser-1]
+evidence:
+  - {evidence_ref: e-browser-1, sha256: 2f88abe61bbf0bfdff4fd8ecbf76503ef06ee8d5b7887090e8d569eee9987e5f}
+capabilities: [http.fetch.fixture, browser.rendered_dom, records.extract, output.records.jsonl]
+budgets: {max_requests: 1, max_pages: 1, max_response_bytes: 512, max_records: 5, max_output_bytes: 100000}
+failure_policy: {missing_fixture: fail, invalid_record: fail, missing_required_field: fail, conversion_error: fail}
+output_contract:
+  record_type: object
+  fields:
+    text: {type: string, required: true}
+operations:
+  - id: response
+    op: http.fetch/v1
+    url: https://browser.fixture.test/app
+    content_type: text/html
+    evidence_refs: [e-browser-1]
+  - id: rendered
+    op: browser.render_dom/v1
+    document: {operation: response, port: document}
+    wait_policy: dom_content_loaded
+  - id: records
+    op: select.rendered_dom_records/v1
+    document: {operation: rendered, port: rendered_document}
+    selector: main#app
+    cardinality: one
+    max_matches: 1
+    evidence_refs: [e-browser-1]
+  - id: extract
+    op: extract.fields/v1
+    records: {operation: records, port: records}
+    fields:
+      text: {source: text, type: string, required: true, normalize: [trim]}
+  - id: emit
+    op: output.records/v1
+    records: {operation: extract, port: records}

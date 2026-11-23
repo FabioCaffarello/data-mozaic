@@ -1,0 +1,9 @@
+{
+  "complete": true,
+  "source": {"source_id": "synthetic-multipage-catalog", "revision": "fixture-1"},
+  "pages": [
+    {"url":"https://pages.fixture.test/catalog/","status":200,"content_type":"text/html","evidence_ref":"e-multi-1","body_file":"page-1.html","sha256":"a9dbaa245167be2e326af875a4501b3ae00380e9a95787943558858dddb1ee76","size_bytes":231},
+    {"url":"https://pages.fixture.test/catalog/page-2","status":200,"content_type":"text/html","evidence_ref":"e-multi-2","body_file":"page-2.html","sha256":"342fa6b2944b42c02e62e2b4e98ce8417aaaba48663d974b2a31bfe27c21cd1a","size_bytes":108,"discovered_from":"e-multi-1"},
+    {"url":"https://pages.fixture.test/catalog/page-3","status":200,"content_type":"text/html","evidence_ref":"e-multi-3","body_file":"page-3.html","sha256":"161072f8141967b118d47fa8eb4314f29a2b0b952580c5f74b74787428849724","size_bytes":138,"discovered_from":"e-multi-1"}
+  ]
+}

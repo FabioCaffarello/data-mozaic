@@ -1,0 +1,51 @@
+dsl_version: capture-playbook-draft/v2
+playbook_id: codex-authored-publication-list
+status: draft
+source:
+  source_id: synthetic-authorship-demo
+  revision: fixture-1
+  origin: https://authoring.fixture.test
+  path_prefixes: [/library]
+objective: Extract publication code, title, year, and price from a synthetic HTML fixture.
+proposal_ref: proposal-codex-authorship-demo
+findings:
+  - finding_id: observed-publication-list
+    classification: observed
+    evidence_refs: [e-auth-demo-1]
+evidence:
+  - evidence_ref: e-auth-demo-1
+    sha256: d803241b53874b42fc39ddf49e4868a78ee004a308652505f6aca5a4f4b5d7fe
+capabilities: [http.fetch.fixture, html.css_select, records.extract, output.records.jsonl]
+budgets: {max_requests: 1, max_pages: 1, max_response_bytes: 1024, max_records: 5, max_output_bytes: 1000000}
+failure_policy: {missing_fixture: fail, invalid_record: fail, missing_required_field: fail, conversion_error: fail}
+output_contract:
+  record_type: object
+  fields:
+    code: {type: string, required: true}
+    title: {type: string, required: true}
+    year: {type: integer, required: true}
+    price: {type: decimal, required: true}
+operations:
+  - id: fetch_library
+    op: http.fetch/v1
+    url: https://authoring.fixture.test/library/
+    content_type: text/html
+    evidence_refs: [e-auth-demo-1]
+  - id: publication_rows
+    op: select.html_records/v1
+    documents: {operation: fetch_library, port: document}
+    selector: li.publication
+    cardinality: many
+    max_matches: 5
+    evidence_refs: [e-auth-demo-1]
+  - id: extract_publication_fields
+    op: extract.fields/v1
+    records: {operation: publication_rows, port: records}
+    fields:
+      code: {source: attribute, attribute: data-code, type: string, required: true, normalize: [trim]}
+      title: {source: text, selector: .title, type: string, required: true, normalize: [trim, collapse_whitespace]}
+      year: {source: text, selector: .year, type: integer, required: true, normalize: [trim]}
+      price: {source: text, selector: .price, type: decimal, required: true, normalize: [trim]}
+  - id: emit_publications
+    op: output.records/v1
+    records: {operation: extract_publication_fields, port: records}
