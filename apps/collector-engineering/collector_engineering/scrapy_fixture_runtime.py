@@ -235,9 +235,20 @@ def publish_output(spider: Any, output_dir: Path, *, engine: dict[str, str]) -> 
             # Some container bind-mount implementations reject directory
             # rename with EPERM. Preserve the report as the commit marker and
             # move it last; any failed move removes the visible destination.
-            if error.errno != errno.EPERM or output_dir.exists():
+            if error.errno != errno.EPERM:
                 raise
-            output_dir.mkdir(mode=0o755)
+            if output_dir.exists() or output_dir.is_symlink():
+                raise RuntimeFailure(
+                    "OUTPUT_PUBLISH_TARGET_EXISTS",
+                    "directory rename was denied and the final destination already exists",
+                ) from error
+            try:
+                output_dir.mkdir(mode=0o755)
+            except OSError as fallback_error:
+                raise RuntimeFailure(
+                    "OUTPUT_PUBLISH_FALLBACK_FAILED",
+                    f"could not create final destination: {fallback_error}",
+                ) from error
             try:
                 staged_files = list(staging.iterdir())
                 if any(
