@@ -74,6 +74,8 @@ jobs:
         run: make collector-playbook-examples
       - name: Collector Python Reference and Scrapy cross-backend conformance
         run: make collector-cross-backend-conformance
+      - name: Scrapy Collector multi-bot Linux image conformance
+        run: make scrapy-collector-multibot-conformance
       - name: Build, import, and smoke-test Linux release bundle
         env:
           SCOUT_RELEASE_ROOT: ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}
