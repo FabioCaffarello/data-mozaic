@@ -390,6 +390,12 @@ class CapturePlaybookV2Tests(unittest.TestCase):
             (root / "build" / "manifest.json").write_text(
                 json.dumps({"backend_id": "python-http-reference"})
             )
+            runtime_package = root / "build" / "runtime" / "mozaic_bot_runtime"
+            runtime_package.mkdir(parents=True)
+            (runtime_package / "reference_runtime.py").write_text("# runtime\n")
+            runtime_package.chmod(0o700)
+            runtime_package.parent.chmod(0o700)
+            (runtime_package / "reference_runtime.py").chmod(0o600)
             output = root / "output"
             command = [
                 collector_cli.sys.executable,
@@ -407,13 +413,28 @@ class CapturePlaybookV2Tests(unittest.TestCase):
                     collector_cli.shutil, "which", return_value="/usr/bin/docker"
                 ),
                 patch.object(
+                    collector_cli,
+                    "verify_build",
+                    return_value={"backend_id": "python-http-reference"},
+                ) as verify,
+                patch.object(
                     collector_cli.subprocess, "run", return_value=completed
                 ) as run,
             ):
                 collector_cli._run_network_isolated(command)
+            verify.assert_called_once_with(root / "build")
+            self.assertEqual(0o755, (root / "build" / "runtime").stat().st_mode & 0o777)
+            self.assertEqual(0o755, runtime_package.stat().st_mode & 0o777)
+            self.assertEqual(
+                0o644, (runtime_package / "reference_runtime.py").stat().st_mode & 0o777
+            )
             docker_command = run.call_args.args[0]
             self.assertNotIn("/runtime,readonly", docker_command)
             self.assertIn("PYTHONPATH=/deps", docker_command)
+            self.assertIn(
+                f"type=bind,src={root / 'build'},dst=/build,readonly",
+                docker_command,
+            )
 
     def test_bindings_ports_types_fields_cardinality_and_selector_have_diagnostics(
         self,

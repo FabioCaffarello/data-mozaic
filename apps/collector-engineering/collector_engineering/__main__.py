@@ -80,13 +80,29 @@ def _run_network_isolated(command: list[str]) -> subprocess.CompletedProcess[str
                 probe, text=True, capture_output=True, check=False, timeout=10
             )
         build_bot = Path(command[1]).resolve()
-        build_bot.parent.chmod(0o755)
         manifest_path = build_bot.parent / "manifest.json"
         try:
             build_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise PlaybookError(f"[BUILD_MANIFEST_INVALID] {error}") from error
-        scrapy_backend = build_manifest.get("backend_id") == "scrapy-fixture"
+        backend_id = build_manifest.get("backend_id")
+        if backend_id == "scrapy-fixture":
+            verify_scrapy_build(build_bot.parent)
+        elif backend_id == "python-http-reference":
+            verify_build(build_bot.parent)
+        else:
+            raise PlaybookError("[BUILD_BACKEND_UNSUPPORTED] unknown BotBuild backend")
+        scrapy_backend = backend_id == "scrapy-fixture"
+        build_paths = (build_bot.parent, *build_bot.parent.rglob("*"))
+        for path in build_paths:
+            if path.is_symlink():
+                raise PlaybookError(
+                    "[BUILD_FILE_UNSAFE] verified build changed before mount"
+                )
+            if path.is_dir():
+                path.chmod(0o755)
+            elif path.is_file():
+                path.chmod(0o644)
         fixtures = Path(command[command.index("--fixtures") + 1]).resolve()
         output = Path(command[command.index("--output") + 1]).resolve()
         if scrapy_backend:
