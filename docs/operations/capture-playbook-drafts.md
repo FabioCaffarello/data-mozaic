@@ -10,7 +10,7 @@ tooling/codex-scout-bc15.sh draft /absolute/session/transcript.json --output /ab
 tooling/codex-scout-bc15.sh validate /absolute/session/candidate.yaml
 ```
 
-## CapturePlaybook draft/v2 and offline Python Reference build
+## CapturePlaybook draft/v2 and offline compiler backends
 
 The v1 `draft` command and protected raw replay/acceptance behavior remain unchanged. For synthetic fixture authoring, v2 adds structured field extraction, Typed IR, code generation, and local build verification:
 
@@ -19,13 +19,15 @@ uv run --locked --package mozaic-collector-engineering python -m collector_engin
 uv run --locked --package mozaic-collector-engineering python -m collector_engineering try-selector FIXTURES URL 'CSS_SELECTOR' --evidence-ref EVIDENCE_REF
 uv run --locked --package mozaic-collector-engineering python -m collector_engineering validate PLAYBOOK_V2 --fixtures FIXTURES
 uv run --locked --package mozaic-collector-engineering python -m collector_engineering compile PLAYBOOK_V2 --backend python-http --fixtures FIXTURES --output BUILD_DIR
+uv run --locked --package mozaic-collector-engineering python -m collector_engineering compile PLAYBOOK_V2 --backend scrapy-fixture --fixtures FIXTURES --output BUILD_DIR
 uv run --locked --package mozaic-collector-engineering python -m collector_engineering verify-build BUILD_DIR
 uv run --locked --package mozaic-collector-engineering python -m collector_engineering run-example EXAMPLE_DIR
+make collector-cross-backend-conformance
 ```
 
 `inspect-fixture` verifies the fixture digest and returns metadata plus minimized structure; it omits document values by default. `try-selector` returns bounded samples explicitly marked as untrusted data and does not claim that matches are semantically correct. Validation reports selector/path coverage separately from structural validity. The expected-record file is independently authored and compared by `run-example` after network-isolated execution.
 
-The Python HTTP Reference backend resolves URLs only in the supplied fixture index, verifies each digest, and makes no network request. On macOS `run-example` uses `sandbox-exec` with network denied plus CPU/time limits; on Linux it uses Docker with `--network none`, read-only root, non-root UID and resource limits, falling back only to an isolated network namespace. If the sandbox is unavailable, the command fails closed. The bot container/process receives no Docker socket or credentials. This offline demonstration does not authorize a source or provide production capture.
+The Python HTTP Reference and Scrapy Fixture backends resolve only exact URLs in the supplied fixture index and verify fixture identity and digest. Scrapy's HTTP/HTTPS handlers are closed to fixtures; standard network download handlers, other schemes, retries, redirects, extensions and feeds are disabled. On macOS the local sandbox uses `sandbox-exec` with network denied and CPU/time limits; this is reported as less restrictive than Linux. On Linux, execution requires Docker with `--network none`, read-only root, non-root UID, restricted mounts and resource limits; there is no network namespace fallback. If the sandbox is unavailable, the command fails closed. The bot container/process receives no Docker socket or credentials. This offline demonstration does not authorize a source or provide production capture.
 
 The mandatory example target first performs an external-socket denial probe inside the selected OS sandbox and fails if the probe succeeds:
 

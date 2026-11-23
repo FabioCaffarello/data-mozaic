@@ -41,5 +41,7 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 32. [ADR 017 — Scout trusted MCP deployment](decisions/017-scout-trusted-mcp-deployment.md)
 33. [ADR 018 — Collector Playbook v2, Typed IR, and Python Reference backend](decisions/018-collector-playbook-ir-and-reference-backend.md)
 34. [PR #10 — Playbook v2 and Python Bot Compiler implementation evidence](assessments/pr10-playbook-compiler-implementation.md)
+35. [ADR 019 — Scrapy fixture backend and runtime identity](decisions/019-scrapy-fixture-backend-and-runtime-identity.md)
+36. [PR next — Scrapy fixture backend and cross-engine conformance](assessments/pr-next-scrapy-conformance.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.

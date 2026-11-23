@@ -333,6 +333,8 @@ def generate_spider(
             "    def _spider_closed(self, spider, reason):",
             "        if reason == 'fatal' and self.failure is None:",
             "            self.failure = 'fatal request or callback failure'",
+            "        if reason in {'shutdown', 'cancelled'} and self.failure is None:",
+            "            self.failure = f'EXECUTION_CANCELLED: Scrapy closed with reason {reason}'",
             "        cardinality = SELECT_OPERATION['inputs'].get('cardinality', 'many')",
             "        if cardinality == 'one' and self.selected_count != 1:",
             "            self.failure = f'CARDINALITY_MISMATCH: expected one record, got {self.selected_count}'",

@@ -86,7 +86,12 @@ class ScrapyFixtureBackendTests(unittest.TestCase):
             "mozaic_bot_runtime.scrapy_fixture_runtime.FixtureOnlyDownloadHandler",
             settings["DOWNLOAD_HANDLERS"]["https"],
         )
-        self.assertNotIn("file", {"http", "https"})
+        enabled_schemes = {
+            scheme
+            for scheme, handler in settings["DOWNLOAD_HANDLERS"].items()
+            if handler is not None
+        }
+        self.assertEqual({"http", "https"}, enabled_schemes)
         self.assertEqual(
             {
                 "dm_operation",
@@ -151,6 +156,23 @@ class ScrapyFixtureBackendTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(manifest))
             with self.assertRaisesRegex(PlaybookError, "BUILD_RUNTIME_UNSUPPORTED"):
                 verify_build(build)
+
+    def test_unsupported_capability_fails_before_build_publication(self):
+        folder = EXAMPLES / "browser-capability-unsupported"
+        ir = build_typed_ir(
+            load_playbook_v2(folder / "capture-playbook.yaml"),
+            fixture_root=folder / "fixtures",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary).resolve() / "must-not-exist"
+            with self.assertRaisesRegex(PlaybookError, "CAPABILITY_UNSUPPORTED"):
+                compile_build(
+                    ir,
+                    fixture_root=folder / "fixtures",
+                    output=output,
+                    lockfile=LOCKFILE,
+                )
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

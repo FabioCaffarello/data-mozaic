@@ -678,6 +678,8 @@ def extract_fields(
         }
         page = record["page"]
         data["_provenance"] = {
+            "source_id": ctx.source["source_id"],
+            "source_revision": ctx.source["revision"],
             "source_url": page["url"],
             "requested_url": page.get("requested_url", page["url"]),
             "effective_url": page["url"],

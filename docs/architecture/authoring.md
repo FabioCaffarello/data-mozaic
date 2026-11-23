@@ -55,6 +55,16 @@ O incremento vertical de BC15 adiciona `contracts/capture-playbook/draft/v2/` se
 
 A referência de execução, perfil de capabilities e casos executáveis estão em [examples/playbooks](../../examples/playbooks/README.md); operação do CLI é descrita em [CapturePlaybook drafts](../operations/capture-playbook-drafts.md). Essa cadeia prova extração e acceptance contra fixtures sintéticas, não navegação remota autorizada, custody produtiva, aprovação de BotRelease ou runtime de produção. ADR 013 e ADR 017 continuam Proposed; os gates de deployment Scout descritos em ADR 017 permanecem separados.
 
+## Backend Scrapy fixture-only — incremento proposto
+
+O backend `scrapy-fixture` também consome somente `collector-ir/v1`; não lê YAML nem redefine semântica. Seu gerador em BC15 emite uma Spider determinística, callbacks por operação suportada, Requests e uma configuração fechada. Scrapy Engine/Scheduler/Downloader organizam aquisição e paginação; um handler próprio resolve apenas URLs HTTP/HTTPS exatas do índice verificado. O handler não delega a download handlers de rede. Schemes não usados, retries, redirects, cookies, extensões, middleware padrão, feeds e settings de projeto ficam desabilitados.
+
+Parser, conversões de campos, cardinalidade, normalização e provenance permanecem na runtime interna BC15 compartilhada pelos dois backends. Isso evita que Parsel/lxml introduzam semântica paralela; o custo é copiar os poucos módulos próprios usados para dentro de cada build. Dependências externas continuam pinadas no `uv.lock`. `BotBuild` verifica arquivos, hashes individuais e digest agregado da runtime; o runner confirma que importou os arquivos embutidos. Hash não prova origem nem autorização.
+
+O primeiro perfil não declara `browser.rendered_dom` e falha antes de produzir build para capabilities ou grafos não suportados. Não há fallback de backend. A suite compara os dois builds contra oracles independentes e executa conformance com negação de rede. Em Linux, isolamento efetivo exige container não-root, root filesystem read-only, mounts de fixtures/build read-only, limites de recursos e `--network none`. A execução macOS por `sandbox-exec` é evidência local menos restritiva, não substitui o gate Linux.
+
+Esse incremento continua sem execução produtiva, worker distribuído, autorização de run, BotRelease ou Playwright. Validação de playbook e verificação de build são pré-requisitos técnicos, não autorização de execução.
+
 ## Ciclos independentes
 
 Playbook: draft → validated, nova revisão para alteração. CompilationRequest: pending → running → succeeded/failed. BotBuild: built → tested/failed. BotRelease: proposed → approved → released → deprecated; conteúdo imutável desde criação, status de governança registrado separadamente. Deployment: pending → canary → active → rolled back/retired; BotHealth é observação temporal. BotCompatibility relaciona DSL/IR/runtime/SDK/capabilities e versão de backend, não um estado de release. Compilação SDK incompatível falha antes de gerar release.
