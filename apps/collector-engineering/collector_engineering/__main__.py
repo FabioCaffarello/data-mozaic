@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import resource
 import shutil
 import subprocess
@@ -108,13 +109,18 @@ def _run_network_isolated(command: list[str]) -> subprocess.CompletedProcess[str
                 path.chmod(0o644)
         fixtures = Path(command[command.index("--fixtures") + 1]).resolve()
         output = Path(command[command.index("--output") + 1]).resolve()
+        worker_uid = os.getuid()
+        worker_gid = os.getgid()
+        if worker_uid == 0:
+            worker_uid = worker_gid = 65534
         if scrapy_backend:
             if output.exists() or output.is_symlink():
                 raise PlaybookError(
                     "[OUTPUT_PATH_UNSAFE] Scrapy output destination must not exist"
                 )
             output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            output.parent.chmod(0o777)
+            if os.getuid() == 0:
+                output.parent.chmod(0o777)
             docker_output = f"/output-parent/{output.name}"
             output_mount = output.parent
         else:
@@ -144,7 +150,7 @@ def _run_network_isolated(command: list[str]) -> subprocess.CompletedProcess[str
             "--ulimit",
             "cpu=60:60",
             "--user",
-            "65534:65534",
+            f"{worker_uid}:{worker_gid}",
             "--tmpfs",
             "/tmp:rw,noexec,nosuid,size=32m",
             "--mount",

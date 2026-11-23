@@ -410,6 +410,8 @@ class CapturePlaybookV2Tests(unittest.TestCase):
             with (
                 patch.object(collector_cli.sys, "platform", "linux"),
                 patch.object(collector_cli.sys, "prefix", str(root)),
+                patch.object(collector_cli.os, "getuid", return_value=1001),
+                patch.object(collector_cli.os, "getgid", return_value=1002),
                 patch.object(
                     collector_cli.shutil, "which", return_value="/usr/bin/docker"
                 ),
@@ -430,6 +432,7 @@ class CapturePlaybookV2Tests(unittest.TestCase):
                 0o644, (runtime_package / "reference_runtime.py").stat().st_mode & 0o777
             )
             docker_command = run.call_args.args[0]
+            self.assertIn("1001:1002", docker_command)
             self.assertNotIn("/runtime,readonly", docker_command)
             self.assertIn("PYTHONPATH=/deps", docker_command)
             self.assertIn(

@@ -205,9 +205,7 @@ def publish_output(spider: Any, output_dir: Path, *, engine: dict[str, str]) -> 
         raise RuntimeFailure(
             "OUTPUT_PATH_UNSAFE", "partial output destination already exists"
         )
-    # The host conformance harness reads the final artifacts from this bind
-    # mount as its own uid, so the published directory must be traversable.
-    staging.mkdir(mode=0o755, parents=False)
+    staging.mkdir(mode=0o700, parents=False)
     context = spider.runtime_context
     context.output_root = staging
     records = [record for _, record in sorted(spider.records, key=lambda pair: pair[0])]

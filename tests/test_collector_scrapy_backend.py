@@ -159,7 +159,7 @@ class ScrapyFixtureBackendTests(unittest.TestCase):
             self.assertEqual("passed", report["state"])
             self.assertEqual(b'{"id":1}\n', (output / "records.jsonl").read_bytes())
             self.assertTrue((output / "report.json").is_file())
-            self.assertEqual(0o755, output.stat().st_mode & 0o777)
+            self.assertEqual(0o700, output.stat().st_mode & 0o777)
 
             failed_output = root / "failed-publish"
             failed_spider = SimpleNamespace(
