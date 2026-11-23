@@ -387,6 +387,9 @@ class CapturePlaybookV2Tests(unittest.TestCase):
             fixtures = root / "fixtures"
             fixtures.mkdir()
             (root / "build").mkdir()
+            (root / "build" / "manifest.json").write_text(
+                json.dumps({"backend_id": "python-http-reference"})
+            )
             output = root / "output"
             command = [
                 collector_cli.sys.executable,
@@ -409,12 +412,8 @@ class CapturePlaybookV2Tests(unittest.TestCase):
             ):
                 collector_cli._run_network_isolated(command)
             docker_command = run.call_args.args[0]
-            runtime_source = Path(collector_cli.__file__).resolve().parent.parent
-            self.assertIn(
-                f"type=bind,src={runtime_source},dst=/runtime,readonly",
-                docker_command,
-            )
-            self.assertIn("PYTHONPATH=/deps:/runtime", docker_command)
+            self.assertNotIn("/runtime,readonly", docker_command)
+            self.assertIn("PYTHONPATH=/deps", docker_command)
 
     def test_bindings_ports_types_fields_cardinality_and_selector_have_diagnostics(
         self,
@@ -643,12 +642,14 @@ class CapturePlaybookV2Tests(unittest.TestCase):
                 output=build,
                 lockfile=LOCKFILE,
             )
-            runtime_metadata = build / "runtime-reference.json"
-            saved_runtime_metadata = runtime_metadata.read_bytes()
-            runtime_metadata.unlink()
-            with self.assertRaisesRegex(PlaybookError, "BUILD_FILE_SET_MISMATCH"):
+            runtime_file = build / "runtime/mozaic_bot_runtime/reference_runtime.py"
+            saved_runtime_file = runtime_file.read_bytes()
+            runtime_file.unlink()
+            with self.assertRaisesRegex(
+                PlaybookError, "BUILD_RUNTIME_FILE_SET_MISMATCH"
+            ):
                 verify_build(build)
-            runtime_metadata.write_bytes(saved_runtime_metadata)
+            runtime_file.write_bytes(saved_runtime_file)
 
             outside = root / "outside.txt"
             outside.write_text("outside")

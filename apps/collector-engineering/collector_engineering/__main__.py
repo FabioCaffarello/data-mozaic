@@ -13,8 +13,17 @@ import tempfile
 from pathlib import Path
 
 from .authoring_tools import inspect_fixture, try_selector
-from .backend_python_http import compile_build, verify_build
-from .playbook_v2 import load_playbook_v2, validate_playbook_v2
+from .backend_python_http import check_capabilities, compile_build, verify_build
+from .backend_scrapy_fixture import (
+    check_capabilities as check_scrapy_capabilities,
+)
+from .backend_scrapy_fixture import (
+    compile_build as compile_scrapy_build,
+)
+from .backend_scrapy_fixture import (
+    verify_build as verify_scrapy_build,
+)
+from .playbook_v2 import build_typed_ir, load_playbook_v2, validate_playbook_v2
 from .playbooks import build_draft, dump_yaml, validate_file
 from .reference_runtime import RuntimeFailure
 from .syntax import PlaybookError
@@ -72,13 +81,30 @@ def _run_network_isolated(command: list[str]) -> subprocess.CompletedProcess[str
             )
         build_bot = Path(command[1]).resolve()
         build_bot.parent.chmod(0o755)
+        manifest_path = build_bot.parent / "manifest.json"
+        try:
+            build_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise PlaybookError(f"[BUILD_MANIFEST_INVALID] {error}") from error
+        scrapy_backend = build_manifest.get("backend_id") == "scrapy-fixture"
         fixtures = Path(command[command.index("--fixtures") + 1]).resolve()
         output = Path(command[command.index("--output") + 1]).resolve()
-        output.mkdir(mode=0o700)
-        output.chmod(0o777)
+        if scrapy_backend:
+            if output.exists() or output.is_symlink():
+                raise PlaybookError(
+                    "[OUTPUT_PATH_UNSAFE] Scrapy output destination must not exist"
+                )
+            output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            output.parent.chmod(0o777)
+            docker_output = f"/output-parent/{output.name}"
+            output_mount = output.parent
+        else:
+            output.mkdir(mode=0o700)
+            output.chmod(0o777)
+            docker_output = "/output"
+            output_mount = output
         python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
         site_packages = Path(sys.prefix) / "lib" / python_version / "site-packages"
-        runtime_source = Path(__file__).resolve().parent.parent
         if not site_packages.is_dir():
             raise PlaybookError(
                 "[NETWORK_SANDBOX_UNAVAILABLE] cannot locate locked Python runtime packages for Docker"
@@ -105,15 +131,13 @@ def _run_network_isolated(command: list[str]) -> subprocess.CompletedProcess[str
             "--mount",
             f"type=bind,src={site_packages},dst=/deps,readonly",
             "--mount",
-            f"type=bind,src={runtime_source},dst=/runtime,readonly",
-            "--mount",
             f"type=bind,src={build_bot.parent},dst=/build,readonly",
             "--mount",
             f"type=bind,src={fixtures},dst=/fixtures,readonly",
             "--mount",
-            f"type=bind,src={output},dst=/output",
+            f"type=bind,src={output_mount},dst={'/output-parent' if scrapy_backend else '/output'}",
             "--env",
-            "PYTHONPATH=/deps:/runtime",
+            "PYTHONPATH=/deps",
             f"python:{sys.version_info.major}.{sys.version_info.minor}-slim",
             "python",
             "-B",
@@ -121,23 +145,13 @@ def _run_network_isolated(command: list[str]) -> subprocess.CompletedProcess[str
             "--fixtures",
             "/fixtures",
             "--output",
-            "/output",
+            docker_output,
         ]
         return subprocess.run(
             args, text=True, capture_output=True, check=False, timeout=60
         )
-    unshare = shutil.which("unshare")
-    if unshare is None:
-        raise PlaybookError(
-            "[NETWORK_SANDBOX_UNAVAILABLE] Linux execution requires Docker --network none or unshare -n"
-        )
-    return subprocess.run(
-        [unshare, "--net", "--", *command],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=60,
-        preexec_fn=_resource_limits,
+    raise PlaybookError(
+        "[NETWORK_SANDBOX_UNAVAILABLE] Linux execution requires Docker with --network none"
     )
 
 
@@ -228,6 +242,222 @@ def _run_example(example: Path) -> int:
         return 0
 
 
+def _run_cross_backend_conformance(examples_root: Path) -> int:
+    """Compile both backends from one IR and compare them to independent oracles."""
+    try:
+        if _verify_network_sandbox() != 0:
+            return 1
+        names = ("html-simple", "multipage-catalog", "json-api")
+        with tempfile.TemporaryDirectory(prefix="bc15-conformance-") as temporary:
+            root = Path(temporary).resolve()
+            for name in names:
+                example = examples_root / name
+                fixture_root = example / "fixtures"
+                parsed = load_playbook_v2(example / "capture-playbook.yaml")
+                validation = validate_playbook_v2(parsed, fixture_root=fixture_root)
+                if not validation.valid:
+                    raise PlaybookError(
+                        f"[CONFORMANCE_VALIDATION_FAILED] {name}: "
+                        + "; ".join(item.code for item in validation.diagnostics)
+                    )
+                ir = build_typed_ir(parsed, fixture_root=fixture_root)
+                builds = {}
+                outputs = {}
+                reports = {}
+                for backend in ("python-http", "scrapy-fixture"):
+                    build_dir = root / f"{name}-{backend}-build"
+                    if backend == "python-http":
+                        manifest = compile_build(
+                            parsed,
+                            fixture_root=fixture_root,
+                            output=build_dir,
+                            lockfile=_repo_root() / "uv.lock",
+                        )
+                        verified = verify_build(build_dir)
+                    else:
+                        scrapy_ir = build_typed_ir(parsed, fixture_root=fixture_root)
+                        if scrapy_ir.canonical_bytes() != ir.canonical_bytes():
+                            raise PlaybookError(
+                                "[CONFORMANCE_IR_MISMATCH] backend inputs differ"
+                            )
+                        manifest = compile_scrapy_build(
+                            scrapy_ir,
+                            fixture_root=fixture_root,
+                            output=build_dir,
+                            lockfile=_repo_root() / "uv.lock",
+                        )
+                        verified = verify_scrapy_build(build_dir)
+                    if (
+                        manifest["build_id"] != verified["build_id"]
+                        or manifest["ir_sha256"] != ir.sha256
+                    ):
+                        raise PlaybookError(
+                            f"[CONFORMANCE_BUILD_INVALID] {name}/{backend}"
+                        )
+                    builds[backend] = manifest
+                    output = root / f"{name}-{backend}-output"
+                    command = [
+                        sys.executable,
+                        "-B",
+                        str(build_dir / "bot.py"),
+                        "--fixtures",
+                        str(fixture_root),
+                        "--output",
+                        str(output),
+                    ]
+                    try:
+                        completed = _run_network_isolated(command)
+                    except subprocess.TimeoutExpired as error:
+                        raise PlaybookError(
+                            f"[CONFORMANCE_TIMEOUT] {name}/{backend} exceeded 60 seconds"
+                        ) from error
+                    if completed.returncode != 0:
+                        raise PlaybookError(
+                            f"[CONFORMANCE_EXECUTION_FAILED] {name}/{backend}: "
+                            f"{completed.stderr.strip() or completed.stdout.strip()}"
+                        )
+                    records_path = output / "records.jsonl"
+                    if not records_path.is_file():
+                        raise PlaybookError(
+                            f"[CONFORMANCE_OUTPUT_MISSING] {name}/{backend}"
+                        )
+                    outputs[backend] = records_path.read_bytes()
+                    reports[backend] = json.loads(
+                        (output / "report.json").read_text(encoding="utf-8")
+                    )
+                expected = (example / "expected-records.jsonl").read_bytes()
+                if outputs["python-http"] != expected:
+                    raise PlaybookError(f"[ORACLE_MISMATCH] {name}/python-http")
+                if outputs["scrapy-fixture"] != expected:
+                    raise PlaybookError(f"[ORACLE_MISMATCH] {name}/scrapy-fixture")
+                if outputs["python-http"] != outputs["scrapy-fixture"]:
+                    raise PlaybookError(f"[BACKEND_RECORDS_MISMATCH] {name}")
+                if (
+                    builds["python-http"]["build_id"]
+                    == builds["scrapy-fixture"]["build_id"]
+                ):
+                    raise PlaybookError(f"[BACKEND_BUILD_ID_COLLISION] {name}")
+                common = (
+                    "state",
+                    "pages",
+                    "requests",
+                    "response_bytes",
+                    "records",
+                    "records_sha256",
+                )
+                if any(
+                    reports["python-http"].get(key)
+                    != reports["scrapy-fixture"].get(key)
+                    for key in common
+                ):
+                    raise PlaybookError(f"[BACKEND_REPORT_MISMATCH] {name}")
+                _json(
+                    {
+                        "conformance": "passed",
+                        "example": name,
+                        "ir_sha256": ir.sha256,
+                        "build_ids": {
+                            key: value["build_id"] for key, value in builds.items()
+                        },
+                        "records": reports["python-http"]["records"],
+                        "provenance_and_order": "identical",
+                        "network": "denied by platform runner",
+                    }
+                )
+
+            negative_example = examples_root / "multipage-catalog"
+            negative_parsed = load_playbook_v2(
+                negative_example / "capture-playbook.yaml"
+            )
+            negative_ir = build_typed_ir(
+                negative_parsed, fixture_root=negative_example / "fixtures"
+            )
+            negative_build = root / "scrapy-negative-build"
+            compile_scrapy_build(
+                negative_ir,
+                fixture_root=negative_example / "fixtures",
+                output=negative_build,
+                lockfile=_repo_root() / "uv.lock",
+            )
+            verify_scrapy_build(negative_build)
+            fixture_index = json.loads(
+                (negative_example / "fixtures/index.json").read_text()
+            )
+            page_two = next(
+                item
+                for item in fixture_index["pages"]
+                if item["url"].endswith("/page-2")
+            )
+            body_path = page_two["body_file"]
+            for failure_case in (
+                "fixture-tampered",
+                "fixture-missing",
+                "partial-output",
+            ):
+                case_root = root / failure_case
+                case_root.mkdir()
+                case_fixtures = case_root / "fixtures"
+                shutil.copytree(negative_example / "fixtures", case_fixtures)
+                case_body = case_fixtures / body_path
+                if failure_case == "fixture-tampered":
+                    case_body.write_bytes(case_body.read_bytes() + b"tampered")
+                else:
+                    case_body.unlink()
+                output = case_root / "output"
+                command = [
+                    sys.executable,
+                    "-B",
+                    str(negative_build / "bot.py"),
+                    "--fixtures",
+                    str(case_fixtures),
+                    "--output",
+                    str(output),
+                ]
+                completed = _run_network_isolated(command)
+                if completed.returncode == 0:
+                    raise PlaybookError(
+                        f"[CONFORMANCE_FAILURE_NOT_PROPAGATED] {failure_case}"
+                    )
+                if output.exists():
+                    raise PlaybookError(
+                        f"[CONFORMANCE_PARTIAL_OUTPUT_PUBLISHED] {failure_case}"
+                    )
+                _json(
+                    {
+                        "conformance": "passed",
+                        "failure_case": failure_case,
+                        "runner_exit": completed.returncode,
+                        "output_published": False,
+                    }
+                )
+
+            browser = examples_root / "browser-capability-unsupported"
+            parsed = load_playbook_v2(browser / "capture-playbook.yaml")
+            ir = build_typed_ir(parsed, fixture_root=browser / "fixtures")
+            for backend, checker in (
+                ("python-http", check_capabilities),
+                ("scrapy-fixture", check_scrapy_capabilities),
+            ):
+                missing = checker(ir)
+                if not any(
+                    item["capability"] == "browser.rendered_dom" for item in missing
+                ):
+                    raise PlaybookError(
+                        f"[CONFORMANCE_CAPABILITY_FAILURE] {backend} accepted browser capability"
+                    )
+            _json(
+                {
+                    "conformance": "passed",
+                    "example": "browser-capability-unsupported",
+                    "result": "CAPABILITY_UNSUPPORTED",
+                }
+            )
+        return 0
+    except (OSError, json.JSONDecodeError, RuntimeFailure, PlaybookError) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+
 def _verify_network_sandbox() -> int:
     probe = """
 import errno, socket, sys
@@ -284,7 +514,9 @@ def main(argv: list[str] | None = None) -> int:
         "compile", help="compile a validated v2 playbook"
     )
     compile_parser.add_argument("playbook", type=Path)
-    compile_parser.add_argument("--backend", choices=["python-http"], required=True)
+    compile_parser.add_argument(
+        "--backend", choices=["python-http", "scrapy-fixture"], required=True
+    )
     compile_parser.add_argument("--fixtures", type=Path, required=True)
     compile_parser.add_argument("--output", type=Path, required=True)
     verify_parser = subparsers.add_parser(
@@ -296,6 +528,13 @@ def main(argv: list[str] | None = None) -> int:
         help="compile, execute in a no-network sandbox, and compare an example",
     )
     run_parser.add_argument("example", type=Path)
+    conformance_parser = subparsers.add_parser(
+        "cross-backend-conformance",
+        help="run Python Reference and Scrapy fixture backends against independent oracles",
+    )
+    conformance_parser.add_argument(
+        "--examples", type=Path, default=_repo_root() / "examples/playbooks"
+    )
     subparsers.add_parser(
         "verify-network-sandbox", help="prove the OS runner denies an external socket"
     )
@@ -363,12 +602,21 @@ def main(argv: list[str] | None = None) -> int:
                     }
                 )
                 return 1
-            manifest = compile_build(
-                parsed,
-                fixture_root=args.fixtures,
-                output=args.output,
-                lockfile=_repo_root() / "uv.lock",
-            )
+            if args.backend == "python-http":
+                manifest = compile_build(
+                    parsed,
+                    fixture_root=args.fixtures,
+                    output=args.output,
+                    lockfile=_repo_root() / "uv.lock",
+                )
+            else:
+                ir = build_typed_ir(parsed, fixture_root=args.fixtures)
+                manifest = compile_scrapy_build(
+                    ir,
+                    fixture_root=args.fixtures,
+                    output=args.output,
+                    lockfile=_repo_root() / "uv.lock",
+                )
             _json(
                 {
                     "build_id": manifest["build_id"],
@@ -377,7 +625,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == "verify-build":
-            manifest = verify_build(args.build_dir)
+            try:
+                raw_manifest = json.loads(
+                    (args.build_dir / "manifest.json").read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as error:
+                raise PlaybookError(f"[BUILD_MANIFEST_INVALID] {error}") from error
+            if raw_manifest.get("backend_id") == "scrapy-fixture":
+                manifest = verify_scrapy_build(args.build_dir)
+            else:
+                manifest = verify_build(args.build_dir)
             _json(
                 {
                     "valid": True,
@@ -388,6 +645,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "run-example":
             return _run_example(args.example)
+        if args.command == "cross-backend-conformance":
+            return _run_cross_backend_conformance(args.examples)
         if args.command == "verify-network-sandbox":
             return _verify_network_sandbox()
         if args.command == "compare":
