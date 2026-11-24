@@ -2,6 +2,20 @@
 
 **Status: Proposed.** This document defines placement and promotion rules. The repository contains the internal experimental `mozaic-observability` Python library. BC15's extraction/runtime and engine adapters remain private modules in `apps/collector-engineering`; a second backend in the same context is not a second library consumer.
 
+## Maturity model — review amendment 2026-11-24
+
+Use maturity labels as evidence, not as an automatic release ladder:
+
+| Level | Meaning | Entry evidence |
+|---|---|---|
+| L0 — private context implementation | Code and models are owned by one bounded context/application; consumers use owner contracts. | Default for domain logic, repositories and adapters. No independent public API promise. |
+| L1 — documented extraction candidate | Reuse is plausible, but API, owner, resource lifecycle or compatibility is not yet demonstrated. | Write the named consumer, exclusions, dependencies, test/conformance plan and extraction trigger. Do not publish a package only to create a boundary. |
+| L2 — internal library | Extracted package has an accountable owner, explicit consumers, narrow API and independent tests. | Distribution/workspace metadata, consumer tests, lifecycle/config/error semantics and supported compatibility window exist. `mozaic-observability` and `mozaic-bot-build` are L2 internal packages at their current experimental maturity. |
+| L3 — governed platform library | Multiple contexts/languages depend on an intentional platform contract. | Versioning/deprecation policy, compatibility and conformance suites, security review, support owner, resource/thread/async semantics and release evidence are maintained. |
+| L4 — reusable external distribution | Consumers outside the monorepo can install and rely on it. | Public support policy, supply-chain/release process, documented API, external compatibility commitments and independent distribution/recovery process. No current library is L4. |
+
+Levels may be skipped only with explicit rationale and approval. Bounded-context domain models do not become libraries by crossing a language boundary; wire DTOs remain distinct from each consumer's private domain model. Driver integrations should stay in consumer adapters unless named consumers demonstrate a stable shared lifecycle.
+
 ## Audit snapshot
 
 At the audit, branch `feat/scout-s1` was at `7a731a1`. S0–S1.2b files remained staged and unstaged. The repository contained `apps/scout/scout/` as an internal BC14 module, `contracts/scout/v1/`, root tooling, migrations, tests, and a local Compose profile. It contained no `libs/` or `packages/` tree and no Go, Rust, or TypeScript workspace. This increment adds the first real shared package at `libs/python/observability/`, consumed by `apps/scout/scout/application.py`; it is internal and experimental, not a public API promise. Root uv remains `package = false` and now includes only real workspace members.
