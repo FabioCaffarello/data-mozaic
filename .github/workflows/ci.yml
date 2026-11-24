@@ -148,6 +148,7 @@ jobs:
             fi
           fi
       - name: Upload Linux release candidate bundle
+        id: upload-linux-release-candidate
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: scout-broker-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
@@ -159,7 +160,7 @@ jobs:
       - name: Download the distributed bundle for independent re-verification
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
-          name: scout-broker-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
+          artifact-ids: ${{ steps.upload-linux-release-candidate.outputs.artifact-id }}
           path: ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}/downloaded
       - name: Verify the exact downloaded artifact
         env:
