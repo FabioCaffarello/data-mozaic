@@ -61,3 +61,12 @@ Playwright e browser sandbox, parser e capture runtime, backend Scrapy, source d
 ## Política de bibliotecas
 
 Usar `libs/<language>/<library>` somente para capacidades técnicas coesas com consumer e owner identificados. ScoutSession, repositórios BC14, migrations, receipts e regras CAS continuam privados ao contexto. `mozaic-observability` permanece interna e experimental; estendê-la somente com primitives estáveis e consumer real. Compor clients HTTP, PostgreSQL e instrumentação de terceiros; não criar `common`, `utils`, `mozaic-postgres`, `mozaic-http` ou `mozaic-proxy` sem critérios de extração e consumidores demonstrados.
+
+
+## Incremento atual — BC04 Execution Coordination v0 (fixture-only)
+
+O pacote apps/execution-coordination implementa CaptureRun/Attempt, state machine, idempotência scoped e repository in-memory; a aplicação depende de uma porta de execução, não do Scrapy/Docker. O adapter técnico BC05, composto no mesmo deployable, invoca a imagem Scrapy por digest OCI associado a local image ID, inspeciona configuração efetiva antes de start e executa com rede none, UID não-root, rootfs read-only, mounts mínimos e limites de recursos. ExecutionRequest/Report draft v0 cruzam a fronteira em JSON fechado. Output verificado fica em staging até BC04 aceitar sucesso.
+
+O estado é apenas local à vida do processo coordenador; não há recuperação após restart, retries, PostgreSQL, BC11 authorization, BC06 custody, BC16 leases/frontier, API de coordenação ou egress produtivo. O Docker daemon local é privilegiado e continua na trust boundary do adapter. O alvo make execution-coordination-protected-e2e cobre Linux container real e deve rodar no Integration Security Gate; não trate execução direta do worker no host como sandbox.
+
+ADR 021 registra a decisão como Proposed. Nenhum ADR foi promovido por implementação ou CI.
