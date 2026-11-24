@@ -31,6 +31,9 @@ jobs:
     name: Integration Security Gate
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
     env:
       SCOUT_HTTP_E2E_PROJECT: scout-http-e2e-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -76,6 +79,8 @@ jobs:
         run: make collector-cross-backend-conformance
       - name: Scrapy Collector multi-bot Linux image conformance
         run: make scrapy-collector-multibot-conformance
+      - name: BC04 protected Scrapy execution Linux E2E
+        run: make execution-coordination-protected-e2e
       - name: Build, import, and smoke-test Linux release bundle
         env:
           SCOUT_RELEASE_ROOT: ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}
@@ -146,6 +151,7 @@ jobs:
             fi
           fi
       - name: Upload Linux release candidate bundle
+        id: upload-linux-release-candidate
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: scout-broker-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
@@ -155,9 +161,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Download the distributed bundle for independent re-verification
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
-          name: scout-broker-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
+          artifact-ids: ${{ steps.upload-linux-release-candidate.outputs.artifact-id }}
+          github-token: ${{ github.token }}
           path: ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}/downloaded
       - name: Verify the exact downloaded artifact
         env:

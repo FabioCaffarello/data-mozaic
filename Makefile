@@ -1,4 +1,4 @@
-.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector scrapy-collector-multibot-conformance test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
+.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests scrapy-collector-multibot-conformance execution-coordination-protected-e2e test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
 
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 
@@ -16,10 +16,10 @@ lock-check:
 	uv lock --check
 
 lint:
-	uv run --locked ruff check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector libs/python/bot-build libs/python/observability
+	uv run --locked ruff check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination libs/python/bot-build libs/python/observability
 
 format-check:
-	uv run --locked ruff format --check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector libs/python/bot-build libs/python/observability
+	uv run --locked ruff format --check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination libs/python/bot-build libs/python/observability
 
 docs-check:
 	uv run --locked python tooling/check_docs.py
@@ -40,10 +40,16 @@ test-libraries:
 test-scrapy-collector:
 	uv run --locked --package mozaic-scrapy-collector python -m unittest discover -s apps/workers/scrapy-collector/tests -v
 
+execution-coordination-tests:
+	uv run --locked --package mozaic-execution-coordination python -m unittest discover -s apps/execution-coordination/tests -v
+
+execution-coordination-protected-e2e:
+	uv run --locked --all-packages python tooling/run_execution_coordination_e2e.py --docker
+
 test:
 	uv run --locked python -m unittest discover -s tests -v
 
-check: lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector test
+check: lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests test
 
 hooks-install: sync
 	uv run --locked pre-commit install --hook-type pre-commit
