@@ -264,10 +264,24 @@ def _run_command(catalog: BotCatalog, args: argparse.Namespace) -> int:
     if technical_status == "succeeded":
         result_dir = Path(output_root) / result["execution_id"]
         records_path = result_dir / "records.jsonl"
-        records = records_path.read_bytes()
+        if result_dir.is_symlink() or not result_dir.is_dir():
+            technical_status = "failed"
+            diagnostic = "[EXECUTION_OUTPUT_INVALID] output directory is unsafe"
+        else:
+            entries = list(result_dir.iterdir())
+            if any(path.is_symlink() or not path.is_file() for path in entries):
+                import shutil
+
+                shutil.rmtree(result_dir, ignore_errors=True)
+                technical_status = "failed"
+                diagnostic = "[EXECUTION_OUTPUT_INVALID] output contains unsafe entries"
+            else:
+                output_bytes = sum(path.stat().st_size for path in entries)
+                records = records_path.read_bytes()
         report = result.get("report", {})
-        if (
-            len(records) > request["budgets"]["output_bytes"]
+        if technical_status == "succeeded" and (
+            output_bytes > request["budgets"]["output_bytes"]
+            or len(records) > request["budgets"]["output_bytes"]
             or report.get("records", 0) > request["budgets"]["records"]
         ):
             import shutil
@@ -276,13 +290,11 @@ def _run_command(catalog: BotCatalog, args: argparse.Namespace) -> int:
             technical_status = "failed"
             diagnostic = "[EXECUTION_OUTPUT_LIMIT_EXCEEDED] request budget exceeded"
         else:
-            records_count = report["records"]
-            output_bytes = sum(
-                path.stat().st_size for path in result_dir.iterdir() if path.is_file()
-            )
-            records_sha256 = hashlib.sha256(records).hexdigest()
-            temporary_ref = result["execution_id"]
-            diagnostic = None
+            if technical_status == "succeeded":
+                records_count = report["records"]
+                records_sha256 = hashlib.sha256(records).hexdigest()
+                temporary_ref = result["execution_id"]
+                diagnostic = None
     else:
         diagnostic = result.get("diagnostic", f"worker ended as {technical_status}")
     diagnostics = []

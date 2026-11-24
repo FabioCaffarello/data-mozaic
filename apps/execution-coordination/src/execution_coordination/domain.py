@@ -19,7 +19,6 @@ class State(StrEnum):
     FAILED = "failed"
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
-    CRASHED = "crashed"
 
 
 TERMINAL = {
@@ -27,7 +26,6 @@ TERMINAL = {
     State.FAILED,
     State.TIMED_OUT,
     State.CANCELLED,
-    State.CRASHED,
 }
 
 
@@ -219,14 +217,12 @@ class CaptureAttempt:
                 State.FAILED,
                 State.TIMED_OUT,
                 State.CANCELLED,
-                State.CRASHED,
             },
             State.RUNNING: TERMINAL | {State.CANCEL_REQUESTED},
             State.CANCEL_REQUESTED: {
                 State.CANCELLED,
                 State.TIMED_OUT,
                 State.FAILED,
-                State.CRASHED,
             },
         }
         if state not in allowed.get(self.state, set()):
@@ -290,14 +286,12 @@ class CaptureRun:
                 State.FAILED,
                 State.TIMED_OUT,
                 State.CANCELLED,
-                State.CRASHED,
             },
             State.RUNNING: TERMINAL | {State.CANCEL_REQUESTED},
             State.CANCEL_REQUESTED: {
                 State.CANCELLED,
                 State.TIMED_OUT,
                 State.FAILED,
-                State.CRASHED,
             },
         }
         if state not in allowed.get(self.state, set()):
@@ -334,9 +328,15 @@ class CaptureRun:
         if (at or now_utc()) >= self.deadline:
             self.set_state(State.TIMED_OUT, at=at)
             return True
-        mapped = State(report.technical_status)
+        mapped = (
+            State.FAILED
+            if report.technical_status == "crashed"
+            else State(report.technical_status)
+        )
         self.attempt.report = report
         self.terminal_report = report
+        if report.technical_status == "crashed":
+            self.attempt.diagnostic = "WORKER_CRASHED"
         self.attempt._apply_state(mapped, at=at)
         self.state = mapped
         if mapped in TERMINAL:

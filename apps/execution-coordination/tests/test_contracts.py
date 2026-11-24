@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from subprocess import CompletedProcess
+from unittest.mock import patch
 
 from execution_coordination.adapters.scrapy_container import (
+    DockerExecution,
+    ExecutorConfig,
     InvalidExecutionReportError,
+    ScrapyContainerExecutor,
     _validate_worker_report,
     report_document,
     request_document,
@@ -164,6 +170,112 @@ class ContractTests(unittest.TestCase):
         report["counts"]["records"] = 1
         with self.assertRaises(InvalidExecutionReportError):
             _validate_worker_report(report, request)
+
+    def test_worker_report_rejects_unknown_contract_version(self):
+        binding = sample_binding()
+        request = ExecutionRequest(
+            "execution-request/v0",
+            "req-unknown-version",
+            str(uuid.uuid4()),
+            str(uuid.uuid4()),
+            binding,
+            datetime.now(UTC) + timedelta(seconds=30),
+        )
+        forged = report_document(
+            ExecutionReport(
+                "execution-report/v0",
+                request.request_id,
+                request.run_id,
+                request.attempt_id,
+                request.execution_id,
+                "failed",
+                binding,
+                1,
+            )
+        )
+        forged["contract_version"] = "execution-report/v99"
+        with self.assertRaises(InvalidExecutionReportError):
+            _validate_worker_report(forged, request)
+
+    def test_cleanup_failure_discards_success_staging_and_fails_execution(self):
+        binding = sample_binding()
+        request = ExecutionRequest(
+            "execution-request/v0",
+            "req-cleanup-failure",
+            str(uuid.uuid4()),
+            str(uuid.uuid4()),
+            binding,
+            datetime.now(UTC) + timedelta(seconds=30),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            attempt_dir = root / "attempt"
+            attempt_dir.mkdir()
+            output_mount = attempt_dir / "out"
+            output_mount.mkdir()
+            executor = ScrapyContainerExecutor(
+                ExecutorConfig(
+                    {(binding.bot_id, binding.build_id): binding}, root / "outputs"
+                )
+            )
+            execution = DockerExecution(
+                executor=executor,
+                request=request,
+                execution_id=request.execution_id,
+                container_id="container-id-1234",
+                container_name="attempt-name",
+                attempt_dir=attempt_dir,
+                output_mount=output_mount,
+            )
+            successful_report = report_document(
+                ExecutionReport(
+                    "execution-report/v0",
+                    request.request_id,
+                    request.run_id,
+                    request.attempt_id,
+                    request.execution_id,
+                    "succeeded",
+                    binding,
+                    10,
+                    records_count=1,
+                    output_bytes=10,
+                    output_sha256="4" * 64,
+                    output_ref="attempt-output",
+                )
+            )
+            stage = executor._output_root / ".stage-test"
+
+            def stage_success(_document):
+                stage.mkdir()
+                execution._stage_path = stage
+                execution._output_sha256 = "4" * 64
+                execution._output_bytes = 10
+                execution._records_count = 1
+
+            with (
+                patch.object(
+                    executor,
+                    "_command",
+                    return_value=CompletedProcess([], 0, "0\n", ""),
+                ),
+                patch.object(
+                    execution, "_read_worker_report", return_value=successful_report
+                ),
+                patch.object(execution, "_collect_verified_output", stage_success),
+                patch.object(
+                    executor,
+                    "_cleanup_container",
+                    side_effect=[False, False],
+                ),
+                patch.object(execution, "cancel") as cancel,
+            ):
+                result = execution.wait(request.deadline)
+
+            self.assertEqual(result.technical_status, "failed")
+            self.assertIsNone(result.output_ref)
+            self.assertFalse(stage.exists())
+            self.assertFalse(attempt_dir.exists())
+            cancel.assert_called_once_with()
 
 
 if __name__ == "__main__":

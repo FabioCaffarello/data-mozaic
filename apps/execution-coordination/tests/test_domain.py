@@ -91,6 +91,41 @@ class DomainTests(unittest.TestCase):
         with self.assertRaises(CoordinationError):
             run.reconcile(report(run, "failed"))
 
+    def test_timeout_wins_over_success_when_deadline_has_elapsed(self) -> None:
+        run = self.run_model()
+        run.set_state(State.LAUNCHING)
+        run.set_state(State.RUNNING)
+        deadline = datetime.now(UTC) - timedelta(milliseconds=1)
+        run.deadline = deadline
+        self.assertTrue(run.reconcile(report(run), at=deadline))
+        self.assertEqual(run.state, State.TIMED_OUT)
+        self.assertIsNone(run.terminal_report)
+
+    def test_cancel_intent_wins_over_late_report_after_cancel_was_accepted(
+        self,
+    ) -> None:
+        run = self.run_model()
+        run.set_state(State.LAUNCHING)
+        run.set_state(State.RUNNING)
+        run.set_state(State.CANCEL_REQUESTED)
+        late = datetime.now(UTC) + timedelta(seconds=60)
+        self.assertTrue(run.reconcile(report(run), at=late))
+        self.assertEqual(run.state, State.CANCELLED)
+
+    def test_worker_crash_is_domain_failure_with_technical_detail(self) -> None:
+        run = self.run_model()
+        run.set_state(State.LAUNCHING)
+        run.set_state(State.RUNNING)
+        crashed = replace(
+            report(run, "crashed"),
+            diagnostics=({"code": "CONTAINER_CRASHED", "message": "killed"},),
+        )
+        run.reconcile(crashed)
+        self.assertEqual(run.state, State.FAILED)
+        self.assertEqual(run.attempt.state, State.FAILED)
+        self.assertEqual(run.attempt.diagnostic, "WORKER_CRASHED")
+        self.assertEqual(run.terminal_report.technical_status, "crashed")
+
     def test_prohibited_state_transitions(self) -> None:
         run = self.run_model()
         with self.assertRaises(CoordinationError):
@@ -133,7 +168,7 @@ class DomainTests(unittest.TestCase):
             attempt.set_state(State.SUCCEEDED)
         attempt.set_state(State.LAUNCHING)
         attempt.set_state(State.RUNNING)
-        attempt.set_state(State.CRASHED)
+        attempt.set_state(State.FAILED)
         with self.assertRaises(CoordinationError):
             attempt.set_state(State.RUNNING)
 
@@ -174,6 +209,21 @@ class IdempotencyTests(unittest.TestCase):
         repo.start_run(first)
         with self.assertRaises(CoordinationError):
             repo.start_run(second)
+
+    def test_repository_rejects_mutation_of_terminal_run(self) -> None:
+        repo = InMemoryRunRepository()
+        run = CaptureRun(
+            str(uuid.uuid4()),
+            "req-terminal",
+            "tenant-a",
+            "terminal-key",
+            binding(),
+            datetime.now(UTC) + timedelta(seconds=20),
+        )
+        run.set_state(State.CANCELLED)
+        repo.start_run(run)
+        with self.assertRaises(CoordinationError):
+            repo.update(run.run_id, lambda item: setattr(item, "state", State.RUNNING))
 
 
 class _Handle:
@@ -315,6 +365,49 @@ class CoordinatorTests(unittest.TestCase):
             self.assertEqual(finished.attempt.state, State.TIMED_OUT)
             self.assertEqual(executor.published, [])
             self.assertEqual(len(executor.discarded), 1)
+        finally:
+            coordinator.shutdown()
+
+    def test_cancel_during_launch_cancels_handle_before_success_publication(self):
+        executor = _Executor(start_delay=0.1, ignore_cancel=True)
+        coordinator = ExecutionCoordinator(InMemoryRunRepository(), executor)
+        try:
+            run = self._submit(coordinator, "cancel-during-launch")
+            deadline = time.monotonic() + 2
+            while coordinator.get(run.run_id).state != State.LAUNCHING:
+                if time.monotonic() >= deadline:
+                    self.fail("coordinator did not enter launching")
+                time.sleep(0.002)
+            coordinator.cancel(run.run_id)
+            finished = coordinator.wait(run.run_id, timeout=2)
+            self.assertEqual(finished.state, State.CANCELLED)
+            self.assertEqual(finished.attempt.state, State.CANCELLED)
+            self.assertEqual(len(executor.handles), 1)
+            self.assertTrue(executor.handles[0].cancelled.is_set())
+            self.assertFalse(executor.published)
+        finally:
+            coordinator.shutdown()
+
+    def test_success_report_after_deadline_is_discarded(self):
+        executor = _Executor(ignore_cancel=True)
+        coordinator = ExecutionCoordinator(InMemoryRunRepository(), executor)
+        try:
+            run = self._submit(coordinator, "late-success", deadline_seconds=0.02)
+            finished = coordinator.wait(run.run_id, timeout=2)
+            self.assertEqual(finished.state, State.TIMED_OUT)
+            self.assertFalse(executor.published)
+            self.assertEqual(len(executor.discarded), 1)
+        finally:
+            coordinator.shutdown()
+
+    def test_completed_coordinator_bookkeeping_is_released(self):
+        coordinator = ExecutionCoordinator(InMemoryRunRepository(), _Executor())
+        try:
+            run = self._submit(coordinator, "bookkeeping-cleanup")
+            finished = coordinator.wait(run.run_id, timeout=2)
+            self.assertEqual(finished.state, State.SUCCEEDED)
+            self.assertNotIn(run.run_id, coordinator._futures)
+            self.assertNotIn(run.run_id, coordinator._cancel)
         finally:
             coordinator.shutdown()
 

@@ -73,10 +73,18 @@ class ExecutionCoordinator:
         cancel_event = threading.Event()
         with self._lock:
             self._cancel[run.run_id] = cancel_event
-            self._futures[run.run_id] = self._pool.submit(
-                self._coordinate, run.run_id, cancel_event
+            future = self._pool.submit(self._coordinate, run.run_id, cancel_event)
+            self._futures[run.run_id] = future
+            future.add_done_callback(
+                lambda completed: self._forget_completed(run.run_id, completed)
             )
         return run
+
+    def _forget_completed(self, run_id: str, completed: Future[None]) -> None:
+        with self._lock:
+            if self._futures.get(run_id) is completed:
+                self._futures.pop(run_id, None)
+                self._cancel.pop(run_id, None)
 
     def get(self, run_id: str) -> CaptureRun:
         run = self._repository.get_run(run_id)
@@ -98,7 +106,6 @@ class ExecutionCoordinator:
                 State.CANCELLED,
                 State.TIMED_OUT,
                 State.FAILED,
-                State.CRASHED,
                 State.SUCCEEDED,
             }:
                 return
@@ -217,7 +224,6 @@ class ExecutionCoordinator:
                     State.FAILED,
                     State.TIMED_OUT,
                     State.CANCELLED,
-                    State.CRASHED,
                     State.CANCEL_REQUESTED,
                 }
                 and _remaining(current.deadline) <= 0
@@ -236,7 +242,6 @@ class ExecutionCoordinator:
                 State.FAILED,
                 State.TIMED_OUT,
                 State.CANCELLED,
-                State.CRASHED,
             }:
                 self._executor.discard(report)
             elif report.technical_status == "succeeded":
@@ -281,7 +286,6 @@ class ExecutionCoordinator:
                 State.FAILED,
                 State.TIMED_OUT,
                 State.CANCELLED,
-                State.CRASHED,
             }:
                 run.set_state(state_to_use)
                 if run.attempt:

@@ -155,6 +155,8 @@ class ScrapyContainerExecutor:
             str(self.config.limits.memory_bytes),
             "--pids-limit",
             str(self.config.limits.pids),
+            "--ulimit",
+            "fsize=20000000:20000000",
             "--security-opt",
             "no-new-privileges",
             "--log-driver",
@@ -204,8 +206,10 @@ class ScrapyContainerExecutor:
             json.JSONDecodeError,
             subprocess.TimeoutExpired,
         ):
-            self._cleanup_container(container_id or container_name)
-            shutil.rmtree(attempt_dir, ignore_errors=True)
+            try:
+                self._cleanup_container(container_id or container_name)
+            finally:
+                shutil.rmtree(attempt_dir, ignore_errors=True)
             raise
 
     def _verify_image(self, binding: ExecutionBinding, deadline: datetime) -> None:
@@ -278,6 +282,15 @@ class ScrapyContainerExecutor:
             == self.config.limits.memory_bytes,
             "pid_limit": host.get("PidsLimit") == self.config.limits.pids,
             "capabilities_dropped": host.get("CapDrop") == ["ALL"],
+            "not_privileged": host.get("Privileged") is False,
+            "no_devices": not host.get("Devices") and not host.get("DeviceRequests"),
+            "bounded_file_size": any(
+                isinstance(item, dict)
+                and item.get("Name") == "fsize"
+                and item.get("Soft") == 20_000_000
+                and item.get("Hard") == 20_000_000
+                for item in host.get("Ulimits") or []
+            ),
             "request_mount": bool(
                 request
                 and request.get("Source") == str(request_path)
@@ -337,12 +350,7 @@ class ScrapyContainerExecutor:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                env={
-                    "PATH": "/usr/local/bin:/usr/bin:/bin",
-                    "LANG": "C.UTF-8",
-                    "LC_ALL": "C.UTF-8",
-                    "DOCKER_CONFIG": os.environ.get("DOCKER_CONFIG", ""),
-                },
+                env=self._docker_environment(),
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ProtectedExecutionError(
@@ -354,14 +362,41 @@ class ScrapyContainerExecutor:
             )
         return result
 
-    def _cleanup_container(self, container_id: str) -> None:
-        subprocess.run(
-            ["docker", "rm", "--force", container_id],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=self.config.limits.command_timeout_seconds,
-        )
+    @staticmethod
+    def _docker_environment() -> dict[str, str]:
+        return {
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "DOCKER_CONFIG": os.environ.get("DOCKER_CONFIG", ""),
+        }
+
+    def _best_effort_command(self, argv: list[str], *, timeout: float) -> None:
+        try:
+            subprocess.run(
+                argv,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=self._docker_environment(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    def _cleanup_container(self, container_id: str) -> bool:
+        try:
+            result = subprocess.run(
+                ["docker", "rm", "--force", container_id],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self.config.limits.command_timeout_seconds,
+                env=self._docker_environment(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0 or "no such container" in result.stderr.lower()
 
 
 class DockerExecution:
@@ -390,42 +425,29 @@ class DockerExecution:
 
     def cancel(self) -> None:
         self._cancelled.set()
+        self.executor._best_effort_command(
+            [
+                "docker",
+                "stop",
+                "--time",
+                str(self.executor.config.limits.stop_grace_seconds),
+                self.container_id,
+            ],
+            timeout=self.executor.config.limits.stop_grace_seconds
+            + self.executor.config.limits.command_timeout_seconds,
+        )
         try:
-            subprocess.run(
-                [
-                    "docker",
-                    "stop",
-                    "--time",
-                    str(self.executor.config.limits.stop_grace_seconds),
-                    self.container_id,
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=self.executor.config.limits.stop_grace_seconds
-                + self.executor.config.limits.command_timeout_seconds,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        try:
-            inspected = subprocess.run(
+            inspected = self.executor._command(
                 ["docker", "inspect", self.container_id],
-                check=False,
-                capture_output=True,
-                text=True,
                 timeout=self.executor.config.limits.command_timeout_seconds,
             )
-            if inspected.returncode == 0 and json.loads(inspected.stdout)[0].get(
-                "State", {}
-            ).get("Status") not in {"exited", "dead"}:
-                subprocess.run(
+            state = json.loads(inspected.stdout)[0].get("State", {}).get("Status")
+            if state not in {"exited", "dead"}:
+                self.executor._best_effort_command(
                     ["docker", "kill", self.container_id],
-                    check=False,
-                    capture_output=True,
-                    text=True,
                     timeout=self.executor.config.limits.command_timeout_seconds,
                 )
-        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, IndexError):
+        except (ProtectedExecutionError, json.JSONDecodeError, IndexError, TypeError):
             pass
 
     def wait(self, deadline: datetime) -> ExecutionReport:
@@ -518,13 +540,28 @@ class DockerExecution:
                     f"container supervision failed: {type(error).__name__}",
                 )
             finally:
-                self.executor._cleanup_container(self.container_id)
+                container_clean = self.executor._cleanup_container(self.container_id)
+                if not container_clean:
+                    self.cancel()
+                    container_clean = self.executor._cleanup_container(
+                        self.container_id
+                    )
                 self._finished = True
                 shutil.rmtree(self.attempt_dir, ignore_errors=True)
+                if not container_clean:
+                    if status == "succeeded":
+                        status = "failed"
+                    diagnostic = (diagnostic + "; " if diagnostic else "") + (
+                        "container cleanup failed"
+                    )
                 if status != "succeeded":
                     staged = getattr(self, "_stage_path", None)
                     if staged:
                         shutil.rmtree(staged, ignore_errors=True)
+                    self._stage_path = None
+                    self._output_sha256 = None
+                    self._output_bytes = 0
+                    self._records_count = 0
             return ExecutionReport(
                 contract_version="execution-report/v0",
                 request_id=self.request.request_id,
@@ -558,6 +595,7 @@ class DockerExecution:
             capture_output=True,
             text=True,
             timeout=self.executor.config.limits.command_timeout_seconds,
+            env=self.executor._docker_environment(),
         )
         if copied.returncode:
             return None
@@ -603,12 +641,17 @@ class DockerExecution:
             {item.name for item in files}
         ) or any(item.name not in allowed for item in files):
             raise InvalidExecutionReportError("worker output file set is invalid")
-        records = (source / "records.jsonl").read_bytes()
-        report = json.loads((source / "report.json").read_text(encoding="utf-8"))
         total_bytes = sum(item.stat().st_size for item in files)
+        if total_bytes > self.request.binding.max_output_bytes:
+            raise InvalidExecutionReportError("worker output exceeds the byte budget")
+        records_path = source / "records.jsonl"
+        report_path = source / "report.json"
+        if records_path.stat().st_size > self.request.binding.max_output_bytes:
+            raise InvalidExecutionReportError("records output exceeds the byte budget")
+        records = records_path.read_bytes()
+        report = json.loads(report_path.read_text(encoding="utf-8"))
         if (
-            total_bytes > self.request.binding.max_output_bytes
-            or len(records.splitlines()) > self.request.binding.max_records
+            len(records.splitlines()) > self.request.binding.max_records
             or report.get("state") != "passed"
             or report.get("records_sha256") != hashlib.sha256(records).hexdigest()
             or report.get("records") != len(records.splitlines())
@@ -727,8 +770,12 @@ def report_document(report: ExecutionReport) -> dict[str, Any]:
 def _validate_worker_report(
     report: dict[str, Any] | None, request: ExecutionRequest
 ) -> dict[str, Any] | None:
-    if report is None or report.get("contract_version") != "execution-report/v0":
+    if report is None:
         return report
+    if not isinstance(report, dict):
+        raise InvalidExecutionReportError("ExecutionReport must be an object")
+    if report.get("contract_version") != "execution-report/v0":
+        raise InvalidExecutionReportError("ExecutionReport version is unsupported")
     if set(report) != {
         "contract_version",
         "request_id",

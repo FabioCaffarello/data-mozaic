@@ -6,7 +6,7 @@ import copy
 import threading
 from collections.abc import Callable
 
-from execution_coordination.domain import CaptureRun, CoordinationError
+from execution_coordination.domain import TERMINAL, CaptureRun, CoordinationError
 
 
 class InMemoryRunRepository:
@@ -46,5 +46,38 @@ class InMemoryRunRepository:
                 raise CoordinationError("run does not exist")
             candidate = copy.deepcopy(current)
             mutate(candidate)
+            immutable_fields = (
+                "run_id",
+                "request_id",
+                "idempotency_scope",
+                "idempotency_key",
+                "binding",
+                "deadline",
+            )
+            attempt_identity_changed = (candidate.attempt is None) != (
+                current.attempt is None
+            ) or (
+                candidate.attempt is not None
+                and current.attempt is not None
+                and candidate.attempt.attempt_id != current.attempt.attempt_id
+            )
+            if (
+                any(
+                    getattr(candidate, field) != getattr(current, field)
+                    for field in immutable_fields
+                )
+                or attempt_identity_changed
+            ):
+                raise CoordinationError(
+                    "Run identity and execution binding are immutable"
+                )
+            if current.state in TERMINAL and candidate != current:
+                raise CoordinationError("terminal Run state is immutable")
+            if (
+                current.attempt is not None
+                and current.attempt.state in TERMINAL
+                and candidate.attempt != current.attempt
+            ):
+                raise CoordinationError("terminal Attempt state is immutable")
             self._runs[run_id] = candidate
             return copy.deepcopy(candidate)

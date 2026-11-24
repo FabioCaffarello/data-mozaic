@@ -437,7 +437,12 @@ def main() -> int:
             timeout=10,
         )
         crash_result = coordinator.wait(crash_run.run_id, timeout=30)
-        _assert_failed_without_output(crash_result, output_root, State.CRASHED)
+        _assert_failed_without_output(crash_result, output_root, State.FAILED)
+        if (
+            not crash_result.terminal_report
+            or crash_result.terminal_report.technical_status != "crashed"
+        ):
+            raise RuntimeError("container kill was not recorded as a worker crash")
 
         followup = _start(
             coordinator,
@@ -500,7 +505,6 @@ def main() -> int:
                         State.FAILED,
                         State.TIMED_OUT,
                         State.CANCELLED,
-                        State.CRASHED,
                     }:
                         coordinator.cancel(run_id)
                         coordinator.wait(run_id, timeout=20)
