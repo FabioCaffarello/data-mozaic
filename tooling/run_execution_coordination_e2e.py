@@ -434,7 +434,7 @@ def main() -> int:
                 "docker",
                 "exec",
                 "--user",
-                "65532:65532",
+                executor.config.worker_uid,
                 cancel_handle.container_id,
                 "python",
                 "-I",

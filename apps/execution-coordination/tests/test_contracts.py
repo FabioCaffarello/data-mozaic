@@ -48,6 +48,27 @@ def sample_binding() -> ExecutionBinding:
 
 
 class ContractTests(unittest.TestCase):
+    def test_executor_rejects_root_or_non_numeric_worker_identity(self):
+        binding = sample_binding()
+        for worker_uid in ("0:0", "1000:0", "root:root", "1000"):
+            with self.subTest(worker_uid=worker_uid), self.assertRaises(ValueError):
+                ExecutorConfig(
+                    {(binding.bot_id, binding.build_id): binding},
+                    Path("/tmp/mozaic-test-output"),
+                    worker_uid=worker_uid,
+                )
+
+    def test_default_executor_worker_identity_is_non_root(self):
+        binding = sample_binding()
+        config = ExecutorConfig(
+            {(binding.bot_id, binding.build_id): binding}, Path("/tmp/output")
+        )
+        uid, gid = config.worker_uid.split(":")
+        self.assertTrue(uid.isdecimal())
+        self.assertTrue(gid.isdecimal())
+        self.assertNotEqual(uid, "0")
+        self.assertNotEqual(gid, "0")
+
     def test_request_mount_is_readable_by_non_root_worker_and_read_only(self):
         binding = sample_binding()
         request = ExecutionRequest(

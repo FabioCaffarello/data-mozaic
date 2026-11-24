@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,12 +54,30 @@ class SandboxLimits:
             raise ValueError("Docker command timeout must be within [1, 60]")
 
 
+def _default_worker_uid() -> str:
+    """Use the trusted adapter account so it can clean bind-mounted output."""
+    uid, gid = os.getuid(), os.getgid()
+    if uid == 0 or gid == 0:
+        return "65532:65532"
+    return f"{uid}:{gid}"
+
+
 @dataclass(frozen=True)
 class ExecutorConfig:
     trusted_bindings: dict[tuple[str, str], ExecutionBinding]
     output_root: Path
     limits: SandboxLimits = SandboxLimits()
-    worker_uid: str = "65532:65532"
+    worker_uid: str = field(default_factory=_default_worker_uid)
+
+    def __post_init__(self) -> None:
+        parts = self.worker_uid.split(":")
+        if (
+            len(parts) != 2
+            or not all(part.isdecimal() for part in parts)
+            or int(parts[0]) == 0
+            or int(parts[1]) == 0
+        ):
+            raise ValueError("worker UID and GID must be explicit non-root integers")
 
 
 class ScrapyContainerExecutor:
