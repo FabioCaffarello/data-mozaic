@@ -1,4 +1,4 @@
-.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests scrapy-collector-multibot-conformance execution-coordination-protected-e2e test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
+.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests acquisition-output-tests acquisition-output-fixture-example scrapy-collector-multibot-conformance execution-coordination-protected-e2e test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
 
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 
@@ -7,7 +7,7 @@ define require_env
 endef
 
 help:
-	@printf '%s\n' 'sync          Install locked development dependencies' 'check         Run the fast quality gate' 'db-up         Start local PostgreSQL and wait for readiness' 'db-migrate    Apply checksummed pending Scout migrations' 'test-integration Run PostgreSQL integration/recovery tests' 'test-recovery Alias for the PostgreSQL integration/recovery suite' 'scout-relay   Run independent Scout outbox worker' 'scout-sandbox-check Verify optional network egress isolation with Docker' 'scout-protected-replay-check Run the protected BC15 executor E2E' 'scout-http-e2e Run MCP/HTTPS tests (not DNS adversarial tests)' 'scout-dns-adversarial-check Run Squid/DNS tests through the real proxy' 'db-down       Stop PostgreSQL without deleting its volume' 'ci            Run repository checks'
+	@printf '%s\n' 'sync          Install locked development dependencies' 'check         Run the fast quality gate' 'acquisition-output-tests Run BC05 output domain and contract tests' 'acquisition-output-fixture-example Run the synthetic worker-independent output example' 'db-up         Start local PostgreSQL and wait for readiness' 'db-migrate    Apply checksummed pending Scout migrations' 'test-integration Run PostgreSQL integration/recovery tests' 'test-recovery Alias for the PostgreSQL integration/recovery suite' 'scout-relay   Run independent Scout outbox worker' 'scout-sandbox-check Verify optional network egress isolation with Docker' 'scout-protected-replay-check Run the protected BC15 executor E2E' 'scout-http-e2e Run MCP/HTTPS tests (not DNS adversarial tests)' 'scout-dns-adversarial-check Run Squid/DNS tests through the real proxy' 'db-down       Stop PostgreSQL without deleting its volume' 'ci            Run repository checks'
 
 sync:
 	uv sync --all-packages --locked
@@ -16,10 +16,10 @@ lock-check:
 	uv lock --check
 
 lint:
-	uv run --locked ruff check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination libs/python/bot-build libs/python/observability
+	uv run --locked ruff check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination apps/acquisition-output libs/python/bot-build libs/python/observability
 
 format-check:
-	uv run --locked ruff format --check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination libs/python/bot-build libs/python/observability
+	uv run --locked ruff format --check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination apps/acquisition-output libs/python/bot-build libs/python/observability
 
 docs-check:
 	uv run --locked python tooling/check_docs.py
@@ -43,13 +43,19 @@ test-scrapy-collector:
 execution-coordination-tests:
 	uv run --locked --package mozaic-execution-coordination python -m unittest discover -s apps/execution-coordination/tests -v
 
+acquisition-output-tests:
+	uv run --locked --package mozaic-acquisition-output python -m unittest discover -s apps/acquisition-output/tests -v
+
+acquisition-output-fixture-example:
+	uv run --locked --package mozaic-acquisition-output python examples/acquisition-output-fixture/consume.py
+
 execution-coordination-protected-e2e:
 	uv run --locked --all-packages python tooling/run_execution_coordination_e2e.py --docker
 
 test:
 	uv run --locked python -m unittest discover -s tests -v
 
-check: lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests test
+check: lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests acquisition-output-tests test
 
 hooks-install: sync
 	uv run --locked pre-commit install --hook-type pre-commit

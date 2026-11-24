@@ -15,6 +15,7 @@ SOURCE_ROOTS = (
         ROOT / "apps/workers/scrapy-collector/src/scrapy_collector",
         "scrapy_collector",
     ),
+    (ROOT / "apps/acquisition-output/src/acquisition_output", "acquisition_output"),
     (
         ROOT / "libs/python/bot-build/src/mozaic_bot_build",
         "mozaic_bot_build",
@@ -71,6 +72,18 @@ ALLOWED = {
     "collector_engineering": {"mozaic_bot_build"},
     "mozaic_bot_build": set(),
     "scrapy_collector": {"mozaic_bot_build"},
+    "acquisition_output": set(),
+    "acquisition_output.domain": set(),
+    "acquisition_output.ports": {"acquisition_output.domain"},
+    "acquisition_output.application": {
+        "acquisition_output.domain",
+        "acquisition_output.ports",
+    },
+    "acquisition_output.memory": {
+        "acquisition_output.domain",
+        "acquisition_output.ports",
+    },
+    "acquisition_output.wire": {"acquisition_output.domain"},
     "tooling": {
         "scout.adapters",
         "scout.domain",
@@ -84,6 +97,7 @@ INTERNAL_ROOTS = (
     "mozaic_observability",
     "mozaic_bot_build",
     "scrapy_collector",
+    "acquisition_output",
     "collector_engineering",
     "tooling",
 )

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.invalid/contracts/acquisition-output/draft/v1/OutputReceipt.schema.json",
+  "title": "OutputReceipt draft v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "tenant_id", "operation_id", "output_set_id", "output_id", "intent_digest", "status"],
+  "properties": {
+    "contract_version": {"const": "output-receipt/v1"},
+    "tenant_id": {"$ref": "CaptureOutput.schema.json#/$defs/identifier"},
+    "operation_id": {"$ref": "CaptureOutput.schema.json#/$defs/identifier"},
+    "output_set_id": {"$ref": "CaptureOutput.schema.json#/$defs/identifier"},
+    "output_id": {"$ref": "CaptureOutput.schema.json#/$defs/identifier"},
+    "intent_digest": {"$ref": "CaptureOutput.schema.json#/$defs/digest"},
+    "status": {"const": "staged"}
+  }
+}

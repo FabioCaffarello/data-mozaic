@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.invalid/contracts/acquisition-output/draft/v1/CaptureOutput.schema.json",
+  "title": "CaptureOutput draft v1",
+  "oneOf": [
+    {"$ref": "#/$defs/record"},
+    {"$ref": "#/$defs/artifact"},
+    {"$ref": "#/$defs/composite"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S"},
+    "contractRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contract_id", "version", "digest"],
+      "properties": {
+        "contract_id": {"$ref": "#/$defs/identifier"},
+        "version": {"type": "string", "minLength": 1, "maxLength": 64},
+        "digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "producer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["producer_id", "producer_version"],
+      "properties": {
+        "producer_id": {"$ref": "#/$defs/identifier"},
+        "producer_version": {"type": "string", "minLength": 1, "maxLength": 128},
+        "capability_id": {"$ref": "#/$defs/identifier"},
+        "capability_version": {"type": "string", "minLength": 1, "maxLength": 128},
+        "release_id": {"$ref": "#/$defs/identifier"},
+        "release_digest": {"$ref": "#/$defs/digest"}
+      },
+      "dependentRequired": {
+        "capability_id": ["capability_version"], "capability_version": ["capability_id"],
+        "release_id": ["release_digest"], "release_digest": ["release_id"]
+      }
+    },
+    "binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tenant_id", "source", "producer", "execution"],
+      "properties": {
+        "tenant_id": {"$ref": "#/$defs/identifier"},
+        "source": {
+          "type": "object", "additionalProperties": false,
+          "required": ["source_id", "revision"],
+          "properties": {"source_id": {"$ref": "#/$defs/identifier"}, "revision": {"$ref": "#/$defs/identifier"}}
+        },
+        "producer": {"$ref": "#/$defs/producer"},
+        "execution": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "run_id": {"$ref": "#/$defs/identifier"},
+            "attempt_id": {"$ref": "#/$defs/identifier"},
+            "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+          },
+          "dependentRequired": {"run_id": ["attempt_id"], "attempt_id": ["run_id"]},
+          "allOf": [{"if": {"required": ["fencing_token"]}, "then": {"required": ["run_id", "attempt_id"]}}]
+        }
+      }
+    },
+    "base": {
+      "type": "object",
+      "required": ["contract_version", "output_type", "output_id", "observation_id", "observed_at", "operation", "output_set_id", "binding"],
+      "properties": {
+        "contract_version": {"const": "capture-output/v1"},
+        "output_type": {"enum": ["record", "artifact", "composite"]},
+        "output_id": {"$ref": "#/$defs/identifier"},
+        "observation_id": {"$ref": "#/$defs/identifier"},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "natural_key": {"type": "string", "minLength": 1, "maxLength": 512},
+        "operation": {
+          "type": "object", "additionalProperties": false, "required": ["tenant_id", "operation_id"],
+          "properties": {"tenant_id": {"$ref": "#/$defs/identifier"}, "operation_id": {"$ref": "#/$defs/identifier"}}
+        },
+        "output_set_id": {"$ref": "#/$defs/identifier"},
+        "binding": {"$ref": "#/$defs/binding"}
+      }
+    },
+    "artifactRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_id", "digest", "size_bytes"],
+      "properties": {
+        "artifact_id": {"$ref": "#/$defs/identifier"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "size_bytes": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "media_type": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "artifactDescription": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {
+        "file_name": {"type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^/\\\\]+$"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 512},
+        "description": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "role": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "artifactItem": {
+      "type": "object", "additionalProperties": false, "required": ["artifact"],
+      "properties": {"artifact": {"$ref": "#/$defs/artifactRef"}, "description": {"$ref": "#/$defs/artifactDescription"}}
+    },
+    "record": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {"type": "object", "required": ["payload_contract", "payload", "payload_digest"],
+         "properties": {"contract_version": {"const": "capture-output/v1"}, "output_type": {"const": "record"}, "output_id": {"$ref": "#/$defs/identifier"}, "observation_id": {"$ref": "#/$defs/identifier"}, "natural_key": {"type": "string", "minLength": 1, "maxLength": 512}, "operation": {"$ref": "#/$defs/base/properties/operation"}, "output_set_id": {"$ref": "#/$defs/identifier"}, "binding": {"$ref": "#/$defs/binding"}, "payload_contract": {"$ref": "#/$defs/contractRef"}, "payload": {"type": "object", "maxProperties": 1024}, "payload_digest": {"$ref": "#/$defs/digest"}}}
+      ],
+      "unevaluatedProperties": false,
+      "not": {"required": ["artifacts"]}
+    },
+    "artifact": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {"type": "object", "required": ["artifacts"],
+         "properties": {"contract_version": {"const": "capture-output/v1"}, "output_type": {"const": "artifact"}, "output_id": {"$ref": "#/$defs/identifier"}, "observation_id": {"$ref": "#/$defs/identifier"}, "natural_key": {"type": "string", "minLength": 1, "maxLength": 512}, "operation": {"$ref": "#/$defs/base/properties/operation"}, "output_set_id": {"$ref": "#/$defs/identifier"}, "binding": {"$ref": "#/$defs/binding"}, "artifacts": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/artifactItem"}}}}
+      ],
+      "unevaluatedProperties": false,
+      "not": {"anyOf": [{"required": ["payload"]}, {"required": ["payload_contract"]}, {"required": ["payload_digest"]}]}
+    },
+    "composite": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {"type": "object", "required": ["payload_contract", "payload", "payload_digest", "artifacts"],
+         "properties": {"contract_version": {"const": "capture-output/v1"}, "output_type": {"const": "composite"}, "output_id": {"$ref": "#/$defs/identifier"}, "observation_id": {"$ref": "#/$defs/identifier"}, "natural_key": {"type": "string", "minLength": 1, "maxLength": 512}, "operation": {"$ref": "#/$defs/base/properties/operation"}, "output_set_id": {"$ref": "#/$defs/identifier"}, "binding": {"$ref": "#/$defs/binding"}, "payload_contract": {"$ref": "#/$defs/contractRef"}, "payload": {"type": "object", "maxProperties": 1024}, "payload_digest": {"$ref": "#/$defs/digest"}, "artifacts": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/artifactItem"}}}}
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

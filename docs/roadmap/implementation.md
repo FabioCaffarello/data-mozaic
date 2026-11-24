@@ -70,3 +70,29 @@ O pacote apps/execution-coordination implementa CaptureRun/Attempt, state machin
 O estado é apenas local à vida do processo coordenador; não há recuperação após restart, retries, PostgreSQL, BC11 authorization, BC06 custody, BC16 leases/frontier, API de coordenação ou egress produtivo. O Docker daemon local é privilegiado e continua na trust boundary do adapter. O alvo make execution-coordination-protected-e2e cobre Linux container real e deve rodar no Integration Security Gate; não trate execução direta do worker no host como sandbox.
 
 ADR 021 registra a decisão como Proposed. Nenhum ADR foi promovido por implementação ou CI.
+
+## Roadmap revisado — revisão arquitetural de 2026-11-24
+
+Esta sequência substitui a ordem anterior de MVP que colocava um source real antes de definir o perfil de aquisição live. Os incrementos anteriores e seus resultados continuam como evidência histórica. Aprovação para planejar uma capacidade não é autorização de acesso a uma fonte nem aprovação de ADR.
+
+1. **Revisão arquitetural** — ownership BC05/BC06/BC04/BC09, contratos, escopo de fonte, risco e limites operacionais revisados.
+2. **BC05 Output foundation** — CaptureOutput/OutputSet, variantes, identidade, operação idempotente, canonicalização padronizada, staging/seal/publicação local e contratos draft.
+3. **Persistência MongoDB BC05** — coleções, validadores, indexes, transação local de publication/outbox, recuperação e backup/restore de desenvolvimento. MongoDB continua substituível atrás de port.
+4. **Custody BC06** — streaming de bytes, identidade lógica, recibo de custody, inventário PostgreSQL e adapter MinIO; escolha Python/Go precede implementação. Output dependente de artefato não publica sem custody confirmada.
+5. **Coordenação durável** — BC04/BC16 com PostgreSQL, transições/run attempts, leases/fencing, outbox, retry/deadline/cancelamento e protocolo de finalização distribuída BC04↔BC05 aprovado e testado.
+6. **Worker fixture-only e runtime local** — integrar a saída do worker pelo port BC05 e bytes pelo port BC06 mantendo egress negado; validar manifests e recuperação local.
+7. **Perfil de aquisição live autorizada** — política própria e security review: autorização explícita por source revision, egress, identidade, rate/budget, credenciais, timeout/cancelamento, auditoria e teste de conexão real. Fixtures coletadas de fonte autorizada não substituem este perfil.
+8. **Vertical Focus** — após etapas 1–7: JSON, registros, observação histórica, persistência e publicação; evidências sintéticas e fixtures derivadas de exploração autorizada permanecem separadas de execução live.
+9. **Vertical CVM DFP/ITR** — downloads permitidos, custody MinIO, CSV/ZIP parsing, backfill e dependências de pipeline; só após validação de políticas e formatos atuais.
+10. **Vertical infraestrutura composite** — discovery HTML, artefatos PDF, outputs composite/change observation, sob autorização e segurança correspondentes.
+
+### Quatro classes de evidência
+
+- **Fixture sintética:** construída para teste; não representa resposta nem comportamento de fonte real.
+- **Fixture de fonte real:** resposta coletada previamente em escopo de exploração aprovado, datada, com digest e proveniência; autoriza replay offline desse artefato, não nova navegação.
+- **Execução live autorizada:** worker de captura ativo, em perfil live e escopo atual aprovado, com egress e quotas aplicados no runtime. Não é inferida de Scout HTTP exploration nem de fixture replay.
+- **Vertical end-to-end:** consumer case que atravessa definição/release, coordenação, aquisição, custody, OutputSet, parsing/quality e publicação de dados conforme seu escopo. Não é sinônimo de um teste isolado de endpoint.
+
+### Critérios do incremento BC05
+
+O incremento corrente termina com variantes tipadas Record/Artifact/Composite, payload contract versionado, referências lógicas de artifact, identidade/intent e digest determinísticos por RFC 8785, OutputSet limitado com membership congelada em seal, receipts idempotentes, port de custody obrigatório para artefatos e adapters de referência in-memory. Contratos e fixtures permanecem draft. O incremento não inclui adapter Mongo/PostgreSQL, MinIO, coordenação distribuída, integração com o worker ou acesso a fonte externa.

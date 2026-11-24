@@ -45,5 +45,7 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 36. [PR next — Scrapy fixture backend and cross-engine conformance](assessments/pr-next-scrapy-conformance.md)
 37. [ADR 020 — Scrapy Collector multi-bot project](decisions/020-scrapy-collector-multi-bot-project.md)
 38. [ADR 021 — BC04 fixture execution coordination and protected Scrapy adapter](decisions/021-bc04-fixture-execution-coordination.md)
+39. [Principal Engineering Architecture Rebaseline — 2026-11-24](assessments/principal-engineering-rebaseline-2026-11-24.md)
+40. [ADR 022 — BC05 Acquisition Output foundation](decisions/022-bc05-acquisition-output.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.

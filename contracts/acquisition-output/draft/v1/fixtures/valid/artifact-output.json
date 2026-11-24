@@ -1,0 +1,39 @@
+{
+  "contract_version": "capture-output/v1",
+  "output_type": "artifact",
+  "output_id": "out-fixture-artifact-001",
+  "observation_id": "obs-fixture-2026-01-01-002",
+  "operation": {
+    "tenant_id": "tenant-fixture",
+    "operation_id": "op-artifact-001"
+  },
+  "output_set_id": "set-fixture-001",
+  "binding": {
+    "tenant_id": "tenant-fixture",
+    "source": {
+      "source_id": "synthetic-catalog",
+      "revision": "fixture-v1"
+    },
+    "producer": {
+      "producer_id": "fixture-consumer",
+      "producer_version": "1.0.0"
+    },
+    "execution": {}
+  },
+  "artifacts": [
+    {
+      "artifact": {
+        "artifact_id": "artifact-logical-001",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size_bytes": 1536,
+        "media_type": "application/pdf"
+      },
+      "description": {
+        "file_name": "sample-notice.pdf",
+        "title": "Synthetic notice",
+        "role": "attachment"
+      }
+    }
+  ],
+  "observed_at": "2026-01-01T00:00:02+00:00"
+}

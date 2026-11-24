@@ -87,3 +87,23 @@ flowchart TD
 ```
 
 Entrega duplicada é deduplicada por inbox; worker morto perde lease e nova tentativa recebe token maior. Mudança de fonte durante run pode gerar parcial e incidente, sem apagar evidência. Release substituída não altera run fixada. Scout inválido falha schema/semântica e volta à revisão. Sem exactly-once global: requests externos e armazenamento não compartilham transação com broker.
+
+## BC05 OutputSet finalization — unresolved cross-store race
+
+OutputSet lifecycle is owned by BC05 and is locally `STAGING → SEALED → PUBLISHED`, or terminal `ABORTED`/`REJECTED`. `SEALED` freezes membership and manifest identity. `PUBLISHED` is an immutable BC05 fact; BC09 dataset publication is a later, separate operation. The local domain and any single-store BC05 adapter can enforce this lifecycle. They cannot establish that a Run attempt is still current in BC04 when the publication commit occurs in another datastore.
+
+### Race that must not be hidden by a fence check
+
+The following protocol is insufficient: read `(run, attempt, fencing_token)` as current in PostgreSQL; then publish the OutputSet in MongoDB. The attempt may expire, be cancelled or be replaced after that read and before the MongoDB commit. The old attempt could then publish a complete-looking set. Checking the fence again after Mongo commit does not undo that publication, and a Mongo transaction cannot serialize against the PostgreSQL state transition.
+
+### Required integration protocol (proposal, not implemented)
+
+BC04 owns authorization to finalize a particular `(run_id, attempt_id, fencing_token, output_set_id, manifest_digest)` tuple. BC05 owns its output set and publication state. A durable finalization reservation/grant is the leading candidate; an equivalent protocol must provide the same guarantees:
+
+1. In a PostgreSQL transaction, BC04 conditionally reserves finalization for the current attempt and fence, only if the run is active and not cancelled/expired. The reservation is uniquely keyed by run, attempt, fence and output-set identity/digest; competing or conflicting finalization commands cannot both be authorized. This commit is the **authorization linearization point**, not the output publication point.
+2. The reservation is durable, generation-bound and recoverable by coordinator restart. It has an explicit expiry/reconciliation policy. Ordinary lease expiry/replacement must not silently invalidate an already committed reservation; cancellation after reservation is recorded as cancellation requested/too late for this finalization, or follows an explicitly chosen compensating policy. The owner must decide this terminal race rule before production use.
+3. BC05 verifies the signed/opaque grant through its owner-defined port, checks the exact sealed manifest digest and its idempotency key, and commits `PUBLISHED` plus its local outbox/publication receipt in one MongoDB transaction. That commit is the **BC05 publication linearization point**. A mismatching digest, set, tenant, attempt, fence, expired/unrecognized grant or conflicting operation is rejected.
+4. BC04 marks operational Run completion only after it observes the durable BC05 publication receipt matching the reservation. This is a separate PostgreSQL transition and may be retried. If the coordinator restarts or acknowledgment is lost, it queries by reservation/output-set identity and repeats idempotently; it does not re-run acquisition merely because completion acknowledgment was lost.
+5. If the grant expires before BC05 commit, the set remains sealed but unpublished until BC04 renews/reconciles or rejects it under a policy that cannot race a second grant. If Mongo publication committed before the response was lost, BC05 returns the same receipt on retry. If publication committed but BC04 completion has not, the output remains published and the Run is `finalization_pending`; reconciliation completes or records an operational failure without mutating the published output.
+
+The protocol requires one ordering rule for cancellation versus finalization reservation, reservation uniqueness, a bounded grant validity/recovery policy, consumer-side authorization verification and failure-injection tests across PostgreSQL/MongoDB restart windows. It does **not** create distributed ACID or exactly-once delivery. If the product requires cancellation to revoke even a previously committed grant, a revocation protocol and serialization point must be designed; a check-then-publish implementation cannot provide it. Until this is designed and persisted, the BC05 foundation only guarantees local publication state and an optional run/fence binding as declared data. An in-memory fence comparison is not distributed fencing.

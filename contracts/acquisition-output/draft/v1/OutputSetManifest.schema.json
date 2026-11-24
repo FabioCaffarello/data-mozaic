@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.invalid/contracts/acquisition-output/draft/v1/OutputSetManifest.schema.json",
+  "title": "OutputSetManifest draft v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "output_set_id", "binding", "state", "payload_contracts", "member_count", "encoded_output_bytes", "artifact_reference_count", "custody_reference_count", "members", "manifest_digest", "created_at", "sealed_at", "published_at"],
+  "properties": {
+    "contract_version": {"const": "output-set-manifest/v1"},
+    "output_set_id": {"$ref": "CaptureOutput.schema.json#/$defs/identifier"},
+    "binding": {"$ref": "CaptureOutput.schema.json#/$defs/binding"},
+    "state": {"enum": ["staging", "sealed", "published", "aborted", "rejected"]},
+    "payload_contracts": {"type": "array", "maxItems": 128, "items": {"$ref": "CaptureOutput.schema.json#/$defs/contractRef"}},
+    "member_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "encoded_output_bytes": {"type": "integer", "minimum": 0, "maximum": 16777216},
+    "artifact_reference_count": {"type": "integer", "minimum": 0, "maximum": 320000},
+    "custody_reference_count": {"type": "integer", "minimum": 0, "maximum": 320000},
+    "members": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["output_id", "observation_id", "operation_id", "intent_digest"],
+        "properties": {
+          "output_id": {"$ref": "CaptureOutput.schema.json#/$defs/identifier"},
+          "observation_id": {"$ref": "CaptureOutput.schema.json#/$defs/identifier"},
+          "operation_id": {"$ref": "CaptureOutput.schema.json#/$defs/identifier"},
+          "intent_digest": {"$ref": "CaptureOutput.schema.json#/$defs/digest"}
+        }
+      }
+    },
+    "manifest_digest": {"oneOf": [{"type": "null"}, {"$ref": "CaptureOutput.schema.json#/$defs/digest"}]},
+    "created_at": {"type": "string", "format": "date-time"},
+    "sealed_at": {"oneOf": [{"type": "null"}, {"type": "string", "format": "date-time"}]},
+    "published_at": {"oneOf": [{"type": "null"}, {"type": "string", "format": "date-time"}]}
+  },
+  "allOf": [
+    {"if": {"properties": {"state": {"const": "staging"}}, "required": ["state"]}, "then": {"properties": {"manifest_digest": {"type": "null"}, "sealed_at": {"type": "null"}, "published_at": {"type": "null"}}}},
+    {"if": {"properties": {"state": {"const": "sealed"}}, "required": ["state"]}, "then": {"properties": {"manifest_digest": {"$ref": "CaptureOutput.schema.json#/$defs/digest"}, "sealed_at": {"type": "string", "format": "date-time"}, "published_at": {"type": "null"}}}},
+    {"if": {"properties": {"state": {"const": "published"}}, "required": ["state"]}, "then": {"properties": {"manifest_digest": {"$ref": "CaptureOutput.schema.json#/$defs/digest"}, "sealed_at": {"type": "string", "format": "date-time"}, "published_at": {"type": "string", "format": "date-time"}}}}
+  ]
+}
