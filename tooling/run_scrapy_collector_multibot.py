@@ -41,6 +41,7 @@ def _compile_fixture_bot(
     *,
     revision: str | None = None,
     inject_callback_failure: bool = False,
+    inject_callback_delay_seconds: int | None = None,
     target_platform: str,
 ) -> tuple[dict, Path, Path]:
     example = ROOT / "examples/playbooks" / example_id
@@ -97,6 +98,29 @@ def _compile_fixture_bot(
             backend_scrapy_fixture, "generate_spider", generate_failing_spider
         ):
             manifest = compile_scrapy_build(ir, **compile_arguments)
+    elif inject_callback_delay_seconds is not None:
+        from collector_engineering import backend_scrapy_fixture
+
+        original_generate_spider = backend_scrapy_fixture.generate_spider
+        item_yield = b"            yield {'_sort_key': [document['page_index'], selected['record_index']], 'record': record}\n"
+
+        def generate_slow_spider(*args, **kwargs):
+            generated = original_generate_spider(*args, **kwargs)
+            if generated.count(item_yield) != 1:
+                raise RuntimeError(
+                    "[TEST_CALLBACK_DELAY_INJECTION_FAILED] expected one generated yield"
+                )
+            return generated.replace(
+                item_yield,
+                item_yield
+                + f"        __import__('time').sleep({inject_callback_delay_seconds})\n".encode(),
+                1,
+            )
+
+        with patch.object(
+            backend_scrapy_fixture, "generate_spider", generate_slow_spider
+        ):
+            manifest = compile_scrapy_build(ir, **compile_arguments)
     else:
         manifest = compile_scrapy_build(ir, **compile_arguments)
     schema = json.loads(
@@ -109,7 +133,7 @@ def _compile_fixture_bot(
 
 
 def _prepare_catalog(
-    temp: Path, target_platform: str
+    temp: Path, target_platform: str, *, include_lifecycle_tests: bool = False
 ) -> tuple[Path, list[dict], dict[str, Path]]:
     temp.mkdir(parents=True, exist_ok=True)
     build_root = temp / "builds"
@@ -133,6 +157,17 @@ def _prepare_catalog(
             temp, "multipage-catalog", target_platform=target_platform
         ),
     ]
+    if include_lifecycle_tests:
+        for revision in ("slow-callback-test", "timeout-callback-test"):
+            builds.append(
+                _compile_fixture_bot(
+                    temp,
+                    "html-simple",
+                    revision=revision,
+                    inject_callback_delay_seconds=20,
+                    target_platform=target_platform,
+                )
+            )
     entries = []
     fixtures_by_example: dict[str, Path] = {}
     for manifest, staged_build, source_fixtures in builds:
