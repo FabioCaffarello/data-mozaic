@@ -9,9 +9,11 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 from collector_engineering.backend_scrapy_fixture import (
@@ -38,6 +40,7 @@ def _compile_fixture_bot(
     example_id: str,
     *,
     revision: str | None = None,
+    inject_callback_failure: bool = False,
     target_platform: str,
 ) -> tuple[dict, Path, Path]:
     example = ROOT / "examples/playbooks" / example_id
@@ -61,14 +64,41 @@ def _compile_fixture_bot(
     ir = build_typed_ir(parsed, fixture_root=fixture_input)
     staged_build = temp / "staged-builds" / f"{example_id}-{revision or 'default'}"
     staged_build.parent.mkdir(parents=True, exist_ok=True)
-    manifest = compile_scrapy_build(
-        ir,
-        fixture_root=fixture_input,
-        output=staged_build,
-        lockfile=ROOT / "uv.lock",
-        playbook_sha256=original_digest,
-        target_platform=target_platform,
-    )
+    compile_arguments = {
+        "fixture_root": fixture_input,
+        "output": staged_build,
+        "lockfile": ROOT / "uv.lock",
+        "playbook_sha256": original_digest,
+        "target_platform": target_platform,
+    }
+    if inject_callback_failure:
+        # Inject into generated callback code before compile_build calculates
+        # generated-file hashes, build_id, and the runtime manifest. The normal
+        # verifier therefore still authenticates this synthetic test BotBuild.
+        from collector_engineering import backend_scrapy_fixture
+
+        original_generate_spider = backend_scrapy_fixture.generate_spider
+        item_yield = b"            yield {'_sort_key': [document['page_index'], selected['record_index']], 'record': record}\n"
+
+        def generate_failing_spider(*args, **kwargs):
+            generated = original_generate_spider(*args, **kwargs)
+            if generated.count(item_yield) != 1:
+                raise RuntimeError(
+                    "[TEST_CALLBACK_INJECTION_FAILED] expected one generated item yield"
+                )
+            return generated.replace(
+                item_yield,
+                item_yield
+                + b"        if not self.records:\n            raise RuntimeError('[TEST_CALLBACK_ORDER] record pipeline did not run before injected failure')\n        raise RuntimeError('[TEST_CALLBACK_EXCEPTION] intentional E2E failure after record')\n",
+                1,
+            )
+
+        with patch.object(
+            backend_scrapy_fixture, "generate_spider", generate_failing_spider
+        ):
+            manifest = compile_scrapy_build(ir, **compile_arguments)
+    else:
+        manifest = compile_scrapy_build(ir, **compile_arguments)
     schema = json.loads(
         (ROOT / "contracts/bot-build/draft/v2/BotBuildManifest.schema.json").read_text(
             encoding="utf-8"
@@ -90,6 +120,13 @@ def _prepare_catalog(
         _compile_fixture_bot(temp, "html-simple", target_platform=target_platform),
         _compile_fixture_bot(
             temp, "html-simple", revision="fixture-2", target_platform=target_platform
+        ),
+        _compile_fixture_bot(
+            temp,
+            "html-simple",
+            revision="callback-failure-test",
+            inject_callback_failure=True,
+            target_platform=target_platform,
         ),
         _compile_fixture_bot(temp, "json-api", target_platform=target_platform),
         _compile_fixture_bot(
@@ -199,17 +236,74 @@ def _local_execution_acceptance(
     catalog = load_catalog(assembled)
     output_root = temp / "local-output"
     output_root.mkdir()
-    html_entries = [
-        entry for entry in entries if entry["bot_id"] == entries[0]["bot_id"]
-    ]
+    html_entries = []
     for entry in entries:
         bot = catalog.resolve(entry["bot_id"], entry["build_id"])
         result = run(catalog, bot.bot_id, bot.build_id, ExecutionContext(output_root))
-        if result["state"] != "succeeded":
-            raise RuntimeError(f"[MULTIBOT_EXECUTION_FAILED] {result}")
         build_manifest = json.loads(
             (assembled / "builds" / bot.build_id / "manifest.json").read_text()
         )
+        if build_manifest["source"]["source_revision"] == "callback-failure-test":
+            if (
+                result["state"] != "failed"
+                or "[TEST_CALLBACK_EXCEPTION] intentional E2E failure after record"
+                not in result.get("diagnostic", "")
+                or (output_root / result["execution_id"]).exists()
+                or (output_root / f".{result['execution_id']}.work").exists()
+            ):
+                raise RuntimeError(f"[MULTIBOT_CALLBACK_FAILURE_INVALID] {result}")
+            # Exercise the public CLI boundary too: its process exit code and
+            # terminal JSON must agree with the real Scrapy callback failure.
+            cli_environment = {
+                "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+                "SCRAPY_COLLECTOR_CATALOG_ROOT": str(assembled),
+                "SCRAPY_COLLECTOR_OUTPUT_ROOT": str(output_root),
+            }
+            cli = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-m",
+                    "scrapy_collector",
+                    "run",
+                    "--bot-id",
+                    bot.bot_id,
+                    "--build-id",
+                    bot.build_id,
+                ],
+                cwd=ROOT,
+                env=cli_environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            try:
+                cli_result = json.loads(cli.stdout)
+            except json.JSONDecodeError as error:
+                raise RuntimeError(
+                    "[MULTIBOT_CALLBACK_CLI_INVALID] launcher did not return JSON"
+                ) from error
+            if (
+                cli.returncode != 1
+                or cli_result.get("state") != "failed"
+                or "[TEST_CALLBACK_EXCEPTION] intentional E2E failure after record"
+                not in cli_result.get("diagnostic", "")
+                or (output_root / cli_result.get("execution_id", "missing")).exists()
+                or (
+                    output_root / f".{cli_result.get('execution_id', 'missing')}.work"
+                ).exists()
+            ):
+                raise RuntimeError(
+                    f"[MULTIBOT_CALLBACK_CLI_INVALID] exit={cli.returncode}, result={cli_result}, stderr={cli.stderr[-2000:]}"
+                )
+            continue
+        if result["state"] != "succeeded":
+            raise RuntimeError(f"[MULTIBOT_EXECUTION_FAILED] {result}")
+        if build_manifest["playbook_id"] == "html-simple-catalog":
+            html_entries.append(entry)
         example_id = {
             "html-simple-catalog": "html-simple",
             "synthetic-json-api": "json-api",
@@ -276,8 +370,8 @@ def _local_execution_acceptance(
         )
     unaffected = run(
         catalog,
-        entries[2]["bot_id"],
-        entries[2]["build_id"],
+        entries[3]["bot_id"],
+        entries[3]["build_id"],
         ExecutionContext(output_root),
     )
     if unaffected["state"] != "succeeded":
@@ -287,8 +381,8 @@ def _local_execution_acceptance(
 
     timed_out = run(
         catalog,
-        entries[2]["bot_id"],
-        entries[2]["build_id"],
+        entries[3]["bot_id"],
+        entries[3]["build_id"],
         ExecutionContext(output_root, timeout_seconds=0.0001),
     )
     if (
@@ -465,6 +559,58 @@ def _docker_acceptance(assembled: Path, entries: list[dict], temp: Path) -> None
                     capture_output=True,
                     text=True,
                 )
+                build_manifest = json.loads(
+                    (
+                        assembled / "builds" / entry["build_id"] / "manifest.json"
+                    ).read_text()
+                )
+                is_callback_failure = (
+                    build_manifest["source"]["source_revision"]
+                    == "callback-failure-test"
+                )
+                if is_callback_failure:
+                    try:
+                        failed_result = json.loads(execution.stdout)
+                    except json.JSONDecodeError as error:
+                        raise RuntimeError(
+                            "[MULTIBOT_CALLBACK_CONTAINER_INVALID] launcher did not return JSON"
+                        ) from error
+                    if (
+                        execution.returncode != 1
+                        or failed_result.get("state") != "failed"
+                        or "[TEST_CALLBACK_EXCEPTION] intentional E2E failure after record"
+                        not in failed_result.get("diagnostic", "")
+                    ):
+                        raise RuntimeError(
+                            f"[MULTIBOT_CALLBACK_CONTAINER_INVALID] exit={execution.returncode}, result={failed_result}, stderr={execution.stderr[-2000:]}"
+                        )
+                    readonly_mount = [
+                        "--mount",
+                        f"type=volume,src={volume_name},dst=/out,readonly",
+                    ]
+                    inspect_output = subprocess.run(
+                        [
+                            *common[:2],
+                            "--rm",
+                            *common[2:-1],
+                            *readonly_mount,
+                            "--entrypoint",
+                            "python",
+                            tag,
+                            "-I",
+                            "-B",
+                            "-c",
+                            "import json,pathlib; print(json.dumps(sorted(p.name for p in pathlib.Path('/out').iterdir())))",
+                        ],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if json.loads(inspect_output.stdout) != []:
+                        raise RuntimeError(
+                            "[MULTIBOT_CALLBACK_CONTAINER_OUTPUT] failed crawl left published output"
+                        )
+                    continue
                 if execution.returncode != 0:
                     raise RuntimeError(
                         f"[MULTIBOT_CONTAINER_EXIT] {execution.returncode}: "
