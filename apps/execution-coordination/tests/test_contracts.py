@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import tempfile
 import unittest
 import uuid
@@ -47,6 +48,59 @@ def sample_binding() -> ExecutionBinding:
 
 
 class ContractTests(unittest.TestCase):
+    def test_request_mount_is_readable_by_non_root_worker_and_read_only(self):
+        binding = sample_binding()
+        request = ExecutionRequest(
+            "execution-request/v0",
+            "req-bind-permissions",
+            str(uuid.uuid4()),
+            str(uuid.uuid4()),
+            binding,
+            datetime.now(UTC) + timedelta(seconds=30),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executor = ScrapyContainerExecutor(
+                ExecutorConfig(
+                    {(binding.bot_id, binding.build_id): binding}, root / "outputs"
+                )
+            )
+
+            def docker_command(argv, _deadline):
+                output = (
+                    "container-id-123456\n"
+                    if argv[1] == "create"
+                    else "[{}]"
+                    if argv[1] == "inspect"
+                    else ""
+                )
+                return CompletedProcess(argv, 0, output, "")
+
+            with (
+                patch.object(executor, "_verify_image"),
+                patch.object(executor, "_verify_container"),
+                patch.object(
+                    executor, "_deadline_command", side_effect=docker_command
+                ) as command,
+            ):
+                execution = executor.start(request)
+            request_path = execution.attempt_dir / "execution-request.json"
+            self.assertEqual(stat.S_IMODE(request_path.stat().st_mode), 0o444)
+            create_args = command.call_args_list[0].args[0]
+            mounts = [
+                create_args[index + 1]
+                for index, value in enumerate(create_args[:-1])
+                if value == "--mount"
+            ]
+            self.assertIn(
+                f"type=bind,src={request_path},dst=/run/execution-request.json,readonly",
+                mounts,
+            )
+            self.assertEqual(
+                json.loads(request_path.read_text())["request_id"],
+                request.request_id,
+            )
+
     def test_request_and_report_match_closed_draft_schemas(self):
         binding = sample_binding()
         request = ExecutionRequest(

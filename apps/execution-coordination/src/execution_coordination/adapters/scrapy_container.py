@@ -136,7 +136,10 @@ class ScrapyContainerExecutor:
             ),
             encoding="utf-8",
         )
-        request_path.chmod(0o400)
+        # The worker runs as UID 65532, which differs from the host runner UID on
+        # Linux. The bind itself is read-only, so grant read access without write
+        # access; the parent attempt directory remains private on the host.
+        request_path.chmod(0o444)
         args = [
             "docker",
             "create",
