@@ -42,15 +42,32 @@ def _run(argv: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess[
 def _build_image(assembled: Path, temp: Path) -> tuple[str, str, str]:
     assembly = json.loads((assembled / "assembly.json").read_text())
     tag = f"data-mozaic/execution-coordination-{uuid.uuid4().hex[:12]}:test"
+    builder = f"mozaic-execution-coordination-{uuid.uuid4().hex[:12]}"
     metadata_path = temp / "build-metadata.json"
     oci_archive = temp / "scrapy-collector.oci.tar"
     local_image_id: str | None = None
+    builder_created = False
     try:
         _run(
             [
                 "docker",
                 "buildx",
+                "create",
+                "--name",
+                builder,
+                "--driver",
+                "docker-container",
+            ]
+        )
+        builder_created = True
+        _run(["docker", "buildx", "inspect", builder, "--bootstrap"], timeout=120)
+        _run(
+            [
+                "docker",
+                "buildx",
                 "build",
+                "--builder",
+                builder,
                 "--platform",
                 "linux/amd64",
                 "--output",
@@ -118,6 +135,9 @@ def _build_image(assembled: Path, temp: Path) -> tuple[str, str, str]:
                 text=True,
             )
         raise
+    finally:
+        if builder_created:
+            _run(["docker", "buildx", "rm", builder], timeout=120)
     repository = tag.rsplit(":", 1)[0]
     image_ref = f"{repository}@{oci_digest}"
     return tag, image_ref, local_image_id
