@@ -1,0 +1,36 @@
+{
+  "contract_version": "capture-output/v1",
+  "output_type": "artifact",
+  "output_id": "out-2",
+  "observation_id": "obs-2",
+  "operation": {
+    "tenant_id": "tenant-1",
+    "operation_id": "op-2"
+  },
+  "output_set_id": "set-1",
+  "binding": {
+    "tenant_id": "tenant-1",
+    "source": {
+      "source_id": "source-1",
+      "revision": "rev-1"
+    },
+    "producer": {
+      "producer_id": "producer-1",
+      "producer_version": "1"
+    },
+    "execution": {}
+  },
+  "artifacts": [
+    {
+      "artifact": {
+        "artifact_id": "artifact-2",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size_bytes": 1
+      }
+    }
+  ],
+  "payload": {
+    "ambiguous": true
+  },
+  "observed_at": "2026-01-01T00:00:00+00:00"
+}

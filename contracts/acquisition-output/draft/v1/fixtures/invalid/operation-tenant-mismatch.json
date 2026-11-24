@@ -1,0 +1,31 @@
+{
+  "contract_version": "capture-output/v1",
+  "output_type": "record",
+  "output_id": "out-tenant-mismatch",
+  "observation_id": "obs-tenant-mismatch",
+  "operation": {
+    "tenant_id": "tenant-b",
+    "operation_id": "op-tenant-mismatch"
+  },
+  "output_set_id": "set-tenant-mismatch",
+  "binding": {
+    "tenant_id": "tenant-a",
+    "source": {
+      "source_id": "source-a",
+      "revision": "revision-1"
+    },
+    "producer": {
+      "producer_id": "producer-a",
+      "producer_version": "1"
+    },
+    "execution": {}
+  },
+  "payload_contract": {
+    "contract_id": "example.catalog.item",
+    "version": "1.0.0",
+    "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "payload": {},
+  "payload_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  "observed_at": "2026-01-01T00:00:00+00:00"
+}

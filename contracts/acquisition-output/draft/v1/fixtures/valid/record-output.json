@@ -1,0 +1,38 @@
+{
+  "contract_version": "capture-output/v1",
+  "output_type": "record",
+  "output_id": "out-fixture-record-001",
+  "observation_id": "obs-fixture-2026-01-01-001",
+  "natural_key": "catalog-item-001",
+  "operation": {
+    "tenant_id": "tenant-fixture",
+    "operation_id": "op-record-001"
+  },
+  "output_set_id": "set-fixture-001",
+  "binding": {
+    "tenant_id": "tenant-fixture",
+    "source": {
+      "source_id": "synthetic-catalog",
+      "revision": "fixture-v1"
+    },
+    "producer": {
+      "producer_id": "fixture-consumer",
+      "producer_version": "1.0.0",
+      "capability_id": "fixture-replay",
+      "capability_version": "v1"
+    },
+    "execution": {}
+  },
+  "payload_contract": {
+    "contract_id": "example.catalog.item",
+    "version": "1.0.0",
+    "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "payload": {
+    "name": "Synthetic sample item",
+    "price": 12.5,
+    "active": true
+  },
+  "payload_digest": "sha256:6450cd08aca969b4867d0b9dc39f0db5decc2105a38598222166d76d02ac2622",
+  "observed_at": "2026-01-01T00:00:01+00:00"
+}

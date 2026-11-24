@@ -1,0 +1,50 @@
+{
+  "contract_version": "capture-output/v1",
+  "output_type": "composite",
+  "output_id": "out-fixture-composite-001",
+  "observation_id": "obs-fixture-2026-01-01-003",
+  "operation": {
+    "tenant_id": "tenant-fixture",
+    "operation_id": "op-composite-001"
+  },
+  "output_set_id": "set-fixture-001",
+  "binding": {
+    "tenant_id": "tenant-fixture",
+    "source": {
+      "source_id": "synthetic-catalog",
+      "revision": "fixture-v1"
+    },
+    "producer": {
+      "producer_id": "fixture-consumer",
+      "producer_version": "1.0.0",
+      "release_id": "release-demo-1",
+      "release_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "execution": {
+      "run_id": "run-synthetic-001",
+      "attempt_id": "attempt-synthetic-001",
+      "fencing_token": 4
+    }
+  },
+  "payload_contract": {
+    "contract_id": "example.infrastructure.notice",
+    "version": "1.0.0",
+    "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "payload": {
+    "notice_number": "N-001",
+    "observed": null
+  },
+  "payload_digest": "sha256:266c529305052f9525faed93cf42531d7ae76f037b9983b42590dccaee716f60",
+  "artifacts": [
+    {
+      "artifact": {
+        "artifact_id": "artifact-logical-002",
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size_bytes": 4096,
+        "media_type": "application/pdf"
+      }
+    }
+  ],
+  "observed_at": "2026-01-01T00:00:03+00:00"
+}

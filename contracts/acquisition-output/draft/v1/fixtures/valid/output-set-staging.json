@@ -1,0 +1,16 @@
+{
+  "contract_version": "output-set-manifest/v1",
+  "output_set_id": "set-fixture-empty-staging",
+  "binding": {"tenant_id": "tenant-fixture", "source": {"source_id": "synthetic-catalog", "revision": "fixture-v1"}, "producer": {"producer_id": "fixture-consumer", "producer_version": "1.0.0"}, "execution": {}},
+  "state": "staging",
+  "payload_contracts": [],
+  "member_count": 0,
+  "encoded_output_bytes": 0,
+  "artifact_reference_count": 0,
+  "custody_reference_count": 0,
+  "members": [],
+  "manifest_digest": null,
+  "created_at": "2026-01-01T00:00:00+00:00",
+  "sealed_at": null,
+  "published_at": null
+}

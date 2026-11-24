@@ -1,0 +1,40 @@
+{
+  "contract_version": "capture-output/v1",
+  "output_type": "record",
+  "output_id": "out-1",
+  "observation_id": "obs-1",
+  "operation": {
+    "tenant_id": "tenant-1",
+    "operation_id": "op-1"
+  },
+  "output_set_id": "set-1",
+  "binding": {
+    "tenant_id": "tenant-1",
+    "source": {
+      "source_id": "source-1",
+      "revision": "rev-1"
+    },
+    "producer": {
+      "producer_id": "producer-1",
+      "producer_version": "1"
+    },
+    "execution": {}
+  },
+  "payload_contract": {
+    "contract_id": "contract-1",
+    "version": "1",
+    "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "payload": {},
+  "payload_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  "artifacts": [
+    {
+      "artifact": {
+        "artifact_id": "artifact-1",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size_bytes": 1
+      }
+    }
+  ],
+  "observed_at": "2026-01-01T00:00:00+00:00"
+}

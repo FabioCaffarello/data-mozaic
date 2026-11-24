@@ -1,0 +1,189 @@
+"""BC05 output use cases; no database, worker or transport dependencies."""
+
+from __future__ import annotations
+
+from .domain import (
+    CaptureOutputVariant,
+    CompositeOutput,
+    OutputError,
+    OutputSetSnapshot,
+    OutputSetSpec,
+    PublicationReceipt,
+    RecordOutput,
+    ScopedOperationIdentity,
+    output_intent_digest,
+    output_set_intent_digest,
+    plain_json,
+)
+from .ports import (
+    ArtifactCustodyPort,
+    OutputSetPublicationPort,
+    OutputSetRepositoryPort,
+    PayloadContractValidationPort,
+)
+
+
+class AcquisitionOutputApplication:
+    """Create/stage/seal/publish output sets through BC05-owned ports."""
+
+    def __init__(
+        self,
+        repository: OutputSetRepositoryPort,
+        publisher: OutputSetPublicationPort,
+        *,
+        payload_contracts: PayloadContractValidationPort,
+        custody: ArtifactCustodyPort,
+    ) -> None:
+        self._repository = repository
+        self._publisher = publisher
+        self._payload_contracts = payload_contracts
+        self._custody = custody
+
+    def create_output_set(
+        self, spec: OutputSetSpec, operation: ScopedOperationIdentity
+    ) -> OutputSetSnapshot:
+        self._require_scope(operation, spec.binding.tenant_id)
+        manifest = self._repository.create(spec, operation)
+        if (
+            manifest.output_set_id != spec.output_set_id
+            or manifest.binding != spec.binding
+        ):
+            raise OutputError(
+                "repository returned a manifest for a different OutputSet"
+            )
+        return manifest
+
+    def stage_output(self, output: CaptureOutputVariant):
+        intent_digest = output_intent_digest(output)
+        previous = self._repository.find_stage_receipt(output.operation, intent_digest)
+        if previous is not None:
+            if (
+                previous.tenant_id != output.binding.tenant_id
+                or previous.operation_id != output.operation.operation_id
+                or previous.output_set_id != output.output_set_id
+                or previous.output_id != output.identity.output_id
+                or previous.intent_digest != intent_digest
+            ):
+                raise OutputError(
+                    "repository returned an idempotency receipt for different intent"
+                )
+            return previous
+        if isinstance(output, (RecordOutput, CompositeOutput)):
+            self._payload_contracts.validate(
+                output.payload_contract,
+                plain_json(output.payload),
+            )
+        confirmed = []
+        for item in output.artifact_items:
+            receipt = self._custody.confirm(
+                item.artifact,
+                tenant_id=output.binding.tenant_id,
+                source=output.binding.source,
+            )
+            if (
+                receipt.tenant_id != output.binding.tenant_id
+                or receipt.artifact_id != item.artifact.artifact_id
+                or receipt.digest != item.artifact.digest
+                or receipt.size_bytes != item.artifact.size_bytes
+            ):
+                raise OutputError(
+                    "custody confirmation does not match artifact reference and tenant"
+                )
+            confirmed.append(receipt)
+        receipt = self._repository.stage(output, intent_digest, tuple(confirmed))
+        if (
+            receipt.tenant_id != output.binding.tenant_id
+            or receipt.operation_id != output.operation.operation_id
+            or receipt.output_set_id != output.output_set_id
+            or receipt.output_id != output.identity.output_id
+            or receipt.intent_digest != intent_digest
+        ):
+            raise OutputError(
+                "repository returned an OutputReceipt for different intent"
+            )
+        return receipt
+
+    def seal_output_set(
+        self, tenant_id: str, output_set_id: str, operation: ScopedOperationIdentity
+    ) -> OutputSetSnapshot:
+        self._require_scope(operation, tenant_id)
+        manifest = self._repository.seal(tenant_id, output_set_id, operation)
+        if (
+            manifest.output_set_id != output_set_id
+            or manifest.binding.tenant_id != tenant_id
+            or manifest.state.value not in {"sealed", "published"}
+        ):
+            raise OutputError(
+                "repository returned an invalid sealed OutputSet manifest"
+            )
+        return manifest
+
+    def publish_output_set(
+        self,
+        tenant_id: str,
+        output_set_id: str,
+        manifest_digest: str,
+        operation: ScopedOperationIdentity,
+    ) -> PublicationReceipt:
+        self._require_scope(operation, tenant_id)
+        receipt = self._publisher.publish(
+            tenant_id, output_set_id, manifest_digest, operation
+        )
+        if (
+            receipt.tenant_id != tenant_id
+            or receipt.output_set_id != output_set_id
+            or receipt.manifest_digest != manifest_digest
+        ):
+            raise OutputError(
+                "publisher returned a receipt for different OutputSet intent"
+            )
+        return receipt
+
+    def abort_output_set(
+        self,
+        tenant_id: str,
+        output_set_id: str,
+        operation: ScopedOperationIdentity,
+        reason: str,
+    ) -> OutputSetSnapshot:
+        self._require_scope(operation, tenant_id)
+        return self._repository.abort(tenant_id, output_set_id, operation, reason)
+
+    def reject_output_set(
+        self,
+        tenant_id: str,
+        output_set_id: str,
+        operation: ScopedOperationIdentity,
+        reason: str,
+    ) -> OutputSetSnapshot:
+        self._require_scope(operation, tenant_id)
+        return self._repository.reject(tenant_id, output_set_id, operation, reason)
+
+    def inspect_output_set(
+        self, tenant_id: str, output_set_id: str
+    ) -> OutputSetSnapshot | None:
+        return self._repository.inspect(tenant_id, output_set_id)
+
+    def read_published_outputs(
+        self,
+        tenant_id: str,
+        output_set_id: str,
+        *,
+        after_output_id: str | None = None,
+        limit: int = 100,
+    ) -> tuple[CaptureOutputVariant, ...]:
+        if not 1 <= limit <= 1000:
+            raise OutputError("published output page size must be from 1 through 1000")
+        return self._repository.read_published(
+            tenant_id, output_set_id, after_output_id=after_output_id, limit=limit
+        )
+
+    @staticmethod
+    def _require_scope(operation: ScopedOperationIdentity, tenant_id: str) -> None:
+        if operation.tenant_id != tenant_id:
+            raise OutputError("operation tenant does not match the requested tenant")
+
+
+def create_intent_digest(spec: OutputSetSpec) -> str:
+    """Compatibility-friendly application name for the domain intent digest."""
+    return output_set_intent_digest(spec)

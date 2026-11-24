@@ -1,0 +1,23 @@
+{
+  "canonicalization": "RFC8785",
+  "vectors": [
+    {
+      "name": "rfc8785-property-order",
+      "input": {"€": "Euro Sign", "\r": "Carriage Return", "דּ": "Hebrew Letter Dalet With Dagesh", "1": "One", "😀": "Emoji: Grinning Face", "\u0080": "Control", "ö": "Latin Small Letter O With Diaeresis"},
+      "canonical_utf8": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\u0080\":\"Control\",\"ö\":\"Latin Small Letter O With Diaeresis\",\"€\":\"Euro Sign\",\"😀\":\"Emoji: Grinning Face\",\"דּ\":\"Hebrew Letter Dalet With Dagesh\"}",
+      "sha256": "sha256:5e321556d22018a9656991a9e94f77ec175fa193e52a2429d312f8419ec8b08c"
+    },
+    {
+      "name": "numbers-and-null",
+      "input": {"positive": 1.0, "negative_zero": -0.0, "safe_integer": 9007199254740991, "explicit_null": null},
+      "canonical_utf8": "{\"explicit_null\":null,\"negative_zero\":0,\"positive\":1,\"safe_integer\":9007199254740991}",
+      "sha256": "sha256:65629d7f913ca7602a2b305298ff0b091828b58ed5e3474fb9a36148ffe9bf77"
+    },
+    {
+      "name": "unicode-preserved-without-normalization",
+      "input": {"composed": "é", "decomposed": "é"},
+      "canonical_utf8": "{\"composed\":\"é\",\"decomposed\":\"é\"}",
+      "sha256": "sha256:7f04a9b0f36600f4b530afbb2601cb43068497f57b6ac5e07b2c173534c523ab"
+    }
+  ]
+}

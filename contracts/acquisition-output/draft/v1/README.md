@@ -1,0 +1,11 @@
+# Acquisition Output draft v1
+
+Status: **draft / illustrative**, owner BC05. These schemas are language-neutral wire projections; they are not serialized Python aggregates and are not yet approved public contracts. Payload content is governed by the immutable `payload_contract` reference. Artifact references identify BC06 logical artifacts and do not authorize access or assert custody by themselves.
+
+`CaptureOutput` is a closed discriminated union: `record` requires a payload and contract; `artifact` requires one or more artifact refs and has no payload fields; `composite` requires both. `observed_at` is timezone-aware and normalized to UTC by the Python domain. Optional fields are omitted when absent. An empty record object is valid data. Empty artifact lists and empty artifact descriptions are invalid. Payload `null` is a value only inside contract-permitted payload fields; optional envelope/description fields are omitted rather than written as null. A natural key is source-contract-defined identity and does not deduplicate observations.
+
+The canonical `intent_digest` and `manifest_digest` are `sha256:` plus SHA-256 over RFC 8785 canonical bytes. For an output, canonical intent is its `CaptureOutput` wire projection including the computed `payload_digest` where applicable. For an OutputSet, the digest input is the `output-set-manifest/v1` projection without timestamps/state/digest, with members sorted by `(output_id, operation_id)` and contracts sorted by `(contract_id, version)`. Member entries contain identity and output-intent digest, never record payloads. The set stores a bounded member count and manifest digest; persistence adapters store output members separately.
+
+RFC 8785 is used as published rather than redefined. BC05 restricts integer values to ±(2^53−1); high precision decimals and identifiers are strings; numbers must be finite; Unicode is preserved without normalization; object names are sorted by JCS; null differs from omission. See [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785.html) and checked-in canonicalization vectors.
+
+The initial Python package includes an in-memory adapter. Its process lock demonstrates local command ordering only. Cross-store current-attempt finalization and durable publication are explicitly unresolved; no fixture or schema implies distributed fencing.

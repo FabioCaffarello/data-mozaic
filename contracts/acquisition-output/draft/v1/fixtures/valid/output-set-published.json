@@ -1,0 +1,42 @@
+{
+  "contract_version": "output-set-manifest/v1",
+  "output_set_id": "set-fixture-001",
+  "binding": {
+    "tenant_id": "tenant-fixture",
+    "source": {
+      "source_id": "synthetic-catalog",
+      "revision": "fixture-v1"
+    },
+    "producer": {
+      "producer_id": "fixture-consumer",
+      "producer_version": "1.0.0",
+      "capability_id": "fixture-replay",
+      "capability_version": "v1"
+    },
+    "execution": {}
+  },
+  "state": "published",
+  "payload_contracts": [
+    {
+      "contract_id": "example.catalog.item",
+      "version": "1.0.0",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ],
+  "member_count": 1,
+  "encoded_output_bytes": 904,
+  "artifact_reference_count": 0,
+  "custody_reference_count": 0,
+  "members": [
+    {
+      "output_id": "out-fixture-record-001",
+      "observation_id": "obs-fixture-2026-01-01-001",
+      "operation_id": "op-record-001",
+      "intent_digest": "sha256:2f4ceed4c77c83a32b446411a874074b903d1219e334ebcf16345b660eedb2f9"
+    }
+  ],
+  "manifest_digest": "sha256:e0e2ceea0f7d3ee18654099ef80efa82ce5b485a9f68ac89923f3269bb7d0638",
+  "created_at": "2026-01-01T00:00:00+00:00",
+  "sealed_at": "2026-01-01T00:00:01+00:00",
+  "published_at": "2026-01-01T00:00:02+00:00"
+}

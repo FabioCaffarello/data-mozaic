@@ -1,0 +1,13 @@
+{
+  "output_set_id": "set-fixture-001",
+  "state": "published",
+  "records": [
+    {
+      "natural_key": "catalog-item-001",
+      "name": "Synthetic sample item",
+      "price": 12.5,
+      "active": true,
+      "observed_at": "2026-01-01T00:00:01+00:00"
+    }
+  ]
+}
