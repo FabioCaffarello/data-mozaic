@@ -28,9 +28,15 @@ from scrapy_collector.catalog.model import load_catalog
 
 
 def _run(argv: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        argv, check=True, capture_output=True, text=True, timeout=timeout
-    )
+    try:
+        return subprocess.run(
+            argv, check=True, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or "").strip()
+        raise RuntimeError(
+            f"command failed with exit code {error.returncode}: {detail[-4000:]}"
+        ) from error
 
 
 def _build_image(assembled: Path, temp: Path) -> tuple[str, str, str]:
@@ -229,7 +235,9 @@ def main() -> int:
         raise RuntimeError(
             "protected E2E requires a POSIX host and Linux container runtime"
         )
-    temp = Path(tempfile.mkdtemp(prefix=".execution-coordination-e2e-", dir=ROOT))
+    # Keep build outputs outside ROOT, which is sent wholesale as the Docker context.
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    temp = Path(tempfile.mkdtemp(prefix=".execution-coordination-e2e-", dir=temp_root))
     tag: str | None = None
     local_image_id: str | None = None
     coordinator: ExecutionCoordinator | None = None
