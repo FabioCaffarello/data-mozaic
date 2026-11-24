@@ -96,3 +96,9 @@ Esta sequência substitui a ordem anterior de MVP que colocava um source real an
 ### Critérios do incremento BC05
 
 O incremento corrente termina com variantes tipadas Record/Artifact/Composite, payload contract versionado, referências lógicas de artifact, identidade/intent e digest determinísticos por RFC 8785, OutputSet limitado com membership congelada em seal, receipts idempotentes, port de custody obrigatório para artefatos e adapters de referência in-memory. Contratos e fixtures permanecem draft. O incremento não inclui adapter Mongo/PostgreSQL, MinIO, coordenação distribuída, integração com o worker ou acesso a fonte externa.
+
+### Estado após integração do BC05 foundation e incremento MongoDB em revisão
+
+PR #16 foi integrada à `main` em `c61f268`. A branch subsequente `feat/acquisition-output-mongodb` adiciona o adapter PyMongo, replica set local, provisioning com validators/indexes, transações, receipts, outbox pendente, queries publicadas e evidência de integração/backup/benchmark. Essa implementação permanece em revisão local e não está integrada. Veja o [assessment MongoDB](../architecture/assessments/bc05-mongodb-persistence-2026-11-24.md) para comandos e limites medidos.
+
+MongoDB mantém-se substituível atrás dos ports BC05. A validação local não resolve autorização de tentativa corrente em PostgreSQL, entrega de eventos, HA, custody BC06 ou capacidade produtiva. O próximo limite após revisão/integração do adapter é avaliar a implementação BC06 Artifact Custody (incluindo decisão de linguagem Python/Go), antes de integrar publicação a coordenação distribuída BC04.

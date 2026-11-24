@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 from acquisition_output.application import AcquisitionOutputApplication
 from acquisition_output.domain import (
@@ -218,7 +219,9 @@ class AcquisitionOutputApplicationTests(unittest.TestCase):
         )
         self.app.stage_output(first)
         self.app.stage_output(second)
-        self.assertEqual(self.app.read_published_outputs("tenant-a", "set-a"), ())
+        self.assertEqual(
+            self.app.read_published_outputs("tenant-a", "set-a").outputs, ()
+        )
         seal_op = ScopedOperationIdentity("tenant-a", "seal-a")
         sealed = self.app.seal_output_set("tenant-a", "set-a", seal_op)
         self.assertEqual(sealed.state, OutputSetState.SEALED)
@@ -227,6 +230,13 @@ class AcquisitionOutputApplicationTests(unittest.TestCase):
         with self.assertRaises(InvalidTransition):
             self.app.stage_output(
                 record(output_id="late", observation_id="late", operation_id="late")
+            )
+        with self.assertRaises(InvalidTransition):
+            self.app.stage_output(
+                replace(
+                    first,
+                    operation=ScopedOperationIdentity("tenant-a", "new-op-after-seal"),
+                )
             )
         publish_op = ScopedOperationIdentity("tenant-a", "publish-a")
         receipt = self.app.publish_output_set(
@@ -240,20 +250,23 @@ class AcquisitionOutputApplicationTests(unittest.TestCase):
         )
         published = self.app.inspect_output_set("tenant-a", "set-a")
         self.assertEqual(published.state, OutputSetState.PUBLISHED)
-        self.assertEqual(
-            len(self.app.read_published_outputs("tenant-a", "set-a", limit=1)), 1
-        )
         first_page = self.app.read_published_outputs("tenant-a", "set-a", limit=1)
+        self.assertEqual(len(first_page.outputs), 1)
         second_page = self.app.read_published_outputs(
             "tenant-a",
             "set-a",
-            after_output_id=first_page[-1].identity.output_id,
+            cursor=first_page.next_cursor,
             limit=1,
         )
-        self.assertEqual(len(second_page), 1)
+        self.assertEqual(len(second_page.outputs), 1)
         self.assertNotEqual(
-            first_page[0].identity.output_id, second_page[0].identity.output_id
+            first_page.outputs[0].identity.output_id,
+            second_page.outputs[0].identity.output_id,
         )
+        with self.assertRaises(OutputError):
+            self.app.read_published_outputs(
+                "another-tenant", "set-a", cursor=first_page.next_cursor
+            )
         with self.assertRaises(InvalidTransition):
             self.app.abort_output_set(
                 "tenant-a",
@@ -305,7 +318,9 @@ class AcquisitionOutputApplicationTests(unittest.TestCase):
             "fixture cancelled",
         )
         self.assertEqual(aborted.state, OutputSetState.ABORTED)
-        self.assertEqual(self.app.read_published_outputs("tenant-a", "set-a"), ())
+        self.assertEqual(
+            self.app.read_published_outputs("tenant-a", "set-a").outputs, ()
+        )
         other = self.store.create(
             set_spec(set_id="set-rejected"),
             ScopedOperationIdentity("tenant-a", "create-rejected"),
@@ -319,7 +334,7 @@ class AcquisitionOutputApplicationTests(unittest.TestCase):
         )
         self.assertEqual(rejected.state, OutputSetState.REJECTED)
         self.assertEqual(
-            self.app.read_published_outputs("tenant-a", "set-rejected"), ()
+            self.app.read_published_outputs("tenant-a", "set-rejected").outputs, ()
         )
 
     def test_page_size_and_tenant_filter_are_enforced(self):
@@ -373,7 +388,9 @@ class AcquisitionOutputApplicationTests(unittest.TestCase):
             self.assertEqual(manifest.member_count, 0)
         else:
             self.assertEqual(manifest.member_count, 1)
-        self.assertEqual(self.app.read_published_outputs("tenant-a", "set-a"), ())
+        self.assertEqual(
+            self.app.read_published_outputs("tenant-a", "set-a").outputs, ()
+        )
 
 
 if __name__ == "__main__":

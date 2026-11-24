@@ -5,6 +5,8 @@ __pycache__/
 .env
 .env.*
 !.env.example
+!.env.mongodb.example
+.local/mongodb/
 .local/authoring-policy.json
 .local/scout-egress-domains.txt
 .local/scout-mcp.env

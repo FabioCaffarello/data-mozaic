@@ -7,7 +7,7 @@ name = "mozaic-acquisition-output"
 version = "0.1.0"
 description = "BC05 acquisition output domain and application ports"
 requires-python = ">=3.12"
-dependencies = ["rfc8785>=0.1.4,<1"]
+dependencies = ["pymongo==4.20.0", "rfc8785>=0.1.4,<1"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/acquisition_output"]

@@ -62,7 +62,7 @@ def main() -> None:
     )
 
     published = application.inspect_output_set(output.binding.tenant_id, output.output_set_id)
-    records = application.read_published_outputs(output.binding.tenant_id, output.output_set_id)
+    page = application.read_published_outputs(output.binding.tenant_id, output.output_set_id)
     view = {
         "output_set_id": published.output_set_id,
         "state": published.state.value,
@@ -74,7 +74,7 @@ def main() -> None:
                 "active": item.payload["active"],
                 "observed_at": item.identity.observed_at.isoformat(),
             }
-            for item in records
+            for item in page.outputs
         ],
     }
     expected = json.loads(EXPECTATION.read_text(encoding="utf-8"))

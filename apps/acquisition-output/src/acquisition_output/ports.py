@@ -78,6 +78,16 @@ class OutputSetPublicationPort(Protocol):
         operation: ScopedOperationIdentity,
     ) -> PublicationReceipt: ...
 
+    def get_publication_receipt(
+        self, tenant_id: str, output_set_id: str
+    ) -> PublicationReceipt | None: ...
+
+
+class PendingOutboxEventPort(Protocol):
+    def list_pending_events(
+        self, tenant_id: str, *, limit: int = 100
+    ) -> tuple[object, ...]: ...
+
 
 class PayloadContractValidationPort(Protocol):
     def validate(

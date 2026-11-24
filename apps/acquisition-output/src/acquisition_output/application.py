@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+
 from .domain import (
     CaptureOutputVariant,
     CompositeOutput,
@@ -9,8 +11,10 @@ from .domain import (
     OutputSetSnapshot,
     OutputSetSpec,
     PublicationReceipt,
+    PublishedOutputPage,
     RecordOutput,
     ScopedOperationIdentity,
+    canonical_json,
     output_intent_digest,
     output_set_intent_digest,
     plain_json,
@@ -20,6 +24,7 @@ from .ports import (
     OutputSetPublicationPort,
     OutputSetRepositoryPort,
     PayloadContractValidationPort,
+    PendingOutboxEventPort,
 )
 
 
@@ -33,11 +38,13 @@ class AcquisitionOutputApplication:
         *,
         payload_contracts: PayloadContractValidationPort,
         custody: ArtifactCustodyPort,
+        outbox: PendingOutboxEventPort | None = None,
     ) -> None:
         self._repository = repository
         self._publisher = publisher
         self._payload_contracts = payload_contracts
         self._custody = custody
+        self._outbox = outbox
 
     def create_output_set(
         self, spec: OutputSetSpec, operation: ScopedOperationIdentity
@@ -139,6 +146,20 @@ class AcquisitionOutputApplication:
             )
         return receipt
 
+    def get_publication_receipt(
+        self, tenant_id: str, output_set_id: str
+    ) -> PublicationReceipt | None:
+        return self._publisher.get_publication_receipt(tenant_id, output_set_id)
+
+    def list_pending_events(
+        self, tenant_id: str, *, limit: int = 100
+    ) -> tuple[object, ...]:
+        if self._outbox is None:
+            raise OutputError("pending outbox inspection is not configured")
+        if not 1 <= limit <= 1000:
+            raise OutputError("pending outbox page size must be from 1 through 1000")
+        return self._outbox.list_pending_events(tenant_id, limit=limit)
+
     def abort_output_set(
         self,
         tenant_id: str,
@@ -169,14 +190,65 @@ class AcquisitionOutputApplication:
         tenant_id: str,
         output_set_id: str,
         *,
-        after_output_id: str | None = None,
+        cursor: str | None = None,
         limit: int = 100,
-    ) -> tuple[CaptureOutputVariant, ...]:
+    ) -> PublishedOutputPage:
         if not 1 <= limit <= 1000:
             raise OutputError("published output page size must be from 1 through 1000")
-        return self._repository.read_published(
-            tenant_id, output_set_id, after_output_id=after_output_id, limit=limit
+        after_output_id = self._decode_cursor(cursor, tenant_id, output_set_id)
+        rows = self._repository.read_published(
+            tenant_id,
+            output_set_id,
+            after_output_id=after_output_id,
+            limit=limit + 1,
         )
+        has_more = len(rows) > limit
+        outputs = rows[:limit]
+        next_cursor = (
+            self._encode_cursor(
+                tenant_id, output_set_id, outputs[-1].identity.output_id
+            )
+            if has_more and outputs
+            else None
+        )
+        return PublishedOutputPage(outputs, next_cursor)
+
+    @staticmethod
+    def _encode_cursor(tenant_id: str, output_set_id: str, after_output_id: str) -> str:
+        document = canonical_json(
+            {
+                "tenant_id": tenant_id,
+                "output_set_id": output_set_id,
+                "after_output_id": after_output_id,
+            }
+        )
+        return base64.urlsafe_b64encode(document).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_cursor(
+        cursor: str | None, tenant_id: str, output_set_id: str
+    ) -> str | None:
+        if cursor is None:
+            return None
+        if not isinstance(cursor, str) or len(cursor) > 2048:
+            raise OutputError("published output cursor is invalid or too large")
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            document = base64.urlsafe_b64decode(padded.encode("ascii"))
+            from .domain import strict_json_loads
+
+            value = strict_json_loads(document)
+        except (ValueError, UnicodeEncodeError) as error:
+            raise OutputError("published output cursor is malformed") from error
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"tenant_id", "output_set_id", "after_output_id"}
+            or value["tenant_id"] != tenant_id
+            or value["output_set_id"] != output_set_id
+            or not isinstance(value["after_output_id"], str)
+        ):
+            raise OutputError("published output cursor belongs to another query")
+        return value["after_output_id"]
 
     @staticmethod
     def _require_scope(operation: ScopedOperationIdentity, tenant_id: str) -> None:

@@ -114,6 +114,7 @@ class InMemoryOutputStore:
             root = self._sets.get(set_key)
             if root is None:
                 raise OutputError("OutputSet does not exist")
+            root.validate_member(output)
             members = self._members[set_key]
             if output.identity.output_id in members:
                 old = members[output.identity.output_id]
@@ -297,6 +298,19 @@ class InMemoryOutputStore:
         with self._lock:
             root = self._sets.get((tenant_id, output_set_id))
             return self._snapshot(root) if root else None
+
+    def get_publication_receipt(
+        self, tenant_id: str, output_set_id: str
+    ) -> PublicationReceipt | None:
+        with self._lock:
+            return self._publications.get((tenant_id, output_set_id))
+
+    def list_pending_events(
+        self, tenant_id: str, *, limit: int = 100
+    ) -> tuple[object, ...]:
+        if not 1 <= limit <= 1000:
+            raise OutputError("pending outbox page size must be from 1 through 1000")
+        return ()
 
     def read_published(
         self,

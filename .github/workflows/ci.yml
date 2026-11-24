@@ -27,6 +27,26 @@ jobs:
       - name: Run repository checks
         run: make ci
 
+  mongodb-integration:
+    name: BC05 MongoDB Integration Gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.9.8"
+      - name: Provision replica set and run BC05 persistence integration tests
+        run: make acquisition-output-mongo-tests
+      - name: Stop MongoDB while preserving the runner volume
+        if: always()
+        run: |
+          if [ -f .env.mongodb ]; then
+            make acquisition-output-mongo-down
+          fi
+
   integration-security:
     name: Integration Security Gate
     runs-on: ubuntu-24.04

@@ -1,6 +1,7 @@
-.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests acquisition-output-tests acquisition-output-fixture-example scrapy-collector-multibot-conformance execution-coordination-protected-e2e test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
+.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests acquisition-output-tests acquisition-output-fixture-example acquisition-output-mongo-setup acquisition-output-mongo-check-config acquisition-output-mongo-up acquisition-output-mongo-status acquisition-output-mongo-connectivity acquisition-output-mongo-provision acquisition-output-mongo-tests acquisition-output-mongo-example acquisition-output-mongo-backup-restore acquisition-output-mongo-benchmark acquisition-output-mongo-benchmark-100k acquisition-output-mongo-down scrapy-collector-multibot-conformance execution-coordination-protected-e2e test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
 
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
+MONGO_COMPOSE_FILE := deployments/compose/mongodb.compose.yaml
 
 define require_env
 	@test -f .env || { echo 'Copy .env.example to .env and review local-only credentials.'; exit 2; }
@@ -48,6 +49,45 @@ acquisition-output-tests:
 
 acquisition-output-fixture-example:
 	uv run --locked --package mozaic-acquisition-output python examples/acquisition-output-fixture/consume.py
+
+acquisition-output-mongo-setup:
+	uv run --locked python tooling/mongodb_local_setup.py
+
+acquisition-output-mongo-check-config: acquisition-output-mongo-setup
+	@test -f .env.mongodb || { echo 'Run make acquisition-output-mongo-setup first.'; exit 2; }
+	@set -a; . .env.mongodb; set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli check-config
+
+acquisition-output-mongo-up: acquisition-output-mongo-check-config
+	docker compose --env-file .env.mongodb -f $(MONGO_COMPOSE_FILE) up --wait -d mongodb
+	docker compose --env-file .env.mongodb -f $(MONGO_COMPOSE_FILE) run --rm mongodb-init
+
+acquisition-output-mongo-status:
+	docker compose --env-file .env.mongodb -f $(MONGO_COMPOSE_FILE) ps
+
+acquisition-output-mongo-connectivity: acquisition-output-mongo-up
+	@set -a; . .env.mongodb; set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	docker compose --env-file .env.mongodb -f $(MONGO_COMPOSE_FILE) exec mongodb bash -ec 'mongosh --quiet --host mongodb:27017 --username "$$MONGO_INITDB_ROOT_USERNAME" --password "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval '\''db.hello().setName'\'''
+
+acquisition-output-mongo-provision: acquisition-output-mongo-up
+	@set -a; . .env.mongodb; set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+
+acquisition-output-mongo-tests: acquisition-output-mongo-provision
+	@set -a; . .env.mongodb; set +a; uv run --locked --all-packages python -m unittest discover -s apps/acquisition-output/integration_tests -v
+
+acquisition-output-mongo-example: acquisition-output-mongo-provision
+	@set -a; . .env.mongodb; set +a; uv run --locked --all-packages python examples/acquisition-output-mongodb/consume.py
+
+acquisition-output-mongo-backup-restore: acquisition-output-mongo-provision
+	@set -a; . .env.mongodb; set +a; uv run --locked --all-packages python tooling/mongodb_backup_restore_smoke.py
+
+acquisition-output-mongo-benchmark: acquisition-output-mongo-provision
+	@set -a; . .env.mongodb; set +a; uv run --locked --all-packages python tooling/benchmark_acquisition_output_mongodb.py
+
+acquisition-output-mongo-benchmark-100k: acquisition-output-mongo-provision
+	@set -a; . .env.mongodb; set +a; uv run --locked --all-packages python tooling/benchmark_acquisition_output_mongodb.py --counts=100000
+
+acquisition-output-mongo-down:
+	docker compose --env-file .env.mongodb -f $(MONGO_COMPOSE_FILE) down
 
 execution-coordination-protected-e2e:
 	uv run --locked --all-packages python tooling/run_execution_coordination_e2e.py --docker
