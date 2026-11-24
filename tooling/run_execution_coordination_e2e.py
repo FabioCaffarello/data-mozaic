@@ -70,6 +70,9 @@ def _build_image(assembled: Path, temp: Path) -> tuple[str, str, str]:
                 builder,
                 "--platform",
                 "linux/amd64",
+                "--tag",
+                tag,
+                "--load",
                 "--output",
                 f"type=oci,dest={oci_archive}",
                 "--metadata-file",
@@ -101,21 +104,12 @@ def _build_image(assembled: Path, temp: Path) -> tuple[str, str, str]:
             or metadata.get("containerimage.digest") != oci_digest
         ):
             raise RuntimeError("BuildKit metadata differs from OCI manifest digest")
-        loaded = _run(["docker", "load", "--input", str(oci_archive)]).stdout
-        local_image_id = next(
-            (
-                line.split(": ", 1)[1]
-                for line in loaded.splitlines()
-                if line.startswith("Loaded image ID: ")
-            ),
-            None,
-        )
+        info = json.loads(_run(["docker", "image", "inspect", tag]).stdout)[0]
+        local_image_id = info.get("Id")
         if not isinstance(local_image_id, str) or not local_image_id.startswith(
             "sha256:"
         ):
-            raise RuntimeError("Docker did not load an OCI image ID")
-        _run(["docker", "image", "tag", local_image_id, tag])
-        info = json.loads(_run(["docker", "image", "inspect", tag]).stdout)[0]
+            raise RuntimeError("Buildx did not load a local Docker image ID")
         if info.get("Id") != local_image_id:
             raise RuntimeError(
                 "Docker image tag resolved to a different local image ID"
