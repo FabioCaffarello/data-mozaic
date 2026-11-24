@@ -10,6 +10,8 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from mozaic_bot_build import BotBuildVerificationError, derive_bot_id, verify_bot_build
+
 from .playbook_v2 import (
     IR_VERSION,
     ParsedPlaybook,
@@ -19,7 +21,11 @@ from .playbook_v2 import (
     validate_playbook_v2,
 )
 from .reference_runtime import RUNTIME_VERSION
-from .runtime_identity import runtime_bundle_files, verify_runtime_identity
+from .runtime_identity import (
+    RUNTIME_PACKAGE,
+    RUNTIME_PACKAGE_VERSION,
+    runtime_bundle_files,
+)
 from .syntax import PlaybookError
 
 BACKEND_ID = "python-http-reference"
@@ -31,6 +37,14 @@ PROFILE = json.loads(
     .read_text(encoding="utf-8")
 )
 BACKEND_CAPABILITIES = frozenset(PROFILE["capabilities"])
+
+
+def _platform_slug() -> str:
+    system = platform.system().lower()
+    machine = {"x86_64": "amd64", "aarch64": "arm64"}.get(
+        platform.machine().lower(), platform.machine().lower()
+    )
+    return f"{system}/{machine}"
 
 
 def check_capabilities(ir: TypedIR) -> list[dict[str, str]]:
@@ -197,6 +211,8 @@ def compile_build(
     fixture_root: Path,
     output: Path,
     lockfile: Path,
+    playbook_sha256: str | None = None,
+    target_platform: str | None = None,
 ) -> dict[str, Any]:
     result = validate_playbook_v2(parsed, fixture_root=fixture_root)
     if not result.valid:
@@ -216,7 +232,24 @@ def compile_build(
     # Capability rejection happens before the output directory is created.
     destination = _safe_output_path(output)
     lock_digest = hashlib.sha256(lockfile.read_bytes()).hexdigest()
-    normalized_playbook = canonical_json(parsed.document)
+    if playbook_sha256 is not None and (
+        not isinstance(playbook_sha256, str)
+        or len(playbook_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in playbook_sha256)
+    ):
+        raise PlaybookError(
+            "[PLAYBOOK_DIGEST_INVALID] playbook digest must be lowercase sha256"
+        )
+    target_platform = target_platform or _platform_slug()
+    if (
+        not isinstance(target_platform, str)
+        or "/" not in target_platform
+        or any(
+            not part or not part.replace("-", "").replace("_", "").isalnum()
+            for part in target_platform.split("/", 1)
+        )
+    ):
+        raise PlaybookError("[TARGET_PLATFORM_INVALID] target platform is invalid")
     fixture_index = json.loads(
         (fixture_root / "index.json").read_text(encoding="utf-8")
     )
@@ -275,9 +308,17 @@ def compile_build(
         name: hashlib.sha256(data).hexdigest() for name, data in sorted(files.items())
     }
     manifest_core = {
-        "manifest_version": "bot-build-manifest/v1",
+        "manifest_version": "bot-build-manifest/v2",
+        "playbook_id": parsed.document["playbook_id"],
+        "bot_id": derive_bot_id(
+            parsed.document["playbook_id"], parsed.document["source"]["source_id"]
+        ),
+        "source": {
+            "source_id": parsed.document["source"]["source_id"],
+            "source_revision": parsed.document["source"]["revision"],
+        },
         "playbook_version": parsed.document["dsl_version"],
-        "playbook_sha256": hashlib.sha256(normalized_playbook).hexdigest(),
+        "playbook_sha256": playbook_sha256,
         "ir_version": IR_VERSION,
         "ir_sha256": ir.sha256,
         "backend_id": BACKEND_ID,
@@ -287,6 +328,17 @@ def compile_build(
         ).hexdigest(),
         "compiler_version": COMPILER_VERSION,
         "runtime_identity": runtime_identity,
+        "capability_profile_id": "python-http-reference-v1",
+        "dependency_identity": {
+            "lockfile_sha256": lock_digest,
+            "packages": {"selectolax": "0.4.13"},
+        },
+        "compatibility": {
+            "worker_contract": "python-reference/v1",
+            "execution_mode": "fixture-only",
+            "python_minor": f"{platform.python_version_tuple()[0]}.{platform.python_version_tuple()[1]}",
+            "target_platform": target_platform,
+        },
         "toolchain": {
             "python": platform.python_version(),
             "python_implementation": platform.python_implementation(),
@@ -331,34 +383,43 @@ def verify_build(
     profile: dict[str, Any] = PROFILE,
     expected_toolchain: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    if directory.is_symlink() or not directory.is_dir():
-        raise PlaybookError(
-            "[BUILD_DIRECTORY_INVALID] build directory must be a real directory"
-        )
-    absolute = directory.absolute()
-    current = Path(absolute.anchor)
-    for part in absolute.parts[1:]:
-        current /= part
-        if current.is_symlink():
-            raise PlaybookError(
-                "[BUILD_DIRECTORY_INVALID] build path contains a symlink"
-            )
     manifest_path = directory / "manifest.json"
-    if manifest_path.is_symlink() or not manifest_path.is_file():
-        raise PlaybookError(
-            "[BUILD_MANIFEST_MISSING] manifest.json is missing or unsafe"
-        )
-    if manifest_path.stat().st_size > 1_000_000:
-        raise PlaybookError("[BUILD_MANIFEST_INVALID] manifest exceeds 1 MB")
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise PlaybookError(f"[BUILD_MANIFEST_INVALID] {error}") from error
-    if not isinstance(manifest, dict):
-        raise PlaybookError("[BUILD_MANIFEST_INVALID] manifest root must be an object")
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
+        if (
+            isinstance(manifest, dict)
+            and manifest.get("manifest_version") == "bot-build-manifest/v2"
+        ):
+            if (
+                manifest.get("backend_id") != expected_backend_id
+                or manifest.get("backend_version") != expected_backend_version
+                or manifest.get("compiler_version") != expected_compiler_version
+                or manifest.get("ir_version") != IR_VERSION
+                or manifest.get("playbook_version") != "capture-playbook-draft/v2"
+            ):
+                raise PlaybookError(
+                    "[BUILD_VERSION_UNSUPPORTED] incompatible build manifest/backend"
+                )
+            runtime_identity = manifest.get("runtime_identity")
+            if (
+                not isinstance(runtime_identity, dict)
+                or runtime_identity.get("package") != RUNTIME_PACKAGE
+                or runtime_identity.get("version") != RUNTIME_PACKAGE_VERSION
+            ):
+                raise PlaybookError(
+                    "[BUILD_RUNTIME_UNSUPPORTED] incompatible runtime identity"
+                )
+        verified = verify_bot_build(
+            directory,
+            hashlib.sha256(manifest_bytes).hexdigest(),
+            supported_versions=("bot-build-manifest/v1", "bot-build-manifest/v2"),
+        )
+    except (OSError, json.JSONDecodeError, BotBuildVerificationError) as error:
+        raise PlaybookError(str(error)) from error
+    manifest = verified.manifest
     if (
-        manifest.get("manifest_version") != "bot-build-manifest/v1"
-        or manifest.get("backend_id") != expected_backend_id
+        manifest.get("backend_id") != expected_backend_id
         or manifest.get("backend_version") != expected_backend_version
         or manifest.get("compiler_version") != expected_compiler_version
         or manifest.get("ir_version") != IR_VERSION
@@ -372,10 +433,23 @@ def verify_build(
         raise PlaybookError(
             "[BUILD_PROFILE_UNSUPPORTED] backend capability profile differs"
         )
+    if manifest.get("manifest_version") == "bot-build-manifest/v2":
+        expected_profile_id = {
+            "python-http-reference": "python-http-reference-v1",
+            "scrapy-fixture": "scrapy-fixture-v1",
+        }.get(expected_backend_id)
+        if manifest.get("capability_profile_id") != expected_profile_id:
+            raise PlaybookError("[BUILD_PROFILE_UNSUPPORTED] profile identity differs")
+    lock_digest = (
+        manifest.get("dependency_identity", {}).get("lockfile_sha256")
+        if manifest.get("manifest_version") == "bot-build-manifest/v2"
+        else manifest.get("dependency_lock_sha256")
+    )
     lockfile = Path(__file__).resolve().parents[3] / "uv.lock"
-    if not lockfile.is_file() or hashlib.sha256(
-        lockfile.read_bytes()
-    ).hexdigest() != manifest.get("dependency_lock_sha256"):
+    if (
+        not lockfile.is_file()
+        or hashlib.sha256(lockfile.read_bytes()).hexdigest() != lock_digest
+    ):
         raise PlaybookError(
             "[BUILD_DEPENDENCIES_UNSUPPORTED] dependency lock digest differs"
         )
@@ -394,35 +468,19 @@ def verify_build(
         raise PlaybookError(
             "[BUILD_TOOLCHAIN_UNSUPPORTED] build toolchain identity differs"
         )
-    verify_runtime_identity(directory, manifest.get("runtime_identity"))
-    files = manifest.get("generated_files")
-    if not isinstance(files, dict):
-        raise PlaybookError(
-            "[BUILD_MANIFEST_INVALID] generated_files must be an object"
-        )
-    actual_names = set()
-    for path in directory.rglob("*"):
-        if path.is_symlink():
-            raise PlaybookError("[BUILD_FILE_UNSAFE] build contains a symlink")
-        if path.is_file() and path.relative_to(directory).as_posix() != "manifest.json":
-            actual_names.add(path.relative_to(directory).as_posix())
-    if actual_names != set(files):
-        raise PlaybookError(
-            "[BUILD_FILE_SET_MISMATCH] generated file set differs from manifest"
-        )
-    for name, expected in files.items():
-        if Path(name).is_absolute() or ".." in Path(name).parts:
-            raise PlaybookError("[BUILD_FILE_UNSAFE] manifest contains unsafe path")
-        path = directory / name
-        if path.is_symlink() or not path.is_file():
-            raise PlaybookError(f"[BUILD_FILE_MISSING] {name}")
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
-        if actual != expected:
-            raise PlaybookError(f"[BUILD_DIGEST_MISMATCH] {name}")
-    core = {key: value for key, value in manifest.items() if key != "build_id"}
-    actual_build_id = hashlib.sha256(canonical_json(core)).hexdigest()
-    if actual_build_id != manifest.get("build_id"):
-        raise PlaybookError(
-            "[BUILD_ID_MISMATCH] manifest build_id does not match contents"
-        )
+    if manifest.get("manifest_version") == "bot-build-manifest/v2":
+        compatibility = manifest["compatibility"]
+        if (
+            compatibility.get("python_minor")
+            != f"{platform.python_version_tuple()[0]}.{platform.python_version_tuple()[1]}"
+        ):
+            raise PlaybookError("[BUILD_TOOLCHAIN_UNSUPPORTED] Python minor differs")
+        if manifest.get("playbook_sha256") is not None and (
+            not isinstance(manifest["playbook_sha256"], str)
+            or len(manifest["playbook_sha256"]) != 64
+            or any(
+                char not in "0123456789abcdef" for char in manifest["playbook_sha256"]
+            )
+        ):
+            raise PlaybookError("[PLAYBOOK_DIGEST_INVALID] manifest digest is invalid")
     return manifest

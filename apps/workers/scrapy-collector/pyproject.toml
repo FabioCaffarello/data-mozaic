@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mozaic-scrapy-collector"
+version = "0.1.0"
+description = "Fixture-only Scrapy project for isolated execution of assembled Data Mozaic BotBuilds"
+requires-python = ">=3.12"
+dependencies = [
+    "mozaic-bot-build==0.1.0",
+    "PyYAML>=6.0,<7",
+    "scrapy==2.20.0",
+    "selectolax==0.4.13",
+]
+
+[project.scripts]
+scrapy-collector = "scrapy_collector.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scrapy_collector"]

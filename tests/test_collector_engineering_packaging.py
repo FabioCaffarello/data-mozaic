@@ -76,6 +76,7 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
         ) as temporary:
             external = Path(temporary)
             distributions = external / "dist"
+            distributions.mkdir()
             subprocess.run(
                 [
                     "uv",
@@ -91,6 +92,24 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
+            bot_build_distribution = external / "bot-build-dist"
+            subprocess.run(
+                [
+                    "uv",
+                    "build",
+                    "--offline",
+                    "--package",
+                    "mozaic-bot-build",
+                    "--wheel",
+                    "--out-dir",
+                    str(bot_build_distribution),
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            bot_build_wheel = next(bot_build_distribution.glob("*.whl"))
             fixture_copy = external / "fixtures"
             shutil.copytree(FIXTURE, fixture_copy)
             transcript_path = fixture_copy / "transcript.json"
@@ -130,6 +149,27 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                     self.fail(
                         f"could not install {suffix} into the isolated environment:\n"
                         f"{installed.stdout}\n{installed.stderr}"
+                    )
+                shared_installed = subprocess.run(
+                    [
+                        "uv",
+                        "pip",
+                        "install",
+                        "--offline",
+                        "--no-deps",
+                        "--python",
+                        str(python),
+                        str(bot_build_wheel),
+                    ],
+                    cwd=external,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if shared_installed.returncode:
+                    self.fail(
+                        "could not install mozaic-bot-build into the isolated environment:\n"
+                        f"{shared_installed.stdout}\n{shared_installed.stderr}"
                     )
                 clean_env = os.environ.copy()
                 clean_env.pop("PYTHONPATH", None)

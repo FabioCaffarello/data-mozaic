@@ -8,6 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOTS = (
     ROOT / "apps/scout/scout",
     ROOT / "apps/collector-engineering/collector_engineering",
+    ROOT / "apps/workers/scrapy-collector/src/scrapy_collector",
+    ROOT / "libs/python/bot-build/src",
     ROOT / "libs/python/observability/src",
     ROOT / "tooling",
 )

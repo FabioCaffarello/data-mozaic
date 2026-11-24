@@ -1,4 +1,4 @@
-.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
+.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector scrapy-collector-multibot-conformance test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
 
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 
@@ -16,10 +16,10 @@ lock-check:
 	uv lock --check
 
 lint:
-	uv run --locked ruff check tooling tests apps/scout apps/collector-engineering libs/python/observability
+	uv run --locked ruff check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector libs/python/bot-build libs/python/observability
 
 format-check:
-	uv run --locked ruff format --check tooling tests apps/scout apps/collector-engineering libs/python/observability
+	uv run --locked ruff format --check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector libs/python/bot-build libs/python/observability
 
 docs-check:
 	uv run --locked python tooling/check_docs.py
@@ -35,11 +35,15 @@ architecture-check:
 
 test-libraries:
 	uv run --locked --package mozaic-observability python -m unittest discover -s libs/python/observability/tests -v
+	uv run --locked --package mozaic-bot-build python -m unittest discover -s libs/python/bot-build/tests -v
+
+test-scrapy-collector:
+	uv run --locked --package mozaic-scrapy-collector python -m unittest discover -s apps/workers/scrapy-collector/tests -v
 
 test:
 	uv run --locked python -m unittest discover -s tests -v
 
-check: lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test
+check: lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector test
 
 hooks-install: sync
 	uv run --locked pre-commit install --hook-type pre-commit
@@ -60,6 +64,9 @@ collector-playbook-examples:
 
 collector-cross-backend-conformance:
 	uv run --locked --package mozaic-collector-engineering python -m collector_engineering cross-backend-conformance
+
+scrapy-collector-multibot-conformance:
+	uv run --locked --all-packages python tooling/run_scrapy_collector_multibot.py --docker
 
 db-up:
 	$(require_env)

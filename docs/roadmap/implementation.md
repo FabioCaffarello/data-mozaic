@@ -34,6 +34,14 @@ O PR #9 introduz skill Codex, MCP e BC15 local. A remediação preserva Scout v1
 
 PR #10 preserva a DSL v1 e adiciona draft/v2, validação semântica com diagnostics estáveis, `collector-ir/v1`, profile versionado Python HTTP Reference, código Python específico da IR e BotBuild local verificável. A runtime resolve somente fixtures com digest e não abre rede. HTML, catálogo limitado, JSON e autoria local Codex têm exemplos/oracles independentes; o caso browser valida semanticamente e falha no capability checker. Ver evidências e limitações em [exemplos executáveis](../../examples/playbooks/README.md), [runbook BC15](../operations/capture-playbook-drafts.md) e [ADR 018](../architecture/decisions/018-collector-playbook-ir-and-reference-backend.md). Isso não fecha os gates do deployment Scout, não implementa Scrapy/Playwright, não cria BotRelease e não autoriza captura produtiva.
 
+## PR #12 integrado — backend Scrapy fixture-only
+
+O PR #12 adicionou o segundo backend BC15, mantendo Playbook/IR e a runtime semântica no owner BC15. A saída Scrapy ainda é um BotBuild standalone; o PR não entregou um projeto worker multi-bot, catálogo instalado nem lifecycle de execução do Collector.
+
+## Próximo incremento proposto — Scrapy Collector multi-bot
+
+O [ADR 020](../architecture/decisions/020-scrapy-collector-multi-bot-project.md) propõe um projeto Scrapy instalável, assembly imutável de múltiplos BotBuilds v2, catálogo local fechado e launcher com um processo fresco por execução. A implementação deve preservar os oracles independentes, exigir compatibilidade explícita entre Python/Scrapy/runtime/dependency lock/target de plataforma e executar a imagem Linux/amd64 com rede negada. Este worker não compila Playbooks nem substitui BC04/BC11/BC16/BC06; o ADR permanece Proposed até aprovação humana.
+
 ## Próximo limite — adapters proprietários e adoção controlada
 
 Integrar somente fontes e approvals fornecidas pelos owners BC01/BC11 e custódia/traces por BC06, com revisão dos contratos de receipts e validação de transcript pelo CLI BC15. Não implementar produção até haver política operacional e gates de egress e sandbox do agente.
