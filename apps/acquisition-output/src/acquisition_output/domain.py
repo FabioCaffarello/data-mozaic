@@ -751,6 +751,12 @@ class PublicationReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class PublishedOutputPage:
+    outputs: tuple[CaptureOutputVariant, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class CustodyReceipt:
     tenant_id: str
     artifact_id: str

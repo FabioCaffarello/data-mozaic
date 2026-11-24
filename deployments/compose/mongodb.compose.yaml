@@ -1,0 +1,59 @@
+services:
+  mongodb:
+    image: mongo:8.0.38
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        install -o mongodb -g mongodb -m 400 /run/mongodb/keyfile /tmp/bc05-keyfile
+        exec /usr/local/bin/docker-entrypoint.sh mongod --replSet rs0 --bind_ip_all --auth --keyFile /tmp/bc05-keyfile
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?run-mongo-setup}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?run-mongo-setup}
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - bc05-mongodb-data:/data/db
+      - ../../.local/mongodb/keyfile:/run/mongodb/keyfile:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --host 127.0.0.1:27017 --username \"$$MONGO_INITDB_ROOT_USERNAME\" --password \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'db.adminCommand({ping:1}).ok' | grep 1"]
+      interval: 5s
+      timeout: 4s
+      retries: 24
+      start_period: 20s
+    mem_limit: 2g
+    cpus: 2.0
+    networks: [bc05-mongo]
+
+  mongodb-init:
+    image: mongo:8.0.38
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      MONGO_ROOT_USER: ${MONGO_ROOT_USER:?run-mongo-setup}
+      MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?run-mongo-setup}
+      MONGO_APP_USER: ${MONGO_APP_USER:?run-mongo-setup}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?run-mongo-setup}
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        mongosh "mongodb://$${MONGO_ROOT_USER}:$${MONGO_ROOT_PASSWORD}@mongodb:27017/admin?authSource=admin&directConnection=true" --quiet --eval '
+          const admin = db.getSiblingDB("admin");
+          try { rs.status(); } catch (e) { if (e.codeName !== "NotYetInitialized") throw e; rs.initiate({_id:"rs0", members:[{_id:0, host:"mongodb:27017"}]}); }
+          let ready = false;
+          for (let i=0; i<60; i++) { try { if (db.hello().isWritablePrimary) { ready=true; break; } } catch (_) {} sleep(500); }
+          if (!ready) throw new Error("replica set did not elect primary");
+          const app = db.getSiblingDB("${BC05_MONGODB_DATABASE:-bc05_outputs}");
+          const user = process.env.MONGO_APP_USER;
+          if (!app.getUser(user)) app.createUser({user, pwd: process.env.MONGO_APP_PASSWORD, roles:[{role:"readWrite", db:"${BC05_MONGODB_DATABASE:-bc05_outputs}"}]});
+        '
+    restart: "no"
+    networks: [bc05-mongo]
+
+networks:
+  bc05-mongo:
+    name: data-mozaic-bc05-mongo
+
+volumes:
+  bc05-mongodb-data:
+    name: data-mozaic-bc05-mongodb-data
