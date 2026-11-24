@@ -31,6 +31,9 @@ jobs:
     name: Integration Security Gate
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
     env:
       SCOUT_HTTP_E2E_PROJECT: scout-http-e2e-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -161,6 +164,7 @@ jobs:
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           artifact-ids: ${{ steps.upload-linux-release-candidate.outputs.artifact-id }}
+          github-token: ${{ github.token }}
           path: ${{ runner.temp }}/scout-release-${{ github.run_id }}-${{ github.run_attempt }}/downloaded
       - name: Verify the exact downloaded artifact
         env:
