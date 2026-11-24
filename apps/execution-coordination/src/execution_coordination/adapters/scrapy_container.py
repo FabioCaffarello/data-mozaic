@@ -160,7 +160,11 @@ class ScrapyContainerExecutor:
             "--security-opt",
             "no-new-privileges",
             "--log-driver",
-            "none",
+            "local",
+            "--log-opt",
+            "max-size=1m",
+            "--log-opt",
+            "max-file=2",
             "--cap-drop",
             "ALL",
             "--mount",
@@ -320,7 +324,9 @@ class ScrapyContainerExecutor:
             "no_new_privileges": host.get("SecurityOpt")
             in (["no-new-privileges:true"], ["no-new-privileges"]),
             "bounded_container_logs": (host.get("LogConfig") or {}).get("Type")
-            == "none",
+            == "local"
+            and (host.get("LogConfig") or {}).get("Config")
+            == {"max-size": "1m", "max-file": "2"},
             "no_extra_binds": host.get("Binds") in (None, []),
         }
         failed = [name for name, passed in checks.items() if not passed]
@@ -516,7 +522,10 @@ class DockerExecution:
                             or exit_code not in {0, 1, 2, 70}
                             else "failed"
                         )
+                        logs = self._bounded_container_logs()
                         diagnostic = f"container exited without a valid report (exit {exit_code})"
+                        if logs:
+                            diagnostic += f"; bounded container output: {logs}"
                     else:
                         status, diagnostic = (
                             "failed",
@@ -614,6 +623,19 @@ class DockerExecution:
                 "worker report file is invalid JSON"
             ) from error
         return report if isinstance(report, dict) else None
+
+    def _bounded_container_logs(self) -> str:
+        result = subprocess.run(
+            ["docker", "logs", "--tail", "32", self.container_id],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=self.executor.config.limits.command_timeout_seconds,
+            env=self.executor._docker_environment(),
+        )
+        if result.returncode:
+            return ""
+        return (result.stdout + result.stderr).strip()[-600:]
 
     def _collect_verified_output(self, worker_result: dict[str, Any]) -> None:
         worker_id = worker_result.get("outputs", {}).get("temporary_ref")
