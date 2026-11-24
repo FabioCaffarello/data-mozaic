@@ -13,6 +13,7 @@ members = [
     "data-mozaic-workspace",
     "mozaic-bot-build",
     "mozaic-collector-engineering",
+    "mozaic-execution-coordination",
     "mozaic-observability",
     "mozaic-scout",
     "mozaic-scrapy-collector",
@@ -1240,6 +1241,11 @@ requires-dist = [
     { name = "scrapy", specifier = "==2.20.0" },
     { name = "selectolax", specifier = ">=0.4.13,<0.5" },
 ]
+
+[[package]]
+name = "mozaic-execution-coordination"
+version = "0.1.0"
+source = { editable = "apps/execution-coordination" }
 
 [[package]]
 name = "mozaic-observability"

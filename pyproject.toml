@@ -22,6 +22,7 @@ members = [
     "apps/scout",
     "apps/collector-engineering",
     "apps/workers/scrapy-collector",
+    "apps/execution-coordination",
     "libs/python/bot-build",
     "libs/python/observability",
 ]
@@ -30,5 +31,6 @@ members = [
 mozaic-scout = { workspace = true }
 mozaic-collector-engineering = { workspace = true }
 mozaic-scrapy-collector = { workspace = true }
+mozaic-execution-coordination = { workspace = true }
 mozaic-bot-build = { workspace = true }
 mozaic-observability = { workspace = true }

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.invalid/contracts/execution-report/draft/v0/ExecutionReport.schema.json",
+  "title": "ExecutionReport v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "request_id", "run_id", "attempt_id", "execution_id", "identities", "technical_status", "duration_ms", "counts", "diagnostics", "outputs"],
+  "properties": {
+    "contract_version": {"const": "execution-report/v0"},
+    "request_id": {"type": "string"},
+    "run_id": {"type": "string", "format": "uuid"},
+    "attempt_id": {"type": "string", "format": "uuid"},
+    "execution_id": {"type": "string", "format": "uuid"},
+    "identities": {"type": "object", "additionalProperties": false, "required": ["source_id", "source_revision", "bot_id", "build_id", "bot_build_manifest_digest", "assembly_id", "catalog_digest", "oci_digest", "local_image_id", "fixture_bundle_id", "fixture_bundle_digest"], "properties": {"source_id": {"type": "string"}, "source_revision": {"type": "string"}, "bot_id": {"type": "string", "pattern": "^bot-[0-9a-f]{64}$"}, "build_id": {"$ref": "#/$defs/digest"}, "bot_build_manifest_digest": {"$ref": "#/$defs/digest"}, "assembly_id": {"$ref": "#/$defs/digest"}, "catalog_digest": {"$ref": "#/$defs/digest"}, "oci_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "local_image_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "fixture_bundle_id": {"type": "string"}, "fixture_bundle_digest": {"$ref": "#/$defs/digest"}}},
+    "technical_status": {"enum": ["succeeded", "failed", "timed_out", "cancelled", "crashed"]},
+    "duration_ms": {"type": "integer", "minimum": 0},
+    "counts": {"type": "object", "additionalProperties": false, "required": ["records", "output_bytes"], "properties": {"records": {"type": "integer", "minimum": 0}, "output_bytes": {"type": "integer", "minimum": 0}}},
+    "diagnostics": {"type": "array", "maxItems": 64, "items": {"type": "object", "additionalProperties": false, "required": ["code", "message"], "properties": {"code": {"type": "string", "maxLength": 64}, "message": {"type": "string", "maxLength": 1000}}}},
+    "outputs": {"type": "object", "additionalProperties": false, "required": ["records_sha256", "temporary_ref"], "properties": {"records_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}, "temporary_ref": {"type": ["string", "null"], "maxLength": 512}}}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

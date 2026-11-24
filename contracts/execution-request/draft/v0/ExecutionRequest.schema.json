@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.invalid/contracts/execution-request/draft/v0/ExecutionRequest.schema.json",
+  "title": "ExecutionRequest v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "request_id", "run_id", "attempt_id", "execution_id", "source", "bot", "assembly", "worker_image", "fixtures", "execution_mode", "deadline", "budgets", "correlation"],
+  "properties": {
+    "contract_version": {"const": "execution-request/v0"},
+    "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "run_id": {"type": "string", "format": "uuid"},
+    "attempt_id": {"type": "string", "format": "uuid"},
+    "execution_id": {"type": "string", "format": "uuid"},
+    "source": {"type": "object", "additionalProperties": false, "required": ["source_id", "source_revision"], "properties": {"source_id": {"type": "string", "minLength": 1}, "source_revision": {"type": "string", "minLength": 1}}},
+    "bot": {"type": "object", "additionalProperties": false, "required": ["bot_id", "build_id", "manifest_digest"], "properties": {"bot_id": {"type": "string", "pattern": "^bot-[0-9a-f]{64}$"}, "build_id": {"$ref": "#/$defs/digest"}, "manifest_digest": {"$ref": "#/$defs/digest"}}},
+    "assembly": {"type": "object", "additionalProperties": false, "required": ["assembly_id", "catalog_digest"], "properties": {"assembly_id": {"$ref": "#/$defs/digest"}, "catalog_digest": {"$ref": "#/$defs/digest"}}},
+    "worker_image": {"type": "object", "additionalProperties": false, "required": ["oci_image", "oci_digest", "local_image_id"], "properties": {"oci_image": {"type": "string", "pattern": "@sha256:[0-9a-f]{64}$"}, "oci_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "local_image_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}},
+    "fixtures": {"type": "object", "additionalProperties": false, "required": ["bundle_id", "bundle_digest"], "properties": {"bundle_id": {"type": "string", "minLength": 1}, "bundle_digest": {"$ref": "#/$defs/digest"}}},
+    "execution_mode": {"const": "fixture-only"},
+    "deadline": {"type": "string", "format": "date-time"},
+    "budgets": {"type": "object", "additionalProperties": false, "required": ["duration_seconds", "output_bytes", "records"], "properties": {"duration_seconds": {"type": "integer", "minimum": 1, "maximum": 300}, "output_bytes": {"type": "integer", "minimum": 1, "maximum": 16777216}, "records": {"type": "integer", "minimum": 1, "maximum": 10000}}},
+    "correlation": {"type": "object", "maxProperties": 3, "propertyNames": {"enum": ["trace_id", "correlation_id", "intake_id"]}, "additionalProperties": {"type": "string", "maxLength": 128}}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}
