@@ -18,6 +18,7 @@ from .domain import (
     OutputSetSnapshot,
     OutputSetSpec,
     OutputSetState,
+    PublicationAuthorization,
     PublicationReceipt,
     ScopedOperationIdentity,
     canonical_digest,
@@ -199,14 +200,33 @@ class InMemoryOutputStore:
         output_set_id: str,
         expected_manifest_digest: str,
         operation: ScopedOperationIdentity,
+        authorization: PublicationAuthorization | None = None,
     ) -> PublicationReceipt:
         self._require_operation_tenant(tenant_id, operation)
+        authorization_intent = (
+            {
+                field: getattr(authorization, field)
+                for field in (
+                    "tenant_id",
+                    "run_id",
+                    "attempt_id",
+                    "fencing_generation",
+                    "output_set_id",
+                    "manifest_digest",
+                    "reservation_id",
+                    "operation_id",
+                )
+            }
+            if authorization is not None
+            else None
+        )
         intent = canonical_digest(
             {
                 "command": "publish",
                 "tenant_id": tenant_id,
                 "output_set_id": output_set_id,
                 "manifest_digest": expected_manifest_digest,
+                "authorization": authorization_intent,
             }
         )
         op_key = (tenant_id, operation.operation_id)
@@ -216,6 +236,27 @@ class InMemoryOutputStore:
             if replay is not None:
                 return replay  # type: ignore[return-value]
             root = self._required_set(set_key)
+            execution = root.binding.execution
+            if execution.run_id is not None:
+                if authorization is None or any(
+                    getattr(authorization, field, None) != expected
+                    for field, expected in (
+                        ("tenant_id", tenant_id),
+                        ("run_id", execution.run_id),
+                        ("attempt_id", execution.attempt_id),
+                        ("fencing_generation", execution.fencing_token),
+                        ("output_set_id", output_set_id),
+                        ("manifest_digest", expected_manifest_digest),
+                        ("operation_id", operation.operation_id),
+                    )
+                ):
+                    raise OutputError(
+                        "run-bound OutputSet requires a matching publication grant"
+                    )
+            elif authorization is not None:
+                raise OutputConflict(
+                    "unbound OutputSet cannot consume a publication grant"
+                )
             if root.manifest_digest != expected_manifest_digest:
                 raise OutputConflict(
                     "publication digest does not match the sealed membership"
@@ -232,8 +273,15 @@ class InMemoryOutputStore:
                     manifest_digest=expected_manifest_digest,
                     publication_id=str(uuid4()),
                     published_at=updated.published_at or datetime.now(UTC),
+                    finalization_reservation_id=(
+                        getattr(authorization, "reservation_id", None)
+                    ),
                 )
-            elif receipt.manifest_digest != expected_manifest_digest:
+            elif (
+                receipt.manifest_digest != expected_manifest_digest
+                or receipt.finalization_reservation_id
+                != getattr(authorization, "reservation_id", None)
+            ):
                 raise OutputConflict("published OutputSet cannot change manifest")
             self._sets[set_key] = updated
             self._publications[set_key] = receipt

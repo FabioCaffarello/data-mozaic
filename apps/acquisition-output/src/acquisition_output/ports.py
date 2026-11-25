@@ -13,6 +13,7 @@ from .domain import (
     OutputSetSnapshot,
     OutputSetSpec,
     PayloadContractRef,
+    PublicationAuthorization,
     PublicationReceipt,
     ScopedOperationIdentity,
     SourceRevisionRef,
@@ -76,6 +77,7 @@ class OutputSetPublicationPort(Protocol):
         output_set_id: str,
         manifest_digest: str,
         operation: ScopedOperationIdentity,
+        authorization: PublicationAuthorization | None = None,
     ) -> PublicationReceipt: ...
 
     def get_publication_receipt(
@@ -87,6 +89,10 @@ class PendingOutboxEventPort(Protocol):
     def list_pending_events(
         self, tenant_id: str, *, limit: int = 100
     ) -> tuple[object, ...]: ...
+
+
+class PublicationGrantVerificationPort(Protocol):
+    def verify(self, grant: Mapping[str, object]) -> PublicationAuthorization: ...
 
 
 class PayloadContractValidationPort(Protocol):

@@ -195,6 +195,38 @@ class ExecutionBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class PublicationAuthorization:
+    """Verified, narrow BC04 authorization projection consumed by BC05."""
+
+    tenant_id: str
+    run_id: str
+    attempt_id: str
+    fencing_generation: int
+    output_set_id: str
+    manifest_digest: str
+    reservation_id: str
+    operation_id: str
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.tenant_id, "authorization tenant"),
+            (self.run_id, "authorization run"),
+            (self.attempt_id, "authorization attempt"),
+            (self.output_set_id, "authorization OutputSet"),
+            (self.reservation_id, "authorization reservation"),
+            (self.operation_id, "authorization operation"),
+        ):
+            _identifier(value, label)
+        _digest(self.manifest_digest, "authorization manifest digest")
+        if (
+            isinstance(self.fencing_generation, bool)
+            or not isinstance(self.fencing_generation, int)
+            or not 1 <= self.fencing_generation <= SAFE_INTEGER
+        ):
+            raise OutputError("authorization generation is outside supported bounds")
+
+
+@dataclass(frozen=True, slots=True)
 class OutputSetBinding:
     tenant_id: str
     source: SourceRevisionRef
@@ -741,6 +773,7 @@ class PublicationReceipt:
     manifest_digest: str
     publication_id: str
     published_at: datetime
+    finalization_reservation_id: str | None = None
 
     def __post_init__(self) -> None:
         _identifier(self.tenant_id, "publication tenant")
@@ -748,6 +781,8 @@ class PublicationReceipt:
         _identifier(self.output_set_id, "publication output_set_id")
         _digest(self.manifest_digest, "publication manifest_digest")
         _identifier(self.publication_id, "publication_id")
+        if self.finalization_reservation_id is not None:
+            _identifier(self.finalization_reservation_id, "finalization_reservation_id")
 
 
 @dataclass(frozen=True, slots=True)

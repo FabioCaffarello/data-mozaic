@@ -12,6 +12,7 @@
     "output_set_id": {"$ref": "CaptureOutput.schema.json#/$defs/identifier"},
     "manifest_digest": {"$ref": "CaptureOutput.schema.json#/$defs/digest"},
     "publication_id": {"$ref": "CaptureOutput.schema.json#/$defs/identifier"},
-    "published_at": {"type": "string", "format": "date-time"}
+    "published_at": {"type": "string", "format": "date-time"},
+    "finalization_reservation_id": {"$ref": "CaptureOutput.schema.json#/$defs/identifier"}
   }
 }

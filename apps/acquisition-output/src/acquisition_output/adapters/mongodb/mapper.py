@@ -308,7 +308,7 @@ def output_receipt_from_document(document: dict[str, Any]) -> OutputReceipt:
 
 
 def publication_receipt_document(receipt: PublicationReceipt) -> dict[str, Any]:
-    return {
+    document = {
         "tenant_id": receipt.tenant_id,
         "operation_id": receipt.operation_id,
         "output_set_id": receipt.output_set_id,
@@ -316,6 +316,9 @@ def publication_receipt_document(receipt: PublicationReceipt) -> dict[str, Any]:
         "publication_id": receipt.publication_id,
         "published_at_us": datetime_to_epoch_us(receipt.published_at),
     }
+    if receipt.finalization_reservation_id is not None:
+        document["finalization_reservation_id"] = receipt.finalization_reservation_id
+    return document
 
 
 def publication_receipt_from_document(document: dict[str, Any]) -> PublicationReceipt:
@@ -326,6 +329,7 @@ def publication_receipt_from_document(document: dict[str, Any]) -> PublicationRe
         manifest_digest=document["manifest_digest"],
         publication_id=document["publication_id"],
         published_at=datetime_from_epoch_us(document["published_at_us"]),
+        finalization_reservation_id=document.get("finalization_reservation_id"),
     )
 
 

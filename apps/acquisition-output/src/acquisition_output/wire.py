@@ -325,7 +325,7 @@ def output_receipt_to_wire(receipt: OutputReceipt) -> dict[str, object]:
 
 
 def publication_receipt_to_wire(receipt: PublicationReceipt) -> dict[str, object]:
-    return {
+    result: dict[str, object] = {
         "contract_version": "publication-receipt/v1",
         "tenant_id": receipt.tenant_id,
         "operation_id": receipt.operation_id,
@@ -334,3 +334,6 @@ def publication_receipt_to_wire(receipt: PublicationReceipt) -> dict[str, object
         "publication_id": receipt.publication_id,
         "published_at": receipt.published_at.isoformat(),
     }
+    if receipt.finalization_reservation_id is not None:
+        result["finalization_reservation_id"] = receipt.finalization_reservation_id
+    return result

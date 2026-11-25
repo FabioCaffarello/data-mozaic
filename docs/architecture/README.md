@@ -50,5 +50,8 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 41. [BC05 MongoDB persistence increment — implementation evidence](assessments/bc05-mongodb-persistence-2026-11-24.md)
 42. [ADR 023 — BC06 Artifact Custody service and local object storage](decisions/023-bc06-artifact-custody.md)
 43. [BC06 Artifact Custody local implementation evidence](assessments/bc06-artifact-custody-local-2026-11-24.md)
+44. [ADR 024 — BC04 durable execution and BC05 finalization reservation](decisions/024-bc04-durable-finalization.md)
+45. [BC04 durable coordination — branch implementation evidence](assessments/bc04-durable-coordination-2026-11-25.md)
+46. [Repository consolidation — 2026-11-24](assessments/repository-consolidation-2026-11-24.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.
