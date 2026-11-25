@@ -863,77 +863,96 @@ class PostgresDurableRunRepository:
                 (limit,),
             ).fetchall()
             for row in rows:
-                now = conn.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
-                if row["deadline"] <= now:
-                    if row["current_attempt_id"] is not None:
-                        conn.execute(
-                            """UPDATE execution_coordination.capture_attempts SET
-                               state='expired',lease_owner=NULL,lease_token=NULL,
-                               lease_until=NULL,finished_at=clock_timestamp(),
-                               diagnostic_code='RUN_DEADLINE_EXPIRED'
-                               WHERE tenant_id=%s AND attempt_id=%s
-                                 AND state IN ('leased','running')""",
-                            (row["tenant_id"], row["current_attempt_id"]),
-                        )
-                    self._terminal_run(
-                        conn,
-                        row,
-                        DurableRunState.TIMED_OUT,
-                        "RUN_DEADLINE_EXPIRED",
-                    )
-                    self._event(
-                        conn,
-                        row["tenant_id"],
-                        row["run_id"],
-                        _terminal_event(DurableRunState.TIMED_OUT),
-                        {"run_id": str(row["run_id"])},
-                    )
+                if self._expire_locked_run(conn, row):
                     changed.append((row["tenant_id"], str(row["run_id"])))
-                    continue
-                if row["current_attempt_id"] is None:
-                    continue
-                conn.execute(
-                    """UPDATE execution_coordination.capture_attempts SET state='expired',
-                       lease_owner=NULL,lease_token=NULL,lease_until=NULL,
-                       finished_at=clock_timestamp(),diagnostic_code='LEASE_EXPIRED'
-                       WHERE tenant_id=%s AND attempt_id=%s
-                         AND state IN ('leased','running')""",
-                    (row["tenant_id"], row["current_attempt_id"]),
-                )
-                event_type = "data-mozaic.execution.capture-attempt-expired.v1"
-                if row["attempt_count"] >= row["max_attempts"]:
-                    self._terminal_run(
-                        conn,
-                        row,
-                        DurableRunState.FAILED,
-                        "ATTEMPT_BUDGET_EXHAUSTED",
-                    )
-                    self._event(
-                        conn,
-                        row["tenant_id"],
-                        row["run_id"],
-                        _terminal_event(DurableRunState.FAILED),
-                        {"run_id": str(row["run_id"]), "generation": row["generation"]},
-                    )
-                else:
-                    conn.execute(
-                        """UPDATE execution_coordination.capture_runs SET state='accepted',
-                           updated_at=clock_timestamp() WHERE tenant_id=%s AND run_id=%s""",
-                        (row["tenant_id"], row["run_id"]),
-                    )
-                    self._event(
-                        conn,
-                        row["tenant_id"],
-                        row["run_id"],
-                        event_type,
-                        {"run_id": str(row["run_id"]), "generation": row["generation"]},
-                    )
-                changed.append((row["tenant_id"], str(row["run_id"])))
         return tuple(
             snapshot
             for tenant_id, run_id in changed
             if (snapshot := self.get(tenant_id, run_id)) is not None
         )
+
+    def recover_expired_run(
+        self, tenant_id: str, run_id: str
+    ) -> DurableRunSnapshot | None:
+        """Recover only this run, using PostgreSQL time and the run row lock."""
+        with self._connect() as conn, conn.transaction():
+            row = conn.execute(
+                """SELECT r.tenant_id,r.run_id,r.deadline,r.attempt_count,r.max_attempts,
+                          r.current_attempt_id,a.generation,a.lease_until
+                   FROM execution_coordination.capture_runs r
+                   LEFT JOIN execution_coordination.capture_attempts a
+                     ON a.tenant_id=r.tenant_id AND a.attempt_id=r.current_attempt_id
+                   WHERE r.tenant_id=%s AND r.run_id=%s
+                     AND ((r.state='running' AND
+                           (a.lease_until<=clock_timestamp() OR r.deadline<=clock_timestamp()))
+                       OR (r.state='accepted' AND r.deadline<=clock_timestamp()))
+                   FOR UPDATE OF r""",
+                (tenant_id, run_id),
+            ).fetchone()
+            if row is not None:
+                self._expire_locked_run(conn, row)
+        return self.get(tenant_id, run_id)
+
+    @classmethod
+    def _expire_locked_run(cls, conn: psycopg.Connection, row: dict[str, Any]) -> bool:
+        now = conn.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
+        if row["deadline"] <= now:
+            if row["current_attempt_id"] is not None:
+                conn.execute(
+                    """UPDATE execution_coordination.capture_attempts SET
+                       state='expired',lease_owner=NULL,lease_token=NULL,
+                       lease_until=NULL,finished_at=clock_timestamp(),
+                       diagnostic_code='RUN_DEADLINE_EXPIRED'
+                       WHERE tenant_id=%s AND attempt_id=%s
+                         AND state IN ('leased','running')""",
+                    (row["tenant_id"], row["current_attempt_id"]),
+                )
+            cls._terminal_run(
+                conn, row, DurableRunState.TIMED_OUT, "RUN_DEADLINE_EXPIRED"
+            )
+            cls._event(
+                conn,
+                row["tenant_id"],
+                row["run_id"],
+                _terminal_event(DurableRunState.TIMED_OUT),
+                {"run_id": str(row["run_id"])},
+            )
+            return True
+        if row["current_attempt_id"] is None:
+            return False
+        conn.execute(
+            """UPDATE execution_coordination.capture_attempts SET state='expired',
+               lease_owner=NULL,lease_token=NULL,lease_until=NULL,
+               finished_at=clock_timestamp(),diagnostic_code='LEASE_EXPIRED'
+               WHERE tenant_id=%s AND attempt_id=%s
+                 AND state IN ('leased','running')""",
+            (row["tenant_id"], row["current_attempt_id"]),
+        )
+        if row["attempt_count"] >= row["max_attempts"]:
+            cls._terminal_run(
+                conn, row, DurableRunState.FAILED, "ATTEMPT_BUDGET_EXHAUSTED"
+            )
+            cls._event(
+                conn,
+                row["tenant_id"],
+                row["run_id"],
+                _terminal_event(DurableRunState.FAILED),
+                {"run_id": str(row["run_id"]), "generation": row["generation"]},
+            )
+        else:
+            conn.execute(
+                """UPDATE execution_coordination.capture_runs SET state='accepted',
+                   updated_at=clock_timestamp() WHERE tenant_id=%s AND run_id=%s""",
+                (row["tenant_id"], row["run_id"]),
+            )
+            cls._event(
+                conn,
+                row["tenant_id"],
+                row["run_id"],
+                "data-mozaic.execution.capture-attempt-expired.v1",
+                {"run_id": str(row["run_id"]), "generation": row["generation"]},
+            )
+        return True
 
     def list_recoverable(self, *, limit: int = 100) -> tuple[DurableRunSnapshot, ...]:
         if not 1 <= limit <= 500:

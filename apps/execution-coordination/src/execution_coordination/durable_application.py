@@ -81,6 +81,13 @@ class DurableExecutionCoordinator:
             raise CoordinationError("CaptureRun does not exist")
         return snapshot
 
+    def recover_expired_run(self, tenant_id: str, run_id: str) -> DurableRunSnapshot:
+        """Apply BC04's normal expiry transition to one explicitly scoped run."""
+        snapshot = self._repository.recover_expired_run(tenant_id, run_id)
+        if snapshot is None:
+            raise CoordinationError("CaptureRun does not exist")
+        return snapshot
+
     def acquire_attempt(
         self, tenant_id: str, run_id: str, worker_id: str, operation_id: str
     ) -> AttemptLease:

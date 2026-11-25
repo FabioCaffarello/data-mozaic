@@ -63,13 +63,11 @@ Playwright e browser sandbox, parser e capture runtime, backend Scrapy, source d
 Usar `libs/<language>/<library>` somente para capacidades técnicas coesas com consumer e owner identificados. ScoutSession, repositórios BC14, migrations, receipts e regras CAS continuam privados ao contexto. `mozaic-observability` permanece interna e experimental; estendê-la somente com primitives estáveis e consumer real. Compor clients HTTP, PostgreSQL e instrumentação de terceiros; não criar `common`, `utils`, `mozaic-postgres`, `mozaic-http` ou `mozaic-proxy` sem critérios de extração e consumidores demonstrados.
 
 
-## Incremento atual — BC04 Execution Coordination v0 (fixture-only)
+## BC04 durable integrado — PR #19
 
-O pacote apps/execution-coordination implementa CaptureRun/Attempt, state machine, idempotência scoped e repository in-memory; a aplicação depende de uma porta de execução, não do Scrapy/Docker. O adapter técnico BC05, composto no mesmo deployable, invoca a imagem Scrapy por digest OCI associado a local image ID, inspeciona configuração efetiva antes de start e executa com rede none, UID não-root, rootfs read-only, mounts mínimos e limites de recursos. ExecutionRequest/Report draft v0 cruzam a fronteira em JSON fechado. Output verificado fica em staging até BC04 aceitar sucesso.
+PR #19 foi integrado por squash em 2026-11-25 (`1db31b3`). BC04 persiste Runs, Attempts, leases, gerações de fencing, receipts, reservas de finalização e eventos PostgreSQL. A reserva vincula uma publicação exata e impede substituir a tentativa enquanto o resultado estiver sem resolução. BC05 verifica grant Ed25519 e grava publication receipt/event no mesmo commit MongoDB da publicação. Reconciliação limitada consulta ou repete a mesma operação de publicação e confirma BC04 somente com receipt correspondente.
 
-O estado é apenas local à vida do processo coordenador; não há recuperação após restart, retries, PostgreSQL, BC11 authorization, BC06 custody, BC16 leases/frontier, API de coordenação ou egress produtivo. O Docker daemon local é privilegiado e continua na trust boundary do adapter. O alvo make execution-coordination-protected-e2e cobre Linux container real e deve rodar no Integration Security Gate; não trate execução direta do worker no host como sandbox.
-
-ADR 021 registra a decisão como Proposed. Nenhum ADR foi promovido por implementação ou CI.
+O protocolo não é uma transação distribuída: PostgreSQL autoriza, MongoDB publica e PostgreSQL registra o resultado terminal em linearizações separadas. Reservas indeterminadas não expiram automaticamente, preservando segurança com custo de disponibilidade. A integração local de BC04 usa composição no processo, ainda sem endpoint autenticado de serviço ou autorização BC11 produtiva. ADRs 022 e 024 continuam Proposed.
 
 ## Roadmap revisado — revisão arquitetural de 2026-11-24
 
@@ -79,8 +77,8 @@ Esta sequência substitui a ordem anterior de MVP que colocava um source real an
 2. **BC05 Output foundation** — CaptureOutput/OutputSet, variantes, identidade, operação idempotente, canonicalização padronizada, staging/seal/publicação local e contratos draft.
 3. **Persistência MongoDB BC05** — coleções, validadores, indexes, transação local de publication/outbox, recuperação e backup/restore de desenvolvimento. MongoDB continua substituível atrás de port.
 4. **Custody BC06** — streaming de bytes, identidade lógica, recibo de custody, inventário PostgreSQL e adapter S3 compatível; a decisão proposta usa Go para o serviço operacional, sem alegar vantagem de desempenho medida. Output dependente de artefato não publica sem custody confirmada.
-5. **Coordenação durável** — BC04/BC16 com PostgreSQL, transições/run attempts, leases/fencing, outbox, retry/deadline/cancelamento e protocolo de finalização distribuída BC04↔BC05 aprovado e testado.
-6. **Worker fixture-only e runtime local** — integrar a saída do worker pelo port BC05 e bytes pelo port BC06 mantendo egress negado; validar manifests e recuperação local.
+5. **Coordenação durável** — concluída em PR #19: BC04 usa PostgreSQL para Runs/Attempts, leases/fencing, retry/deadline/cancelamento, reserva de finalização e reconciliação BC04↔BC05. A reserva continua Proposed em ADR 024 e não estabelece ACID distribuído ou exactly-once.
+6. **Aquisição fixture-only integrada** — implementação local em `feat/acquisition-fixture-integration`: compila/verifica BotBuild, executa Scrapy real com `--network none`, valida bundle no host confiável, confirma bytes do fixture por BC06, publica composites BC05 e conclui/reconcilia BC04. Um fluxo local completo passou; a PR e o gate remoto continuam pendentes. O fluxo e os limites estão no [assessment](../architecture/assessments/fixture-acquisition-integration-2026-11-25.md). Isso não é live acquisition.
 7. **Perfil de aquisição live autorizada** — política própria e security review: autorização explícita por source revision, egress, identidade, rate/budget, credenciais, timeout/cancelamento, auditoria e teste de conexão real. Fixtures coletadas de fonte autorizada não substituem este perfil.
 8. **Vertical Focus** — após etapas 1–7: JSON, registros, observação histórica, persistência e publicação; evidências sintéticas e fixtures derivadas de exploração autorizada permanecem separadas de execução live.
 9. **Vertical CVM DFP/ITR** — downloads permitidos, custody MinIO, CSV/ZIP parsing, backfill e dependências de pipeline; só após validação de políticas e formatos atuais.
@@ -101,10 +99,12 @@ BC05 fornece variantes Record/Artifact/Composite, contratos e fixtures draft, Ou
 
 O incremento atual introduz `apps/artifact-custody` em Go como primeiro serviço operacional multilíngue, contratos HTTP draft, inventário PostgreSQL BC06 e object storage S3 compatível local. RustFS é usado apenas no ambiente local/teste; o provedor de produção permanece decisão futura. A implementação demonstra interoperabilidade com o adapter HTTP Python de BC05 em fixture local sintética. ADR 023 permanece Proposed. O serviço não implementa autorização BC11 produtiva, HA, delivery de eventos nem protocolo de finalização/fencing BC04↔BC05.
 
-MongoDB mantém-se substituível atrás dos ports BC05. O próximo limite é endurecer o protocolo de autorização durável BC04↔BC05 e integrar custódia sob policy BC11, mantendo as responsabilidades de publicação e disponibilidade separadas.
+MongoDB mantém-se substituível atrás dos ports BC05. Com o BC04 durável integrado, o limite imediato é fechar a aquisição fixture-only com o Scrapy já existente. Depois desse gate, aquisição live exigirá autorização de fonte, egress e policy próprias. BC11 produtivo, fleet BC16 e HA continuam separados.
 
-## Incremento atual — BC04 durable coordination (branch local, não integrado)
+## Snapshot histórico pré-merge — BC04 durable coordination
 
 O branch `feat/execution-coordination-durable`, derivado do `main` que integrou PR #18, implementa Run/attempts, leases com tempo autoritativo PostgreSQL, fencing generation monotônica, command receipts, reservation de finalização e outbox BC04. A reservation bloqueia substituição do attempt até a conclusão; cancelamento antes dela impede autorização, enquanto cancelamento posterior é registrado e não revoga o grant já emitido. O grant draft Ed25519 v1 limita uma publicação a tenant/Run/attempt/generation/OutputSet/manifest/operação; BC05 verifica com chave pública e persiste receipt e evento no mesmo commit MongoDB da publicação. Um comando limitado reconcilia reservations pendentes por receipt/replay do mesmo grant.
 
 O gate local executou integração PostgreSQL e um fluxo sintético PostgreSQL/MongoDB/RustFS com injeção de ACK perdido após o commit MongoDB, clientes novos e reconciliação concorrente. Isso não é serviço de produção: o branch não está integrado, fixture-only permanece obrigatório, BC11 e endpoint autenticado de serviço estão ausentes, reservations pendentes não expiram/revogam automaticamente, e não há HA ou exactly-once. ADRs 022 e 024 seguem Proposed. A avaliação e os limites devem acompanhar a revisão do branch antes de qualquer integração.
+
+> Nota histórica: o parágrafo acima conserva o snapshot pré-integração. PR #19 agora está integrado em `main`; veja “BC04 durable integrado — PR #19” e o assessment de consolidação para a evidência final.

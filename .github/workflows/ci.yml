@@ -66,7 +66,7 @@ jobs:
   artifact-custody-integration:
     name: BC06 PostgreSQL/RustFS and BC05/MongoDB Interoperability
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -98,6 +98,8 @@ jobs:
         run: make artifact-custody-recovery-tests
       - name: Exercise durable BC04 runs and BC04-to-BC05 finalization
         run: make execution-coordination-finalization-tests
+      - name: Execute protected Scrapy fixture through durable BC04/BC05/BC06
+        run: make execution-coordination-fixture-acquisition
       - name: Verify BC06 PostgreSQL logical restore into an isolated schema
         run: make artifact-custody-backup-restore
       - name: Run one bounded BC06 reconciliation pass

@@ -272,6 +272,45 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(InvalidExecutionReportError):
             _validate_worker_report(forged, request)
 
+    def test_container_report_boundary_rejects_duplicate_json_properties(self):
+        binding = sample_binding()
+        request = ExecutionRequest(
+            "execution-request/v0",
+            "req-duplicate-report",
+            str(uuid.uuid4()),
+            str(uuid.uuid4()),
+            binding,
+            datetime.now(UTC) + timedelta(seconds=30),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            attempt_dir = root / "attempt"
+            attempt_dir.mkdir()
+            report_path = attempt_dir / "worker-report.json"
+            report_path.write_text('{"contract_version":"v0","contract_version":"v0"}')
+            executor = ScrapyContainerExecutor(
+                ExecutorConfig(
+                    {(binding.bot_id, binding.build_id): binding}, root / "outputs"
+                )
+            )
+            execution = DockerExecution(
+                executor=executor,
+                request=request,
+                execution_id=request.execution_id,
+                container_id="container-id-1234",
+                container_name="attempt-name",
+                attempt_dir=attempt_dir,
+                output_mount=attempt_dir / "out",
+            )
+            with (
+                patch(
+                    "execution_coordination.adapters.scrapy_container.subprocess.run",
+                    return_value=CompletedProcess([], 0, "", ""),
+                ),
+                self.assertRaises(InvalidExecutionReportError),
+            ):
+                execution._read_worker_report()
+
     def test_cleanup_failure_discards_success_staging_and_fails_execution(self):
         binding = sample_binding()
         request = ExecutionRequest(

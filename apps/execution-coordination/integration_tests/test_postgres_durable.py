@@ -23,6 +23,7 @@ from execution_coordination.durable_application import (
     FinalizationRecoveryState,
 )
 from execution_coordination.durable_domain import (
+    DurableAttemptState,
     DurableRunIntent,
     DurableRunState,
     FailureDisposition,
@@ -264,6 +265,97 @@ class PostgresDurableIntegrationTests(unittest.TestCase):
                 "STALE_WORKER",
                 "stale-" + uuid4().hex,
             )
+
+    def test_scoped_recovery_expires_only_requested_run_and_is_idempotent(self):
+        intent, _ = self.create_run()
+        unrelated, _ = self.create_run()
+        lease = self.repository.claim(
+            intent.tenant_id,
+            intent.run_id,
+            "fixture-worker",
+            "expired-token-" + uuid4().hex,
+            "claim-expiring-" + uuid4().hex,
+            1,
+        )
+
+        class NoPublication:
+            def publish_grant(self, _grant):
+                raise AssertionError("lease recovery must not publish")
+
+            def get_publication_receipt(self, _tenant_id, _set_id):
+                raise AssertionError("lease recovery must not inspect BC05")
+
+        coordinator = DurableExecutionCoordinator(
+            self.repository, NoPublication(), grant_signer=None
+        )
+        with self.assertRaises(CoordinationError):
+            coordinator.recover_expired_run("different-tenant", intent.run_id)
+        self.assertEqual(
+            self.repository.get(intent.tenant_id, intent.run_id).attempt_state,
+            DurableAttemptState.RUNNING,
+        )
+        time.sleep(1.1)
+        barrier = threading.Barrier(2)
+
+        def recover_from_independent_client():
+            independent = DurableExecutionCoordinator(
+                PostgresDurableRunRepository(os.environ["BC04_DATABASE_URL"]),
+                NoPublication(),
+                grant_signer=None,
+            )
+            barrier.wait(timeout=5)
+            return independent.recover_expired_run(intent.tenant_id, intent.run_id)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            recovered, concurrent_replay = list(
+                pool.map(lambda _index: recover_from_independent_client(), range(2))
+            )
+        self.assertEqual(concurrent_replay, recovered)
+        self.assertEqual(recovered.state, DurableRunState.ACCEPTED)
+        self.assertEqual(recovered.attempt_state, DurableAttemptState.EXPIRED)
+        self.assertEqual(recovered.generation, lease.generation)
+        self.assertIsNone(recovered.reservation)
+
+        replay = coordinator.recover_expired_run(intent.tenant_id, intent.run_id)
+        self.assertEqual(replay, recovered)
+        self.assertEqual(
+            self.repository.get(unrelated.tenant_id, unrelated.run_id).state,
+            DurableRunState.ACCEPTED,
+        )
+        with self.assertRaises(CoordinationError):
+            self.repository.fail_attempt(
+                lease,
+                FailureDisposition.RETRYABLE,
+                "STALE_RESULT",
+                "stale-recovery-" + uuid4().hex,
+            )
+
+    def test_scoped_recovery_times_out_at_database_run_deadline(self):
+        run_id = str(uuid4())
+        intent = DurableRunIntent(
+            tenant_id="integration-tenant",
+            run_id=run_id,
+            request_id="request-" + uuid4().hex,
+            idempotency_key="deadline-" + uuid4().hex,
+            binding=fixture_binding(),
+            deadline=datetime.now(UTC) + timedelta(seconds=1),
+            max_attempts=2,
+        )
+        self.repository.create(intent)
+        lease = self.repository.claim(
+            intent.tenant_id,
+            intent.run_id,
+            "fixture-worker",
+            "deadline-token-" + uuid4().hex,
+            "deadline-claim-" + uuid4().hex,
+            30,
+        )
+        time.sleep(1.1)
+        recovered = self.repository.recover_expired_run(intent.tenant_id, run_id)
+        self.assertEqual(recovered.state, DurableRunState.TIMED_OUT)
+        self.assertEqual(recovered.attempt_state, DurableAttemptState.EXPIRED)
+        self.assertIsNone(recovered.lease_until)
+        self.assertEqual(recovered.generation, lease.generation)
 
     def test_reserved_finalization_survives_cancellation_and_receipt_replay(self):
         intent, _ = self.create_run()
