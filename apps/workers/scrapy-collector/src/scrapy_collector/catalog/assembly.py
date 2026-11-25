@@ -23,6 +23,10 @@ _MAX_FIXTURE_PAGES = 1_000
 _MAX_FIXTURE_PAGE_BYTES = 32 * 1024 * 1024
 _MAX_FIXTURE_TOTAL_BYTES = 256 * 1024 * 1024
 _WORKER_CONTRACT = "scrapy-collector/v1"
+_SUPPORTED_FIXTURE_RUNTIME_VERSIONS = {
+    "scrapy-fixture-runtime/1.0.0",
+    "scrapy-fixture-runtime/1.1.0",
+}
 
 
 class AssemblyError(ValueError):
@@ -302,7 +306,8 @@ def assemble_catalog(
             or compatibility.get("execution_mode") != "fixture-only"
             or compatibility.get("scrapy") != "2.20.0"
             or compatibility.get("python_minor") != "3.12"
-            or compatibility.get("scrapy_runtime") != "scrapy-fixture-runtime/1.0.0"
+            or compatibility.get("scrapy_runtime")
+            not in _SUPPORTED_FIXTURE_RUNTIME_VERSIONS
         ):
             raise AssemblyError(
                 "[ASSEMBLY_COMPATIBILITY_UNSUPPORTED] worker/runtime compatibility differs"

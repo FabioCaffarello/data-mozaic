@@ -23,7 +23,7 @@ from .playbook_v2 import (
 from .reference_runtime import RUNTIME_VERSION
 from .runtime_identity import (
     RUNTIME_PACKAGE,
-    RUNTIME_PACKAGE_VERSION,
+    SUPPORTED_RUNTIME_PACKAGE_VERSIONS,
     runtime_bundle_files,
 )
 from .syntax import PlaybookError
@@ -405,7 +405,8 @@ def verify_build(
             if (
                 not isinstance(runtime_identity, dict)
                 or runtime_identity.get("package") != RUNTIME_PACKAGE
-                or runtime_identity.get("version") != RUNTIME_PACKAGE_VERSION
+                or runtime_identity.get("version")
+                not in SUPPORTED_RUNTIME_PACKAGE_VERSIONS
             ):
                 raise PlaybookError(
                     "[BUILD_RUNTIME_UNSUPPORTED] incompatible runtime identity"

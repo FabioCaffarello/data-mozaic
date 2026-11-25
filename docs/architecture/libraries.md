@@ -1,6 +1,6 @@
 # Library architecture
 
-**Status: Proposed.** This document defines placement and promotion rules. The repository contains the internal experimental `mozaic-observability` Python library. BC15's extraction/runtime and engine adapters remain private modules in `apps/collector-engineering`; a second backend in the same context is not a second library consumer.
+**Status: Proposed.** This document defines placement and promotion rules. The repository contains the internal experimental `mozaic-observability` Python library. BC15's extraction/runtime and engine adapters remain private modules in `apps/collector-engineering`; the governed `scrapy_framework.py` runtime boundary is still BC15-owned and is not a shared technical library. Framework distribution is reviewed by ownership, API, exact runtime identity, compatibility and actual compiler/worker integration; the library two-consumer heuristic does not prohibit a justified framework boundary.
 
 ## Maturity model — review amendment 2026-11-24
 

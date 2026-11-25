@@ -33,6 +33,13 @@ from scrapy_collector.execution.launcher import run
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKER_DOCKERFILE = ROOT / "apps/workers/scrapy-collector/Dockerfile"
+_ENTRYPOINT_MARKER = b"if __name__ == '__main__':\n"
+
+
+def _inject_framework_hook(generated: bytes, hook: bytes, error_code: str) -> bytes:
+    if generated.count(_ENTRYPOINT_MARKER) != 1:
+        raise RuntimeError(f"[{error_code}] generated entrypoint marker differs")
+    return generated.replace(_ENTRYPOINT_MARKER, hook + _ENTRYPOINT_MARKER, 1)
 
 
 def _compile_fixture_bot(
@@ -73,25 +80,22 @@ def _compile_fixture_bot(
         "target_platform": target_platform,
     }
     if inject_callback_failure:
-        # Inject into generated callback code before compile_build calculates
-        # generated-file hashes, build_id, and the runtime manifest. The normal
-        # verifier therefore still authenticates this synthetic test BotBuild.
+        # Add a test-only callback hook before BotBuild identity calculation.
         from collector_engineering import backend_scrapy_fixture
 
         original_generate_spider = backend_scrapy_fixture.generate_spider
-        item_yield = b"            yield {'_sort_key': [document['page_index'], selected['record_index']], 'record': record}\n"
+        hook = b"""_test_original_process_document = scrapy_framework.FixturePlanSpider._process_document
+ def _test_failing_process_document(self, document):
+     for item in _test_original_process_document(self, document):
+         yield item
+     raise RuntimeError('[TEST_CALLBACK_EXCEPTION] intentional E2E failure after record')
+ scrapy_framework.FixturePlanSpider._process_document = _test_failing_process_document
+ """.replace(b"\n ", b"\n")
 
         def generate_failing_spider(*args, **kwargs):
             generated = original_generate_spider(*args, **kwargs)
-            if generated.count(item_yield) != 1:
-                raise RuntimeError(
-                    "[TEST_CALLBACK_INJECTION_FAILED] expected one generated item yield"
-                )
-            return generated.replace(
-                item_yield,
-                item_yield
-                + b"        if not self.records:\n            raise RuntimeError('[TEST_CALLBACK_ORDER] record pipeline did not run before injected failure')\n        raise RuntimeError('[TEST_CALLBACK_EXCEPTION] intentional E2E failure after record')\n",
-                1,
+            return _inject_framework_hook(
+                generated, hook, "TEST_CALLBACK_INJECTION_FAILED"
             )
 
         with patch.object(
@@ -102,19 +106,18 @@ def _compile_fixture_bot(
         from collector_engineering import backend_scrapy_fixture
 
         original_generate_spider = backend_scrapy_fixture.generate_spider
-        item_yield = b"            yield {'_sort_key': [document['page_index'], selected['record_index']], 'record': record}\n"
+        hook = f"""_test_original_process_document = scrapy_framework.FixturePlanSpider._process_document
+ def _test_slow_process_document(self, document):
+     for item in _test_original_process_document(self, document):
+         yield item
+         __import__('time').sleep({inject_callback_delay_seconds})
+ scrapy_framework.FixturePlanSpider._process_document = _test_slow_process_document
+ """.replace("\n ", "\n").encode()
 
         def generate_slow_spider(*args, **kwargs):
             generated = original_generate_spider(*args, **kwargs)
-            if generated.count(item_yield) != 1:
-                raise RuntimeError(
-                    "[TEST_CALLBACK_DELAY_INJECTION_FAILED] expected one generated yield"
-                )
-            return generated.replace(
-                item_yield,
-                item_yield
-                + f"        __import__('time').sleep({inject_callback_delay_seconds})\n".encode(),
-                1,
+            return _inject_framework_hook(
+                generated, hook, "TEST_CALLBACK_DELAY_INJECTION_FAILED"
             )
 
         with patch.object(

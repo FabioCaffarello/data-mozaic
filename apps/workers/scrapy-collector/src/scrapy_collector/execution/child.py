@@ -61,14 +61,22 @@ def main(argv: list[str] | None = None) -> int:
         runtime_root = (build_root / "runtime" / "mozaic_bot_runtime").resolve(
             strict=True
         )
-        for runtime_name in ("reference_runtime", "scrapy_fixture_runtime"):
+        runtime_names = ["reference_runtime", "scrapy_fixture_runtime"]
+        framework_runtime = "scrapy_framework.py" in entry.runtime_identity.get(
+            "files", {}
+        )
+        if framework_runtime:
+            runtime_names.append("scrapy_framework")
+        for runtime_name in runtime_names:
             loaded = sys.modules.get(f"mozaic_bot_runtime.{runtime_name}")
             if loaded is None or Path(loaded.__file__).resolve().parent != runtime_root:
                 raise CatalogError(
                     "[RUNTIME_IMPORT_MISMATCH] runtime came from outside selected BotBuild"
                 )
         spider_type = getattr(module, "GeneratedSpider", None)
-        if spider_type is None or not callable(getattr(module, "main", None)):
+        if not callable(getattr(module, "main", None)) or (
+            not framework_runtime and spider_type is None
+        ):
             raise CatalogError(
                 "[SPIDER_ENTRYPOINT_INVALID] BotBuild entrypoint is incomplete"
             )
