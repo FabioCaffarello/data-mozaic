@@ -100,7 +100,10 @@ def _execute_build(build: Path, output: Path) -> None:
     for path in output.iterdir():
         if path.is_file() and not path.is_symlink():
             path.chmod(0o644)
-    output.chmod(0o755)
+    # The harness writes inside a private 0700 TemporaryDirectory. Keep the
+    # result group-writable there so the host runner can remove files created
+    # by the unprivileged container UID during bounded test cleanup.
+    output.chmod(0o777)
     report = json.loads((output / "report.json").read_text(encoding="utf-8"))
     records = [
         json.loads(line)
