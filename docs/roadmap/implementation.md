@@ -78,7 +78,7 @@ Esta sequência substitui a ordem anterior de MVP que colocava um source real an
 1. **Revisão arquitetural** — ownership BC05/BC06/BC04/BC09, contratos, escopo de fonte, risco e limites operacionais revisados.
 2. **BC05 Output foundation** — CaptureOutput/OutputSet, variantes, identidade, operação idempotente, canonicalização padronizada, staging/seal/publicação local e contratos draft.
 3. **Persistência MongoDB BC05** — coleções, validadores, indexes, transação local de publication/outbox, recuperação e backup/restore de desenvolvimento. MongoDB continua substituível atrás de port.
-4. **Custody BC06** — streaming de bytes, identidade lógica, recibo de custody, inventário PostgreSQL e adapter MinIO; escolha Python/Go precede implementação. Output dependente de artefato não publica sem custody confirmada.
+4. **Custody BC06** — streaming de bytes, identidade lógica, recibo de custody, inventário PostgreSQL e adapter S3 compatível; a decisão proposta usa Go para o serviço operacional, sem alegar vantagem de desempenho medida. Output dependente de artefato não publica sem custody confirmada.
 5. **Coordenação durável** — BC04/BC16 com PostgreSQL, transições/run attempts, leases/fencing, outbox, retry/deadline/cancelamento e protocolo de finalização distribuída BC04↔BC05 aprovado e testado.
 6. **Worker fixture-only e runtime local** — integrar a saída do worker pelo port BC05 e bytes pelo port BC06 mantendo egress negado; validar manifests e recuperação local.
 7. **Perfil de aquisição live autorizada** — política própria e security review: autorização explícita por source revision, egress, identidade, rate/budget, credenciais, timeout/cancelamento, auditoria e teste de conexão real. Fixtures coletadas de fonte autorizada não substituem este perfil.
@@ -93,12 +93,12 @@ Esta sequência substitui a ordem anterior de MVP que colocava um source real an
 - **Execução live autorizada:** worker de captura ativo, em perfil live e escopo atual aprovado, com egress e quotas aplicados no runtime. Não é inferida de Scout HTTP exploration nem de fixture replay.
 - **Vertical end-to-end:** consumer case que atravessa definição/release, coordenação, aquisição, custody, OutputSet, parsing/quality e publicação de dados conforme seu escopo. Não é sinônimo de um teste isolado de endpoint.
 
-### Critérios do incremento BC05
+### Estado BC05 integrado
 
-O incremento corrente termina com variantes tipadas Record/Artifact/Composite, payload contract versionado, referências lógicas de artifact, identidade/intent e digest determinísticos por RFC 8785, OutputSet limitado com membership congelada em seal, receipts idempotentes, port de custody obrigatório para artefatos e adapters de referência in-memory. Contratos e fixtures permanecem draft. O incremento não inclui adapter Mongo/PostgreSQL, MinIO, coordenação distribuída, integração com o worker ou acesso a fonte externa.
+BC05 fornece variantes Record/Artifact/Composite, contratos e fixtures draft, OutputSet limitado, staging/seal/publicação, receipts e ports de custody. O adapter MongoDB e o perfil local replica set foram integrados em PR #17 (`138e90b`). O armazenamento é incremental e mantém consultas published-only. Testes locais não estabelecem HA nem autorização de tentativa corrente entre PostgreSQL e MongoDB.
 
-### Estado após integração do BC05 foundation e incremento MongoDB em revisão
+### Incremento atual — BC06 Artifact Custody
 
-PR #16 foi integrada à `main` em `c61f268`. A branch subsequente `feat/acquisition-output-mongodb` adiciona o adapter PyMongo, replica set local, provisioning com validators/indexes, transações, receipts, outbox pendente, queries publicadas e evidência de integração/backup/benchmark. Essa implementação permanece em revisão local e não está integrada. Veja o [assessment MongoDB](../architecture/assessments/bc05-mongodb-persistence-2026-11-24.md) para comandos e limites medidos.
+O incremento atual introduz `apps/artifact-custody` em Go como primeiro serviço operacional multilíngue, contratos HTTP draft, inventário PostgreSQL BC06 e object storage S3 compatível local. RustFS é usado apenas no ambiente local/teste; o provedor de produção permanece decisão futura. A implementação demonstra interoperabilidade com o adapter HTTP Python de BC05 em fixture local sintética. ADR 023 permanece Proposed. O serviço não implementa autorização BC11 produtiva, HA, delivery de eventos nem protocolo de finalização/fencing BC04↔BC05.
 
-MongoDB mantém-se substituível atrás dos ports BC05. A validação local não resolve autorização de tentativa corrente em PostgreSQL, entrega de eventos, HA, custody BC06 ou capacidade produtiva. O próximo limite após revisão/integração do adapter é avaliar a implementação BC06 Artifact Custody (incluindo decisão de linguagem Python/Go), antes de integrar publicação a coordenação distribuída BC04.
+MongoDB mantém-se substituível atrás dos ports BC05. O próximo limite é endurecer o protocolo de autorização durável BC04↔BC05 e integrar custódia sob policy BC11, mantendo as responsabilidades de publicação e disponibilidade separadas.

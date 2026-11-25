@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/artifact-custody/draft/v1/CustodyEvent.schema.json",
+  "title": "BC06 Custody Event Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {"const": "artifact-custody.v1"},
+    "event_id": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/identifier"},
+    "event_source": {"const": "urn:data-mozaic:bc06:artifact-custody"},
+    "event_type": {"const": "data-mozaic.artifact.custody-confirmed.v1"},
+    "aggregate_type": {"const": "RawArtifact"},
+    "aggregate_id": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/identifier"},
+    "tenant_id": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/identifier"},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "correlation_id": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/identifier"},
+    "causation_id": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/identifier"},
+    "receipt_id": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/identifier"},
+    "artifact": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/artifactRef"}
+  },
+  "required": ["contract_version", "event_id", "event_source", "event_type", "aggregate_type", "aggregate_id", "tenant_id", "occurred_at", "correlation_id", "causation_id", "receipt_id", "artifact"]
+}

@@ -80,6 +80,8 @@ Em todos, comandos exigem autorização e chave idempotente; eventos são fatos 
 - Linguagem: RawArtifact, conteúdo, retenção. Root RawArtifact; entidade localização; VOs digest, classificação e política. Invariante identidade de observação não é hash; bytes compartilhados não compartilham automaticamente autorização ou retenção.
 - `RegisterArtifact`, `ApplyRetention`; eventos `ArtifactStored`, `ArtifactRetired`; contrato RawArtifactRef. Depende armazenamento de objetos e BC11; possui metadados, classificação e retenção; objeto gravado mas não registrado é reconciliável. Segregação por tenant, criptografia e acesso auditado. Não altera payload ou interpreta dados. Alternativa adapter local inicial; testes de integridade, orfandade e autorização.
 
+O estado executável draft está em [`apps/artifact-custody`](../../apps/artifact-custody/README.md): serviço Go, schema PostgreSQL BC06, adapter S3 compatível e contrato HTTP draft com consumidor Python BC05. O perfil local usa policy `local`/`test`; isto não implementa BC11, retenção automática, HA nem o protocolo de finalização BC04↔BC05. Veja [evidência local](assessments/bc06-artifact-custody-local-2026-11-24.md). Os nomes de eventos acima são direção de domínio; o envelope de contrato draft atual tem tipo versionado `data-mozaic.artifact.custody-confirmed.v1`.
+
 ## BC14 S1
 
 O subconjunto executável de ScoutSession, evidência, finding e proposta está descrito em [BC14 S1](scout.md). Referências a BC01, BC06 e BC11 não transferem ownership; os demais elementos desta página permanecem propostas.

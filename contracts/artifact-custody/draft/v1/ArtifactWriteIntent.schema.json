@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/artifact-custody/draft/v1/ArtifactWriteIntent.schema.json",
+  "title": "Artifact Write Intent",
+  "description": "Draft BC06 contract. The top-level artifact_id must equal artifact.artifact_id; this cross-field invariant is enforced by consumers. Physical storage locations and bytes are deliberately excluded.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {"const": "artifact-custody.v1"},
+    "operation_id": {"$ref": "#/$defs/identifier"},
+    "tenant_id": {"$ref": "#/$defs/identifier"},
+    "artifact_id": {"$ref": "#/$defs/identifier"},
+    "source": {"$ref": "#/$defs/source"},
+    "artifact": {"$ref": "#/$defs/artifactRef"},
+    "representation": {"enum": ["decoded_http_entity", "captured_http_wire_bytes", "downloaded_file_bytes", "browser_screenshot", "browser_dom", "other_declared"]},
+    "classification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "retention_policy_ref": {"$ref": "#/$defs/identifier"},
+    "metadata": {"type": "object", "maxProperties": 32, "propertyNames": {"$ref": "#/$defs/identifier"}, "additionalProperties": {"type": "string", "maxLength": 1024}}
+  },
+  "required": ["contract_version", "operation_id", "tenant_id", "artifact_id", "source", "artifact", "representation", "classification", "retention_policy_ref"],
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "source": {"type": "object", "additionalProperties": false, "properties": {"source_id": {"$ref": "#/$defs/identifier"}, "revision": {"$ref": "#/$defs/identifier"}}, "required": ["source_id", "revision"]},
+    "artifactRef": {"type": "object", "additionalProperties": false, "properties": {"artifact_id": {"$ref": "#/$defs/identifier"}, "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "size_bytes": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "media_type": {"type": "string", "minLength": 1, "maxLength": 256}}, "required": ["artifact_id", "digest", "size_bytes"]}
+  }
+}

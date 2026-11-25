@@ -84,7 +84,11 @@ ALLOWED = {
         "acquisition_output.ports",
     },
     "acquisition_output.wire": {"acquisition_output.domain"},
-    "acquisition_output.adapters": set(),
+    "acquisition_output.adapters": {"acquisition_output.domain"},
+    "acquisition_output.adapters.http_custody": {
+        "acquisition_output.domain",
+        "acquisition_output.adapters",
+    },
     "acquisition_output.adapters.mongodb": {
         "acquisition_output.domain",
         "acquisition_output.ports",
@@ -97,6 +101,8 @@ ALLOWED = {
         "acquisition_output.application",
         "acquisition_output.domain",
         "acquisition_output.adapters.mongodb",
+        "acquisition_output.adapters.http_custody",
+        "acquisition_output.wire",
         "collector_engineering",
         "mozaic_bot_build",
         "scrapy_collector",

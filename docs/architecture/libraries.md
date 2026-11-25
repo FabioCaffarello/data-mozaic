@@ -14,6 +14,8 @@ Use maturity labels as evidence, not as an automatic release ladder:
 | L3 — governed platform library | Multiple contexts/languages depend on an intentional platform contract. | Versioning/deprecation policy, compatibility and conformance suites, security review, support owner, resource/thread/async semantics and release evidence are maintained. |
 | L4 — reusable external distribution | Consumers outside the monorepo can install and rely on it. | Public support policy, supply-chain/release process, documented API, external compatibility commitments and independent distribution/recovery process. No current library is L4. |
 
+BC06 is currently L0 and remains local to `apps/artifact-custody`. Its S3 client lifecycle, configuration checks, storage error classification, PostgreSQL connection lifecycle and future transport instrumentation are named L1 extraction candidates only. BC06 repositories, migrations, artifact state, custody receipts, reconciliation and access decisions remain private domain/application behavior. No second consumer currently justifies an extracted Go library.
+
 Levels may be skipped only with explicit rationale and approval. Bounded-context domain models do not become libraries by crossing a language boundary; wire DTOs remain distinct from each consumer's private domain model. Driver integrations should stay in consumer adapters unless named consumers demonstrate a stable shared lifecycle.
 
 ## Audit snapshot
