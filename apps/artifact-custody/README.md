@@ -21,7 +21,7 @@ make artifact-custody-backup-restore
 
 The integration target uses the local BC05 MongoDB environment if present, or the preserved MongoDB worktree environment. It uploads synthetic bytes, restarts BC06, verifies the durable receipt, stages and publishes an ArtifactOutput through MongoDB, then downloads and hashes the bytes. It does not access a public source or run a collector.
 
-The backup target restores a logical BC06 PostgreSQL schema into a temporary random schema and compares inventory, operation, outbox and migration fingerprints. It drops only the temporary schema it created. The real-store recovery test also copies a synthetic object to unique backup and restore keys in the same RustFS bucket, verifies its digest and reads the restored key through BC06. These are local logical smoke checks, not an independent-volume backup or disaster-recovery procedure.
+The backup target restores a logical BC06 PostgreSQL schema into a temporary random schema and compares inventory, operation, outbox and migration fingerprints. `pg_dump` and `psql` run inside the existing pinned PostgreSQL Compose container to keep client and server versions aligned. It drops only the temporary schema it created. The real-store recovery test also copies a synthetic object to unique backup and restore keys in the same RustFS bucket, verifies its digest and reads the restored key through BC06. The database and object checks are separate synthetic exercises, not one coordinated snapshot, independent-volume backup or disaster-recovery procedure.
 
 Run the bounded synthetic transfer benchmark with:
 
