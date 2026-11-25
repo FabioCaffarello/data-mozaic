@@ -86,24 +86,21 @@ def main() -> int:
 
 
 def _execute_build(build: Path, output: Path) -> None:
-    result = subprocess.run(
-        ["python", "-B", str(build / "bot.py"), "--output", str(output)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=45,
-    )
-    if result.returncode != 0:
-        raise SystemExit(
-            f"compiled Scrapy live BotBuild failed: {result.stdout[-1000:]} {result.stderr[-1000:]}"
+    try:
+        result = subprocess.run(
+            ["python", "-B", str(build / "bot.py"), "--output", str(output)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=45,
         )
-    for path in output.iterdir():
-        if path.is_file() and not path.is_symlink():
-            path.chmod(0o644)
-    # The harness writes inside a private 0700 TemporaryDirectory. Keep the
-    # result group-writable there so the host runner can remove files created
-    # by the unprivileged container UID during bounded test cleanup.
-    output.chmod(0o777)
+        if result.returncode != 0:
+            raise SystemExit(
+                f"compiled Scrapy live BotBuild failed: {result.stdout[-1000:]} {result.stderr[-1000:]}"
+            )
+    finally:
+        _make_harness_output_removable(output)
+
     report = json.loads((output / "report.json").read_text(encoding="utf-8"))
     records = [
         json.loads(line)
@@ -161,6 +158,18 @@ def _execute_build(build: Path, output: Path) -> None:
     print(
         "Compiled live BotBuild acquired the selected controlled HTTP payload through Go gateway; direct route and unauthorized origin denied"
     )
+
+
+def _make_harness_output_removable(output: Path) -> None:
+    if output.is_symlink() or not output.is_dir():
+        return
+    for path in output.iterdir():
+        if path.is_file() and not path.is_symlink():
+            path.chmod(0o644)
+    # The harness writes inside a private 0700 TemporaryDirectory. Keep the
+    # result group-writable there so the host runner can remove files created
+    # by the unprivileged container UID during bounded test cleanup.
+    output.chmod(0o777)
 
 
 if __name__ == "__main__":
