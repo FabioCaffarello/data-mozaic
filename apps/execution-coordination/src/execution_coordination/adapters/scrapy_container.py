@@ -33,6 +33,15 @@ class InvalidExecutionReportError(ProtectedExecutionError):
     """The worker report or output failed the closed response contract."""
 
 
+def _unique_report_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("worker report contains a duplicate property")
+        value[key] = item
+    return value
+
+
 @dataclass(frozen=True)
 class SandboxLimits:
     cpus: float = 1.0
@@ -638,8 +647,11 @@ class DockerExecution:
                 "worker report file is unsafe or exceeds its limit"
             )
         try:
-            report = json.loads(report_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            report = json.loads(
+                report_path.read_text(encoding="utf-8"),
+                object_pairs_hook=_unique_report_pairs,
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
             raise InvalidExecutionReportError(
                 "worker report file is invalid JSON"
             ) from error
@@ -710,6 +722,36 @@ class DockerExecution:
             raise InvalidExecutionReportError(
                 "output integrity or identity check failed"
             )
+        try:
+            execution_report = json.dumps(
+                worker_result,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError, UnicodeEncodeError) as error:
+            raise InvalidExecutionReportError(
+                "validated execution report cannot be preserved"
+            ) from error
+        if (
+            len(execution_report) > 64_000
+            or total_bytes + len(execution_report)
+            > self.request.binding.max_output_bytes
+        ):
+            raise InvalidExecutionReportError(
+                "result bundle plus execution report exceeds the byte budget"
+            )
+        preserved_report = source / "execution-report.json"
+        try:
+            with preserved_report.open("xb") as stream:
+                stream.write(execution_report)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as error:
+            raise InvalidExecutionReportError(
+                "trusted execution report could not be preserved"
+            ) from error
         stage = (
             self.executor._output_root
             / f".stage-{self.request.run_id}-{self.request.attempt_id}-{uuid.uuid4().hex}"
@@ -717,7 +759,7 @@ class DockerExecution:
         os.replace(source, stage)
         self._stage_path = stage
         self._output_sha256 = hashlib.sha256(records).hexdigest()
-        self._output_bytes = total_bytes
+        self._output_bytes = total_bytes + len(execution_report)
         self._records_count = len(records.splitlines())
 
 

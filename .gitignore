@@ -13,5 +13,6 @@ __pycache__/
 .local/scout-mcp.env
 .local/uv-cache/
 .local/pr10-builds/
+.local/execution-coordination-fixture/
 node_modules/
 target/

@@ -54,3 +54,26 @@ All recent registered worktrees are accounted for. The only divergent fixture br
 ## ADR state
 
 ADR 022, ADR 023 and ADR 024 remain Proposed. The current main contains ADR 023 from PR #18; ADR 024 remains part of the uncommitted BC04 increment. This assessment does not accept or revise ADR status.
+
+## Post-PR #19 and Gate C worktree amendment — 2026-11-25
+
+`git fetch origin` confirmed `origin/main` at `1db31b3e32390202496befff49bef7c05bd10769`, the squash merge of PR #19. PR #19 head `35ed140dba564e8cf073807f865536a12213ec41` and merge tree are byte-for-byte equal. The PR is merged, targeting `main`, and its Quality Gate, Integration Security Gate, BC05 MongoDB Integration Gate, BC06 Go Unit/Race/Vulnerability Gates and BC06 PostgreSQL/RustFS and BC05/MongoDB interoperability checks all report success. No review approval was required by the repository ruleset; no protection was bypassed.
+
+The ahead/behind values below are Git graph counts against current `origin/main`. Because the repository squash-merges, these values are topology evidence only; the PR/source-tree comparisons above remain the integration evidence.
+
+| Branch / worktree | HEAD | Ahead / behind `origin/main` | Working tree | PR / classification / disposition |
+|---|---|---:|---|---|
+| `main` — no associated worktree | `138e90b` | 0 / 2 | No worktree | Local branch ref is intentionally untouched and behind current origin; do not use as Gate C base |
+| `feat/acquisition-output-foundation` — `/Volumes/OWC Express 1M2/Develop/data-mozaic` | `ade602d` | 2 / 4 | Clean | PR #16 integrated by exact tree match; preserve worktree |
+| `feat/acquisition-output-mongodb` — `/Volumes/OWC Express 1M2/Develop/data-mozaic-mongodb` | `5def724` | 2 / 3 | Clean | PR #17 integrated by exact tree match; preserve worktree and volume |
+| `feat/artifact-custody-foundation` — `/Volumes/OWC Express 1M2/Develop/data-mozaic-artifact-custody` | `66be6cf` | 3 / 2 | Clean | PR #18 integrated by exact tree match; preserve worktree and volumes |
+| `feat/execution-coordination-fixture-v0` — `/private/tmp/data-mozaic-execution-coordination` | `ded4640` | 14 / 5 | Clean | PR #15 integrated; all 14 commits are represented by its squash tree; preserve and do not merge |
+| `feat/execution-coordination-durable` — `/Volumes/OWC Express 1M2/Develop/data-mozaic-execution-coordination-durable` | `35ed140` | 1 / 1 | Clean | PR #19 integrated; source head tree matches squash; preserve branch/worktree |
+| `feat/acquisition-fixture-integration` — `/Volumes/OWC Express 1M2/Develop/data-mozaic-acquisition-fixture-integration` | `1db31b3` | 0 / 0 | Intentional Gate C modifications | Work in progress, no PR; based exactly on verified main; generated fixture assembly/results are retained under a narrowly ignored `.local/` path |
+| `feat/collector-playbook-v2` — `/Volumes/OWC Express 1M2/Develop/data-mozaic-pr10` | `448ac52` | 5 / 8 | Clean | PR #10 integrated by exact tree match; preserve |
+| `feat/collector-scrapy-fixture-backend` — `/Volumes/OWC Express 1M2/Develop/data-mozaic-scrapy` | `eb565ba` | 13 / 7 | Clean | PR #12 integrated by exact tree match; preserve |
+| `feat/scrapy-collector-multibot` — `/Volumes/OWC Express 1M2/Develop/data-mozaic-scrapy-multibot` | `5af15bd` | 5 / 6 | Clean | PR #13 integrated by exact tree match; preserve |
+| `feat/scout-authorized-http-exploration` — stale `/private/tmp/data-mozaic-pr8-review` metadata | `9284455` (inaccessible worktree); published branch `9ebf57f` | 5 / 10 for published branch | Unavailable | PR #8 integrated; stale metadata remains untouched because the registered directory is missing |
+| `feat/scout-codex-playbook-authoring` — detached `/Volumes/OWC Express 1M2/.data-mozaic-pr9-generalization-72058db` | `72058db` (remote branch `189f6ea`) | 21 / 9 for remote branch | Detached and clean | PR #9 integrated; local follow-up is superseded by PR #10+ and adds no missing runtime behavior; preserve |
+
+PR #19 provides the merge gate for BC04. The Gate C branch is the only active dirty implementation worktree. Its local tests and real local infrastructure flow are documented in [the fixture acquisition assessment](fixture-acquisition-integration-2026-11-25.md). No Gate C PR, commit or push has been made. Existing credentials, worktrees and volumes remain preserved; the stale PR #8 metadata has not been pruned.
