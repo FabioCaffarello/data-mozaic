@@ -239,6 +239,7 @@ def verify_bot_build(
             "dependency_lock_sha256",
             "generated_files",
             "input_fixtures",
+            "live_request",
             "build_id",
         }
         playbook_id = manifest.get("playbook_id")
@@ -247,8 +248,10 @@ def verify_bot_build(
         compatibility = manifest.get("compatibility")
         toolchain = manifest.get("toolchain")
         playbook_digest = manifest.get("playbook_sha256")
+        required_v2_keys = allowed_v2_keys - {"live_request"}
         if (
-            set(manifest) != allowed_v2_keys
+            not set(manifest) <= allowed_v2_keys
+            or not required_v2_keys <= set(manifest)
             or not isinstance(playbook_id, str)
             or not playbook_id
             or not isinstance(source, dict)
@@ -279,7 +282,15 @@ def verify_bot_build(
             )
             or not isinstance(compatibility, dict)
             or not isinstance(compatibility.get("worker_contract"), str)
-            or compatibility.get("execution_mode") != "fixture-only"
+            or compatibility.get("execution_mode")
+            not in {"fixture-only", "live-authorized"}
+            or (
+                compatibility.get("execution_mode") == "live-authorized"
+                and (
+                    not isinstance(compatibility.get("runtime_profile"), str)
+                    or not compatibility["runtime_profile"]
+                )
+            )
             or not isinstance(compatibility.get("python_minor"), str)
             or not re.fullmatch(r"[0-9]+\.[0-9]+", compatibility["python_minor"])
             or not isinstance(compatibility.get("target_platform"), str)
@@ -296,7 +307,17 @@ def verify_bot_build(
                 )
             )
             or not isinstance(manifest.get("input_fixtures"), list)
-            or not manifest["input_fixtures"]
+            or (
+                compatibility.get("execution_mode") == "fixture-only"
+                and (not manifest["input_fixtures"] or "live_request" in manifest)
+            )
+            or (
+                compatibility.get("execution_mode") == "live-authorized"
+                and (
+                    manifest["input_fixtures"]
+                    or not isinstance(manifest.get("live_request"), dict)
+                )
+            )
         ):
             raise BotBuildVerificationError(
                 "[BUILD_MANIFEST_INVALID] v2 identities are incomplete"

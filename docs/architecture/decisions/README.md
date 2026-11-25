@@ -28,6 +28,7 @@ Todos os registros estão **Proposed**; não há decisões Accepted, Rejected ou
 | [022](022-bc05-acquisition-output.md) | domínio e contratos draft de Acquisition Output e OutputSet BC05 | Proposed |
 | [023](023-bc06-artifact-custody.md) | serviço BC06 em Go e perfil local de object storage S3 compatível | Proposed |
 | [024](024-bc04-durable-finalization.md) | execução durável BC04 e reservation de finalização BC04→BC05 | Proposed |
+| [025](025-authorized-live-acquisition-profile.md) | perfil live separado, contratos owner-bound e boundary de egress | Proposed |
 
 Use o [template](template.md) para alterações que imponham restrições novas. Decisões menores e reversíveis podem permanecer nos documentos de arquitetura até existir evidência suficiente para ADR.
 7. [Recuperação durável de comandos Scout](007-scout-durable-recovery.md)

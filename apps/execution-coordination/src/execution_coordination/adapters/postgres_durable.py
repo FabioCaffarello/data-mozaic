@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,15 +22,19 @@ from execution_coordination.durable_domain import (
     FailureDisposition,
     FinalizationGrant,
     FinalizationReservation,
+    LiveExecutionBinding,
 )
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-MIGRATION = (
-    Path(__file__).resolve().parents[5]
-    / "migrations"
-    / "execution-coordination"
-    / "001-durable-runs.sql"
+MIGRATIONS = tuple(
+    sorted(
+        (
+            Path(__file__).resolve().parents[5]
+            / "migrations"
+            / "execution-coordination"
+        ).glob("[0-9][0-9][0-9]-*.sql")
+    )
 )
 
 
@@ -70,9 +75,7 @@ class PostgresDurableRunRepository:
         )
 
     def migrate(self) -> None:
-        """Apply the owner migration once and detect checksum drift."""
-        sql = MIGRATION.read_text(encoding="utf-8")
-        checksum = hashlib.sha256(sql.encode()).hexdigest()
+        """Apply ordered owner migrations and detect checksum drift."""
         with self._connect() as conn, conn.transaction():
             conn.execute("CREATE SCHEMA IF NOT EXISTS execution_coordination")
             conn.execute(
@@ -81,20 +84,149 @@ class PostgresDurableRunRepository:
                     applied_at timestamptz NOT NULL DEFAULT clock_timestamp()
                 )"""
             )
-            previous = conn.execute(
-                "SELECT checksum FROM execution_coordination.schema_migrations WHERE version=%s",
-                ("001-durable-runs",),
-            ).fetchone()
-            if previous is not None:
-                if previous["checksum"] != checksum:
-                    raise CoordinationError("BC04 migration checksum drift detected")
-                return
-            # Migration DDL is executed by the owner identity. It is fixed repository SQL.
-            conn.execute(sql)
+        for migration in MIGRATIONS:
+            version = migration.stem
+            sql = migration.read_text(encoding="utf-8")
+            checksum = hashlib.sha256(sql.encode()).hexdigest()
+            with self._connect() as conn, conn.transaction():
+                previous = conn.execute(
+                    "SELECT checksum FROM execution_coordination.schema_migrations WHERE version=%s",
+                    (version,),
+                ).fetchone()
+                if previous is not None:
+                    if previous["checksum"] != checksum:
+                        raise CoordinationError(
+                            "BC04 migration checksum drift detected"
+                        )
+                    continue
+                conn.execute(sql)
+                conn.execute(
+                    "INSERT INTO execution_coordination.schema_migrations(version,checksum) VALUES (%s,%s)",
+                    (version, checksum),
+                )
+
+    def install_authority_snapshot(
+        self,
+        *,
+        authority_id: str,
+        generation: int,
+        snapshot_digest: str,
+        envelope_digest: str,
+        signing_key_id: str,
+        expires_at: datetime,
+        signed_envelope: dict[str, object],
+    ) -> int:
+        """Atomically advance BC04's durable trusted authority generation."""
+        if (
+            not authority_id
+            or len(authority_id) > 128
+            or generation < 1
+            or not snapshot_digest.startswith("sha256:")
+            or not envelope_digest.startswith("sha256:")
+            or not signing_key_id
+        ):
+            raise CoordinationError("authority snapshot identity is invalid")
+        with self._connect() as conn, conn.transaction():
             conn.execute(
-                "INSERT INTO execution_coordination.schema_migrations(version,checksum) VALUES (%s,%s)",
-                ("001-durable-runs", checksum),
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (authority_id,),
             )
+            current = conn.execute(
+                """SELECT generation, snapshot_digest, envelope_digest, signing_key_id
+                   FROM execution_coordination.authority_snapshot_heads
+                   WHERE authority_id=%s FOR UPDATE""",
+                (authority_id,),
+            ).fetchone()
+            if current is not None:
+                if generation < current["generation"]:
+                    raise CoordinationError("authority snapshot rollback rejected")
+                if generation == current["generation"]:
+                    if (
+                        snapshot_digest != current["snapshot_digest"]
+                        or envelope_digest != current["envelope_digest"]
+                        or signing_key_id != current["signing_key_id"]
+                    ):
+                        raise CoordinationError(
+                            "authority generation conflicts with accepted content"
+                        )
+                    return generation
+            accepted_at = conn.execute(
+                "SELECT clock_timestamp() AS accepted_at"
+            ).fetchone()["accepted_at"]
+            conn.execute(
+                """INSERT INTO execution_coordination.authority_snapshot_versions
+                   (authority_id, generation, snapshot_digest, envelope_digest,
+                    signing_key_id, expires_at, signed_envelope, accepted_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (
+                    authority_id,
+                    generation,
+                    snapshot_digest,
+                    envelope_digest,
+                    signing_key_id,
+                    expires_at,
+                    Jsonb(signed_envelope),
+                    accepted_at,
+                ),
+            )
+            conn.execute(
+                """INSERT INTO execution_coordination.authority_snapshot_heads
+                   (authority_id, generation, snapshot_digest, envelope_digest,
+                    signing_key_id, expires_at, accepted_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (authority_id) DO UPDATE SET
+                     generation=EXCLUDED.generation,
+                     snapshot_digest=EXCLUDED.snapshot_digest,
+                     envelope_digest=EXCLUDED.envelope_digest,
+                     signing_key_id=EXCLUDED.signing_key_id,
+                     expires_at=EXCLUDED.expires_at,
+                     accepted_at=EXCLUDED.accepted_at""",
+                (
+                    authority_id,
+                    generation,
+                    snapshot_digest,
+                    envelope_digest,
+                    signing_key_id,
+                    expires_at,
+                    accepted_at,
+                ),
+            )
+        return generation
+
+    def authority_snapshot_is_current(
+        self,
+        *,
+        authority_id: str,
+        generation: int,
+        snapshot_digest: str,
+    ) -> bool:
+        """Check the installed head and expiry using BC04's database clock."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT generation, snapshot_digest, expires_at > clock_timestamp() AS active
+                   FROM execution_coordination.authority_snapshot_heads
+                   WHERE authority_id=%s""",
+                (authority_id,),
+            ).fetchone()
+        return bool(
+            row
+            and row["generation"] == generation
+            and row["snapshot_digest"] == snapshot_digest
+            and row["active"]
+        )
+
+    def authority_snapshot_head(self, authority_id: str) -> tuple[int, str] | None:
+        """Return the durable generation and digest for an operator authority."""
+        if not authority_id or len(authority_id) > 128:
+            raise CoordinationError("authority identity is invalid")
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT generation, snapshot_digest
+                   FROM execution_coordination.authority_snapshot_heads
+                   WHERE authority_id=%s""",
+                (authority_id,),
+            ).fetchone()
+        return (int(row["generation"]), str(row["snapshot_digest"])) if row else None
 
     def create(self, intent: DurableRunIntent) -> DurableRunSnapshot:
         digest = _canonical_digest(
@@ -184,7 +316,7 @@ class PostgresDurableRunRepository:
             run_id=str(row["run_id"]),
             request_id=row["request_id"],
             idempotency_key=row["idempotency_key"],
-            binding=ExecutionBinding(**row["binding"]),
+            binding=_binding_from_dict(row["binding"]),
             deadline=row["deadline"],
             max_attempts=row["max_attempts"],
         )
@@ -351,6 +483,128 @@ class PostgresDurableRunRepository:
                 _lease_to_dict(result),
             )
             return result
+
+    def admit_acquisition_operation(
+        self,
+        capability: Mapping[str, object],
+        *,
+        operation_id: str,
+        target_digest: str,
+    ) -> Mapping[str, object]:
+        """Linearize one source request against cancellation and attempt expiry."""
+        _validate_identity(operation_id, "operation_id")
+        _validate_identity(target_digest, "target_digest")
+        if not target_digest.startswith("sha256:") or len(target_digest) != 71:
+            raise CoordinationError("acquisition target digest is invalid")
+        tenant_id = capability.get("tenant_id")
+        run_id = capability.get("run_id")
+        attempt_id = capability.get("attempt_id")
+        capability_id = capability.get("capability_id")
+        if not all(
+            isinstance(value, str) and value
+            for value in (tenant_id, run_id, attempt_id, capability_id)
+        ):
+            raise CoordinationError("execution capability identity is invalid")
+        try:
+            expires_at = datetime.fromisoformat(str(capability["expires_at"]))
+            execution_deadline = datetime.fromisoformat(
+                str(capability["execution_deadline"])
+            )
+        except (KeyError, ValueError) as error:
+            raise CoordinationError("execution capability time is invalid") from error
+        if expires_at.tzinfo is None or execution_deadline.tzinfo is None:
+            raise CoordinationError("execution capability time must include timezone")
+        with self._connect() as conn, conn.transaction():
+            run = self._lock_run(conn, str(tenant_id), str(run_id))
+            attempt = conn.execute(
+                """SELECT * FROM execution_coordination.capture_attempts
+                   WHERE tenant_id=%s AND run_id=%s AND attempt_id=%s FOR UPDATE""",
+                (tenant_id, run_id, attempt_id),
+            ).fetchone()
+            now = conn.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
+            binding = run["binding"]
+            if not isinstance(binding, dict):
+                raise CoordinationError("live execution binding is invalid")
+            head = conn.execute(
+                """SELECT generation,snapshot_digest,expires_at
+                   FROM execution_coordination.authority_snapshot_heads
+                   WHERE authority_id=%s FOR SHARE""",
+                (binding.get("authority_id", ""),),
+            ).fetchone()
+            expected_claims = (
+                ("source_id", binding.get("source_id")),
+                ("source_revision_id", binding.get("source_revision_id")),
+                ("policy_id", binding.get("policy_id")),
+                ("policy_version", binding.get("policy_version")),
+                ("policy_digest", binding.get("policy_digest")),
+                ("release_id", binding.get("release_id")),
+                ("build_id", "sha256:" + str(binding.get("build_id"))),
+                ("build_manifest_digest", binding.get("build_manifest_digest")),
+                ("runtime_profile_id", binding.get("runtime_profile_id")),
+            )
+            if (
+                binding.get("execution_mode") != "live-authorized"
+                or run["state"] != DurableRunState.RUNNING.value
+                or run["cancel_requested_at"] is not None
+                or str(run["current_attempt_id"]) != attempt_id
+                or run["generation"] != capability.get("generation")
+                or run["deadline"] <= now
+                or attempt is None
+                or attempt["state"] != DurableAttemptState.RUNNING.value
+                or attempt["generation"] != capability.get("generation")
+                or attempt["lease_until"] is None
+                or attempt["lease_until"] <= now
+                or attempt["attempt_deadline"] <= now
+                or expires_at <= now
+                or execution_deadline <= now
+                or expires_at > execution_deadline
+                or execution_deadline > attempt["attempt_deadline"]
+                or head is None
+                or head["generation"] != binding.get("authority_snapshot_generation")
+                or head["snapshot_digest"] != binding.get("authority_snapshot_digest")
+                or head["expires_at"] <= now
+                or any(capability.get(key) != value for key, value in expected_claims)
+            ):
+                raise CoordinationError(
+                    "acquisition operation is not current and authorized"
+                )
+            existing = conn.execute(
+                """SELECT run_id,attempt_id,generation,capability_id,target_digest,admitted_at
+                   FROM execution_coordination.acquisition_operation_admissions
+                   WHERE tenant_id=%s AND operation_id=%s""",
+                (tenant_id, operation_id),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    str(existing["run_id"]) != run_id
+                    or str(existing["attempt_id"]) != attempt_id
+                    or existing["generation"] != capability.get("generation")
+                    or existing["capability_id"] != capability_id
+                    or existing["target_digest"] != target_digest
+                ):
+                    raise CoordinationError("acquisition operation identity conflicts")
+                return {
+                    "operation_id": operation_id,
+                    "admitted_at": existing["admitted_at"],
+                }
+            admitted = conn.execute(
+                """INSERT INTO execution_coordination.acquisition_operation_admissions
+                   (tenant_id,operation_id,run_id,attempt_id,generation,capability_id,target_digest)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING admitted_at""",
+                (
+                    tenant_id,
+                    operation_id,
+                    run_id,
+                    attempt_id,
+                    capability.get("generation"),
+                    capability_id,
+                    target_digest,
+                ),
+            ).fetchone()
+            return {
+                "operation_id": operation_id,
+                "admitted_at": admitted["admitted_at"],
+            }
 
     def renew(
         self, lease: AttemptLease, operation_id: str, lease_seconds: int
@@ -1145,6 +1399,16 @@ def _lease_from_dict(value: dict[str, Any]) -> AttemptLease:
         if isinstance(result[key], str):
             result[key] = datetime.fromisoformat(result[key])
     return AttemptLease(**result)
+
+
+def _binding_from_dict(
+    value: dict[str, Any],
+) -> ExecutionBinding | LiveExecutionBinding:
+    if not isinstance(value, dict):
+        raise CoordinationError("persisted execution binding is malformed")
+    if value.get("execution_mode") == "live-authorized":
+        return LiveExecutionBinding(**value)
+    return ExecutionBinding(**value)
 
 
 def _same_reservation(row: dict[str, Any], grant: FinalizationGrant) -> bool:

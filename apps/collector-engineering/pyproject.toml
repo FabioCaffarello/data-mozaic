@@ -11,6 +11,7 @@ dependencies = [
     "jsonschema>=4.23,<5",
     "mozaic-bot-build==0.1.0",
     "PyYAML>=6.0,<7",
+    "aiohttp>=3.10,<4",
     "scrapy==2.20.0",
     "selectolax>=0.4.13,<0.5",
 ]

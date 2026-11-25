@@ -24,6 +24,12 @@ from .backend_scrapy_fixture import (
 from .backend_scrapy_fixture import (
     verify_build as verify_scrapy_build,
 )
+from .backend_scrapy_live import (
+    compile_build as compile_scrapy_live_build,
+)
+from .backend_scrapy_live import (
+    verify_build as verify_scrapy_live_build,
+)
 from .playbook_v2 import build_typed_ir, load_playbook_v2, validate_playbook_v2
 from .playbooks import build_draft, dump_yaml, validate_file
 from .reference_runtime import RuntimeFailure
@@ -92,11 +98,13 @@ def _run_network_isolated(command: list[str]) -> subprocess.CompletedProcess[str
         backend_id = build_manifest.get("backend_id")
         if backend_id == "scrapy-fixture":
             verify_scrapy_build(build_bot.parent)
+        elif backend_id == "scrapy-live-http":
+            verify_scrapy_live_build(build_bot.parent)
         elif backend_id == "python-http-reference":
             verify_build(build_bot.parent)
         else:
             raise PlaybookError("[BUILD_BACKEND_UNSUPPORTED] unknown BotBuild backend")
-        scrapy_backend = backend_id == "scrapy-fixture"
+        scrapy_backend = backend_id in {"scrapy-fixture", "scrapy-live-http"}
         build_paths = (build_bot.parent, *build_bot.parent.rglob("*"))
         for path in build_paths:
             if path.is_symlink():
@@ -540,7 +548,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     compile_parser.add_argument("playbook", type=Path)
     compile_parser.add_argument(
-        "--backend", choices=["python-http", "scrapy-fixture"], required=True
+        "--backend",
+        choices=["python-http", "scrapy-fixture", "scrapy-live-http"],
+        required=True,
     )
     compile_parser.add_argument("--fixtures", type=Path, required=True)
     compile_parser.add_argument("--output", type=Path, required=True)
@@ -639,11 +649,22 @@ def main(argv: list[str] | None = None) -> int:
                     ).hexdigest(),
                     target_platform=args.target_platform,
                 )
-            else:
+            elif args.backend == "scrapy-fixture":
                 ir = build_typed_ir(parsed, fixture_root=args.fixtures)
                 manifest = compile_scrapy_build(
                     ir,
                     fixture_root=args.fixtures,
+                    output=args.output,
+                    lockfile=_repo_root() / "uv.lock",
+                    playbook_sha256=hashlib.sha256(
+                        args.playbook.read_bytes()
+                    ).hexdigest(),
+                    target_platform=args.target_platform,
+                )
+            else:
+                ir = build_typed_ir(parsed, fixture_root=args.fixtures)
+                manifest = compile_scrapy_live_build(
+                    ir,
                     output=args.output,
                     lockfile=_repo_root() / "uv.lock",
                     playbook_sha256=hashlib.sha256(
@@ -667,6 +688,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise PlaybookError(f"[BUILD_MANIFEST_INVALID] {error}") from error
             if raw_manifest.get("backend_id") == "scrapy-fixture":
                 manifest = verify_scrapy_build(args.build_dir)
+            elif raw_manifest.get("backend_id") == "scrapy-live-http":
+                manifest = verify_scrapy_live_build(args.build_dir)
             else:
                 manifest = verify_build(args.build_dir)
             _json(

@@ -1,0 +1,25 @@
+{
+  "complete": true,
+  "source": {"source_id": "controlled-http", "revision": "controlled-v1"},
+  "pages": [
+    {
+      "url": "https://api.fixture.test/v1/pages/1",
+      "status": 200,
+      "content_type": "text/html",
+      "evidence_ref": "controlled-page-1",
+      "body_file": "page-1.html",
+      "sha256": "cb909ca7007ae31688b9dd733aa7c53efb736a1e0a0ad21e5f78f3d50fd16b19",
+      "size_bytes": 155
+    },
+    {
+      "url": "https://api.fixture.test/v1/pages/2",
+      "status": 200,
+      "content_type": "text/html",
+      "evidence_ref": "controlled-page-2",
+      "body_file": "page-2.html",
+      "sha256": "c4ff11d40d3ad61569e13cda3c74bc2745c0e16ac7b28c34e1f48eea286c7425",
+      "size_bytes": 113,
+      "discovered_from": "controlled-page-1"
+    }
+  ]
+}

@@ -19,6 +19,7 @@ from execution_coordination.durable_domain import (
     DurableRunSnapshot,
     FailureDisposition,
     FinalizationReservation,
+    LiveExecutionBinding,
 )
 
 
@@ -40,6 +41,9 @@ class FinalizationRecoveryResult:
 
 from execution_coordination.durable_ports import (
     DurableRunRepositoryPort,
+    ExecutionCapabilityIssuerPort,
+    ExecutionCapabilityVerifierPort,
+    LiveAuthorityPort,
     PublicationGrantSignerPort,
     PublicationPort,
 )
@@ -64,6 +68,9 @@ class DurableExecutionCoordinator:
         grant_signer: PublicationGrantSignerPort | None,
         *,
         lease_seconds: int = 30,
+        live_authority: LiveAuthorityPort | None = None,
+        execution_capability_signer: ExecutionCapabilityIssuerPort | None = None,
+        execution_capability_verifier: ExecutionCapabilityVerifierPort | None = None,
     ) -> None:
         if not 1 <= lease_seconds <= 300:
             raise CoordinationError("lease duration is outside the supported range")
@@ -71,9 +78,78 @@ class DurableExecutionCoordinator:
         self._publication = publication
         self._grant_signer = grant_signer
         self._lease_seconds = lease_seconds
+        self._live_authority = live_authority
+        self._execution_capability_signer = execution_capability_signer
+        self._execution_capability_verifier = execution_capability_verifier
 
     def create_run(self, intent: DurableRunIntent) -> DurableRunSnapshot:
+        if intent.binding.execution_mode != "fixture-only":
+            raise CoordinationError("live runs require trusted live admission")
         return self._repository.create(intent)
+
+    def admit_live_run(
+        self,
+        *,
+        tenant_id: str,
+        run_id: str,
+        request_id: str,
+        idempotency_key: str,
+        deadline: datetime,
+        source_id: str,
+        source_revision_id: str,
+        policy_id: str,
+        policy_version: str,
+        release_id: str,
+        build_id: str,
+        build_manifest_digest: str,
+        runtime_image_digest: str,
+        max_attempts: int = 3,
+    ) -> DurableRunSnapshot:
+        """Resolve all live authorization from the trusted operator snapshot."""
+        if self._live_authority is None:
+            raise CoordinationError("trusted live authority is not configured")
+        self._live_authority.assert_durably_current()
+        resolved = self._live_authority.resolve(
+            source_id=source_id,
+            source_revision_id=source_revision_id,
+            policy_id=policy_id,
+            policy_version=policy_version,
+            release_id=release_id,
+            build_id=build_id,
+            build_manifest_digest=build_manifest_digest,
+            runtime_image_digest=runtime_image_digest,
+        )
+        policy = resolved.policy
+        binding = LiveExecutionBinding(
+            source_id=source_id,
+            source_revision_id=source_revision_id,
+            policy_id=policy_id,
+            policy_version=policy_version,
+            policy_digest=str(policy["policy_digest"]),
+            release_id=release_id,
+            build_id=build_id.removeprefix("sha256:"),
+            build_manifest_digest=build_manifest_digest,
+            runtime_profile_id=str(resolved.release["runtime_profile_id"]),
+            runtime_image_digest=runtime_image_digest,
+            authority_id=resolved.authority_id,
+            authority_snapshot_generation=resolved.snapshot_generation,
+            authority_snapshot_digest=resolved.snapshot_digest,
+            max_duration_seconds=int(policy["deadline_seconds"]),
+            max_requests=int(policy["max_requests"]),
+            max_total_response_bytes=int(policy["max_total_response_bytes"]),
+            max_concurrency=int(policy["max_concurrency"]),
+        )
+        return self._repository.create(
+            DurableRunIntent(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                binding=binding,
+                deadline=deadline,
+                max_attempts=max_attempts,
+            )
+        )
 
     def inspect(self, tenant_id: str, run_id: str) -> DurableRunSnapshot:
         snapshot = self._repository.get(tenant_id, run_id)
@@ -98,6 +174,67 @@ class DurableExecutionCoordinator:
             secrets.token_urlsafe(32),
             operation_id,
             self._lease_seconds,
+        )
+
+    def issue_execution_capability(
+        self,
+        lease: AttemptLease,
+        *,
+        audience: str,
+        now: datetime | None = None,
+    ) -> dict[str, object]:
+        """Issue only while the exact durable attempt lease remains current."""
+        if self._execution_capability_signer is None:
+            raise CoordinationError("execution capability signer is not configured")
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        snapshot = self.inspect(lease.tenant_id, lease.run_id)
+        binding = snapshot.intent.binding
+        if not isinstance(binding, LiveExecutionBinding):
+            raise CoordinationError("fixture-only runs cannot receive live capability")
+        if (
+            snapshot.state.value != "running"
+            or snapshot.attempt_state is None
+            or snapshot.attempt_state.value != "running"
+            or snapshot.attempt_id != lease.attempt_id
+            or snapshot.generation != lease.generation
+            or snapshot.lease_until != lease.lease_until
+            or snapshot.lease_until is None
+            or snapshot.lease_until <= current
+            or lease.attempt_deadline <= current
+        ):
+            raise CoordinationError(
+                "execution capability requires the current attempt lease"
+            )
+        return self._execution_capability_signer.issue(
+            lease,
+            source_id=binding.source_id,
+            source_revision_id=binding.source_revision_id,
+            policy_id=binding.policy_id,
+            policy_version=binding.policy_version,
+            policy_digest=binding.policy_digest,
+            release_id=binding.release_id,
+            build_id="sha256:" + binding.build_id,
+            build_manifest_digest=binding.build_manifest_digest,
+            runtime_profile_id=binding.runtime_profile_id,
+            audience=audience,
+            execution_deadline=min(snapshot.intent.deadline, lease.attempt_deadline),
+            now=current,
+        )
+
+    def authorize_acquisition_operation(
+        self,
+        capability: Mapping[str, object],
+        *,
+        operation_id: str,
+        target_digest: str,
+        audience: str = "data-mozaic/acquisition-gateway",
+    ) -> Mapping[str, object]:
+        """Durably admit one gateway operation at BC04's current-attempt lock point."""
+        if self._execution_capability_verifier is None:
+            raise CoordinationError("execution capability verifier is not configured")
+        self._execution_capability_verifier.verify(capability, audience=audience)
+        return self._repository.admit_acquisition_operation(
+            capability, operation_id=operation_id, target_digest=target_digest
         )
 
     def renew_attempt(self, lease: AttemptLease, operation_id: str) -> AttemptLease:

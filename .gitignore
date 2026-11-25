@@ -7,12 +7,6 @@ __pycache__/
 !.env.example
 !.env.mongodb.example
 !.env.artifact-custody.example
-.local/mongodb/
-.local/authoring-policy.json
-.local/scout-egress-domains.txt
-.local/scout-mcp.env
-.local/uv-cache/
-.local/pr10-builds/
-.local/execution-coordination-fixture/
+.local/
 node_modules/
 target/

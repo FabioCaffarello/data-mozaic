@@ -63,6 +63,36 @@ jobs:
           make artifact-custody-go-build
           make artifact-custody-go-vuln
 
+  acquisition-gateway-go:
+    name: Acquisition Gateway Go Format, Static Analysis, Unit, Race, and Build Gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Gateway Go checks
+        run: |
+          make acquisition-gateway-go-format-check
+          make acquisition-gateway-go-vet
+          make acquisition-gateway-go-test
+          make acquisition-gateway-go-race
+          make acquisition-gateway-go-build
+          make acquisition-gateway-go-vuln
+
+  acquisition-gateway-container-network:
+    name: Controlled Acquisition Gateway Container Network Boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.9.8"
+      - name: Exercise delegated fetch and worker direct-route denial
+        run: make acquisition-live-gateway-container-smoke
+
   artifact-custody-integration:
     name: BC06 PostgreSQL/RustFS and BC05/MongoDB Interoperability
     runs-on: ubuntu-24.04
@@ -100,6 +130,42 @@ jobs:
         run: make execution-coordination-finalization-tests
       - name: Execute protected Scrapy fixture through durable BC04/BC05/BC06
         run: make execution-coordination-fixture-acquisition
+      - name: Execute authorized controlled live Scrapy JSON through BC04/BC05/BC06
+        run: make authorized-live-json-acquisition
+      - name: Execute authorized controlled live Scrapy HTML through BC04/BC05/BC06
+        run: make authorized-live-html-acquisition
+      - name: Execute authorized controlled live paginated Scrapy through BC04/BC05/BC06
+        run: make authorized-live-pagination-acquisition
+      - name: Execute authorized controlled planned-window pagination through BC04/BC05/BC06
+        run: make authorized-live-pagination-planned-acquisition
+      - name: Execute authorized controlled redirect through BC04/BC05/BC06
+        run: make authorized-live-redirect-acquisition
+      - name: Reject unauthorized controlled redirect without publication
+        run: make authorized-live-redirect-denial
+      - name: Reject redirect chain after the bounded gateway hop budget
+        run: make authorized-live-redirect-budget-exhaustion
+      - name: Reconcile controlled live publication after acknowledgment loss
+        run: make authorized-live-publication-ack-loss
+      - name: Cancel an active controlled paginated run after first admitted request
+        run: make authorized-live-pagination-cancellation
+      - name: Restart gateway during live acquisition and reject the stale capability
+        run: make authorized-live-scenario CASE=gateway-restart
+      - name: Verify live custody retained after interruption before BC05 staging
+        run: make authorized-live-custody-interruption
+      - name: Verify partial live staging remains unpublished after interruption
+        run: make authorized-live-partial-stage-interruption
+      - name: Reject oversized live response before publication
+        run: make authorized-live-scenario CASE=oversized
+      - name: Reject a live response that exceeds the execution deadline
+        run: make authorized-live-scenario CASE=slow
+      - name: Reject malformed controlled JSON before publication
+        run: make authorized-live-scenario CASE=malformed
+      - name: Reject extracted live records that violate the contract
+        run: make authorized-live-scenario CASE=invalid-output
+      - name: Reject an interrupted controlled response body
+        run: make authorized-live-scenario CASE=interrupted-body
+      - name: Reject pagination stopped by the natural-end safety limit
+        run: make authorized-live-scenario CASE=pagination-incomplete
       - name: Verify BC06 PostgreSQL logical restore into an isolated schema
         run: make artifact-custody-backup-restore
       - name: Run one bounded BC06 reconciliation pass

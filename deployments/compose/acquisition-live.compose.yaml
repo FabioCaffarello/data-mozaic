@@ -1,0 +1,108 @@
+services:
+  acquisition-gateway:
+    build:
+      context: ../../apps/acquisition-gateway
+      dockerfile: Dockerfile
+    environment:
+      GATEWAY_LISTEN: ":8090"
+      GATEWAY_AUDIENCE: "data-mozaic/acquisition-gateway"
+      GATEWAY_PUBLIC_KEYS_FILE: /run/mozaic/keys.json
+      GATEWAY_POLICY_FILE: /run/mozaic/policies.json
+      GATEWAY_STATE_PATH: /var/lib/mozaic/quota/state.json
+      GATEWAY_EVIDENCE_DIRECTORY: /var/lib/mozaic/evidence
+      GATEWAY_GLOBAL_CONCURRENCY: "8"
+      GATEWAY_MAX_SPOOL_BYTES: "67108864"
+      GATEWAY_MAX_EVIDENCE_FILES: "500"
+      GATEWAY_TEST_ROOTS_FILE: /run/mozaic/controlled-source.crt
+      GATEWAY_TEST_STATIC_AUTHORIZATION: ${GATEWAY_TEST_STATIC_AUTHORIZATION:-1}
+      GATEWAY_BC04_AUTHORIZATION_URL: ${GATEWAY_BC04_AUTHORIZATION_URL:-}
+      GATEWAY_BC04_AUTHORIZATION_TOKEN: ${GATEWAY_BC04_AUTHORIZATION_TOKEN:-}
+      GATEWAY_EVIDENCE_IMPORT_TOKEN: ${GATEWAY_EVIDENCE_IMPORT_TOKEN:-}
+    volumes:
+      - ${MOZAIC_LIVE_TRUSTED_CONFIG:?set MOZAIC_LIVE_TRUSTED_CONFIG}:/run/mozaic:ro
+      - acquisition-live-state:/var/lib/mozaic
+    networks:
+      - worker-gateway
+      - controlled-source
+      - gateway-egress
+    ports:
+      - "127.0.0.1:${MOZAIC_GATEWAY_HOST_PORT:?set MOZAIC_GATEWAY_HOST_PORT}:8090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=8m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "/acquisition-gateway", "-healthcheck", "http://127.0.0.1:8090/healthz"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+      start_period: 5s
+
+  controlled-source:
+    build:
+      context: ../../apps/acquisition-gateway
+      dockerfile: Dockerfile.controlled-source
+    networks:
+      controlled-source:
+        ipv4_address: 172.30.249.10
+        aliases: [api.fixture.test]
+    cap_add: [NET_BIND_SERVICE]
+    volumes:
+      - ${MOZAIC_TEST_TLS_DIRECTORY:?test-only TLS directory required}:/run/controlled:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 64m
+    cpus: 0.25
+    pids_limit: 32
+    healthcheck:
+      test: ["CMD", "/controlled-source", "-healthcheck", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  worker-scrapy-live:
+    profiles: [test]
+    build:
+      context: ../..
+      dockerfile: apps/collector-engineering/Dockerfile.scrapy-live
+      args:
+        MOZAIC_LIVE_PLAYBOOK: ${MOZAIC_LIVE_PLAYBOOK:-examples/use-cases/controlled-live-json/capture-playbook.yaml}
+        MOZAIC_LIVE_FIXTURES: ${MOZAIC_LIVE_FIXTURES:-examples/use-cases/controlled-live-json/fixtures}
+    environment:
+      MOZAIC_EXECUTION_CAPABILITY_FILE: /run/mozaic/capability
+      MOZAIC_ACQUISITION_GATEWAY_URL: http://acquisition-gateway:8090
+      MOZAIC_RESULT_DIRECTORY: /result-parent/result
+      MOZAIC_BC04_TEST_PORT: ${MOZAIC_BC04_TEST_PORT:-}
+    volumes:
+      - ${MOZAIC_LIVE_CAPABILITY_FILE:?set MOZAIC_LIVE_CAPABILITY_FILE}:/run/mozaic/capability:ro
+      - ${MOZAIC_LIVE_RESULT_PARENT:?set MOZAIC_LIVE_RESULT_PARENT}:/result-parent
+    networks: [worker-gateway]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=1m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 64m
+    cpus: 0.25
+    pids_limit: 32
+
+networks:
+  worker-gateway:
+    internal: true
+  controlled-source:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.249.0/24
+  gateway-egress:
+    driver: bridge
+
+volumes:
+  acquisition-live-state:
