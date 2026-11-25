@@ -52,6 +52,10 @@ services:
       controlled-source:
         ipv4_address: 172.30.249.10
         aliases: [api.fixture.test]
+    # The acceptance harness creates the private test key with owner-only
+    # permissions. Run this unprivileged process as that owner so Linux
+    # container runtimes can read the mounted key without widening its mode.
+    user: "${MOZAIC_TEST_SOURCE_UID:-65532}"
     cap_add: [NET_BIND_SERVICE]
     volumes:
       - ${MOZAIC_TEST_TLS_DIRECTORY:?test-only TLS directory required}:/run/controlled:ro

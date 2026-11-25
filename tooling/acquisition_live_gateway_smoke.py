@@ -177,6 +177,7 @@ def main() -> int:
             "MOZAIC_LIVE_RESULT_PARENT": str(result_parent),
             "MOZAIC_GATEWAY_HOST_PORT": gateway_host_port,
             "MOZAIC_TEST_TLS_DIRECTORY": str(temp_root / "tls"),
+            "MOZAIC_TEST_SOURCE_UID": str(os.getuid()),
         }
         project = "data-mozaic-acquisition-live-smoke"
         command = [

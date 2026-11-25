@@ -604,6 +604,7 @@ def main() -> int:
             "MOZAIC_GATEWAY_HOST_PORT": str(gateway_port),
             "MOZAIC_BC04_TEST_PORT": str(api_port),
             "MOZAIC_TEST_TLS_DIRECTORY": str(root / "tls"),
+            "MOZAIC_TEST_SOURCE_UID": str(os.getuid()),
             "GATEWAY_TEST_STATIC_AUTHORIZATION": "0",
             "GATEWAY_BC04_AUTHORIZATION_URL": f"http://host.docker.internal:{api_port}/internal/v1/acquisition-operations/admit",
             "GATEWAY_BC04_AUTHORIZATION_TOKEN": operation_token,
