@@ -93,7 +93,7 @@ artifact-custody-down:
 
 artifact-custody-integration: artifact-custody-up
 	@test -f $(MONGO_ENV_FILE) || { echo 'Run make acquisition-output-mongo-setup first or provide the preserved MongoDB worktree environment.'; exit 2; }
-	@set -a; . ./.env.artifact-custody; . $(MONGO_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/artifact_custody_integration.py
+	@set -a; . ./.env.artifact-custody; . ./$(MONGO_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/artifact_custody_integration.py
 
 artifact-custody-reconcile:
 	docker compose --env-file .env.artifact-custody -f $(BC06_COMPOSE_FILE) --profile operations run --build --rm artifact-custody-reconcile
@@ -115,7 +115,7 @@ acquisition-output-mongo-setup:
 
 acquisition-output-mongo-check-config: acquisition-output-mongo-setup
 	@test -f $(MONGO_ENV_FILE) || { echo 'Run make acquisition-output-mongo-setup first.'; exit 2; }
-	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli check-config
+	@set -a; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli check-config
 
 acquisition-output-mongo-up: acquisition-output-mongo-check-config
 	docker compose --env-file $(MONGO_ENV_FILE) -f $(MONGO_COMPOSE_FILE) up --wait -d mongodb
@@ -125,26 +125,26 @@ acquisition-output-mongo-status:
 	docker compose --env-file $(MONGO_ENV_FILE) -f $(MONGO_COMPOSE_FILE) ps
 
 acquisition-output-mongo-connectivity: acquisition-output-mongo-up
-	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
 	docker compose --env-file $(MONGO_ENV_FILE) -f $(MONGO_COMPOSE_FILE) exec mongodb bash -ec 'mongosh --quiet --host mongodb:27017 --username "$$MONGO_INITDB_ROOT_USERNAME" --password "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval '\''db.hello().setName'\'''
 
 acquisition-output-mongo-provision: acquisition-output-mongo-up
-	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
 
 acquisition-output-mongo-tests: acquisition-output-mongo-provision
-	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m unittest discover -s apps/acquisition-output/integration_tests -v
+	@set -a; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m unittest discover -s apps/acquisition-output/integration_tests -v
 
 acquisition-output-mongo-example: acquisition-output-mongo-provision
-	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python examples/acquisition-output-mongodb/consume.py
+	@set -a; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python examples/acquisition-output-mongodb/consume.py
 
 acquisition-output-mongo-backup-restore: acquisition-output-mongo-provision
-	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python tooling/mongodb_backup_restore_smoke.py
+	@set -a; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python tooling/mongodb_backup_restore_smoke.py
 
 acquisition-output-mongo-benchmark: acquisition-output-mongo-provision
-	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python tooling/benchmark_acquisition_output_mongodb.py
+	@set -a; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python tooling/benchmark_acquisition_output_mongodb.py
 
 acquisition-output-mongo-benchmark-100k: acquisition-output-mongo-provision
-	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python tooling/benchmark_acquisition_output_mongodb.py --counts=100000
+	@set -a; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python tooling/benchmark_acquisition_output_mongodb.py --counts=100000
 
 acquisition-output-mongo-down:
 	docker compose --env-file $(MONGO_ENV_FILE) -f $(MONGO_COMPOSE_FILE) down
