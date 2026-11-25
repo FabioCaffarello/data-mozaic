@@ -42,6 +42,10 @@ Go é candidato ao control/CLI por concorrência e binários simples; Python ao 
 
 Python remains for Scout, Collector Engineering, Scrapy, the initial BC05 Acquisition Output module and existing BC04 components. Before implementing BC06 Artifact Custody, compare Python and Go against the actual service boundary, streaming and bounded concurrency needs, independent deployment, cross-language contracts, resource lifecycle, operational ownership and total toolchain/on-call cost. Go is a serious candidate for an independently operated custody/streaming service, but this is not approval to add Go scaffolding or to require BC06 to be a Go microservice. Preserve BC06 consumer-owned ports and language-neutral contracts either way. Rust and TypeScript wait for concrete consumers; do not rewrite functioning components only to diversify languages.
 
+### BC06 implementation review amendment — 2026-11-24
+
+The scoped foundation now exists at `apps/artifact-custody/` as the repository's first Go deployable, with pinned toolchain, module lock data, Linux container build, local macOS/arm64 developer support, and owner-local `internal/` packages. Go was selected for this independent bounded streaming service to exercise the Python/Go contract boundary, not on measured performance superiority. ADR 023 remains Proposed. This implementation is an incremental foundation, not a general Go service template or a requirement to rewrite other contexts.
+
 ## Library architecture
 
 `libs/<language>/<library>/` é o destino para código reutilizável com ownership, API e consumidores demonstrados. Módulo interno de bounded context, library, SDK, framework adapter, plugin, contract package e deployable são unidades diferentes; seus critérios e governança estão na [Library Architecture](libraries.md). Não criar scaffolding vazio nem renomear caminhos em massa. Hoje `mozaic-observability` e `mozaic-bot-build` são libraries Python internas L2; BC14 permanece em `apps/scout/scout/`; BC05 Acquisition Output começa como pacote de aplicação/contexto em `apps/acquisition-output/`, não como library compartilhada.

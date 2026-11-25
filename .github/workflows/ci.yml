@@ -47,6 +47,66 @@ jobs:
             make acquisition-output-mongo-down
           fi
 
+  artifact-custody-go:
+    name: BC06 Go Unit, Race, and Vulnerability Gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Go format, analysis, unit, race, Linux build, and vulnerability checks
+        run: |
+          make artifact-custody-go-format-check
+          make artifact-custody-go-vet
+          make artifact-custody-go-test
+          make artifact-custody-go-race
+          make artifact-custody-go-build
+          make artifact-custody-go-vuln
+
+  artifact-custody-integration:
+    name: BC06 PostgreSQL/RustFS and BC05/MongoDB Interoperability
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.9.8"
+      - name: Configure disposable PostgreSQL credentials
+        run: |
+          cat > .env <<'EOF'
+          POSTGRES_USER=scout
+          POSTGRES_PASSWORD=scout_ci_only
+          POSTGRES_DB=scout_dev
+          SCOUT_POSTGRES_PORT=55432
+          SCOUT_DATABASE_URL=postgresql://scout:scout_ci_only@127.0.0.1:55432/scout_dev
+          EOF
+      - name: Start existing PostgreSQL profile and bootstrap isolated BC06 roles
+        run: |
+          make db-up
+          make artifact-custody-setup
+          make artifact-custody-db-bootstrap
+      - name: Provision MongoDB replica set and run BC05 real-store tests
+        run: |
+          make acquisition-output-mongo-setup
+          make acquisition-output-mongo-tests
+      - name: Run real BC05/MongoDB to BC06/PostgreSQL/RustFS flow
+        run: make artifact-custody-integration
+      - name: Exercise real PostgreSQL/RustFS recovery and independent writers
+        run: make artifact-custody-recovery-tests
+      - name: Verify BC06 PostgreSQL logical restore into an isolated schema
+        run: make artifact-custody-backup-restore
+      - name: Run one bounded BC06 reconciliation pass
+        run: make artifact-custody-reconcile
+      - name: Stop local services while preserving volumes
+        if: always()
+        run: |
+          if [ -f .env.artifact-custody ]; then make artifact-custody-down; fi
+          if [ -f .env.mongodb ]; then make acquisition-output-mongo-down; fi
+          if [ -f .env ]; then make db-down; fi
+
   integration-security:
     name: Integration Security Gate
     runs-on: ubuntu-24.04

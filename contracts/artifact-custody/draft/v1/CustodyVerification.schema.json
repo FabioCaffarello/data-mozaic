@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/artifact-custody/draft/v1/CustodyVerification.schema.json",
+  "title": "BC06 Custody Verification",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {"const": "artifact-custody.v1"},
+    "status": {"enum": ["confirmed", "unavailable", "inconsistent"]},
+    "receipt": {"$ref": "CustodyReceipt.schema.json"}
+  },
+  "required": ["contract_version", "status"],
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "confirmed"}}}, "then": {"required": ["receipt"]}},
+    {"if": {"properties": {"status": {"enum": ["unavailable", "inconsistent"]}}}, "then": {"not": {"required": ["receipt"]}}}
+  ]
+}

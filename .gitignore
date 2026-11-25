@@ -6,6 +6,7 @@ __pycache__/
 .env.*
 !.env.example
 !.env.mongodb.example
+!.env.artifact-custody.example
 .local/mongodb/
 .local/authoring-policy.json
 .local/scout-egress-domains.txt

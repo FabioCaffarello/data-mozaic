@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/artifact-custody/draft/v1/CustodyReceipt.schema.json",
+  "title": "BC06 Custody Receipt",
+  "description": "Draft durable receipt for verified artifact custody; contains no object URI or access token.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {"const": "artifact-custody.v1"},
+    "receipt_id": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/identifier"},
+    "tenant_id": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/identifier"},
+    "artifact": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/artifactRef"},
+    "source": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/source"},
+    "representation": {"$ref": "ArtifactWriteIntent.schema.json#/properties/representation"},
+    "classification": {"$ref": "ArtifactWriteIntent.schema.json#/properties/classification"},
+    "retention_policy_ref": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/identifier"},
+    "confirmed_at": {"type": "string", "format": "date-time"}
+  },
+  "required": ["contract_version", "receipt_id", "tenant_id", "artifact", "source", "representation", "classification", "retention_policy_ref", "confirmed_at"]
+}

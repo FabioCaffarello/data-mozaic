@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/artifact-custody/draft/v1/ArtifactIntentStatus.schema.json",
+  "title": "BC06 Artifact Intent Status",
+  "description": "Draft response to reserve or replay an immutable custody operation intent.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {"const": "artifact-custody.v1"},
+    "operation_id": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/identifier"},
+    "artifact_id": {"$ref": "ArtifactWriteIntent.schema.json#/$defs/identifier"},
+    "state": {"enum": ["pending_upload", "uploading", "available", "unavailable", "inconsistent"]},
+    "receipt": {"$ref": "CustodyReceipt.schema.json"}
+  },
+  "required": ["contract_version", "operation_id", "artifact_id", "state"]
+}

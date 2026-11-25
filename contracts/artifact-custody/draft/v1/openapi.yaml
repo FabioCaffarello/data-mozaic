@@ -1,0 +1,116 @@
+openapi: 3.1.0
+info:
+  title: Data Mozaic BC06 Artifact Custody
+  version: draft/v1
+  description: Draft HTTP API. Local bearer auth is a test policy only; production requires BC11 authorization.
+servers:
+  - url: http://127.0.0.1:8086
+security:
+  - LocalBearer: []
+paths:
+  /draft/v1/artifact-intents:
+    post:
+      operationId: createArtifactWriteIntent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ArtifactWriteIntent.schema.json}
+      responses:
+        '201': {description: Intent reserved; no custody receipt exists yet}
+        '200': {description: Idempotent replay of the same write intent}
+        '409': {description: Operation identity reused with changed intent}
+        'default': {description: Stable error, content: {application/json: {schema: {$ref: Error.schema.json}}}}
+  /draft/v1/artifact-intents/{operation_id}/content:
+    put:
+      operationId: streamArtifactBytes
+      parameters:
+        - in: path
+          name: operation_id
+          required: true
+          schema: {type: string}
+        - in: header
+          name: X-DM-Tenant-ID
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream: {schema: {type: string, format: binary}}
+      responses:
+        '200': {description: Durable custody receipt, content: {application/json: {schema: {$ref: CustodyReceipt.schema.json}}}}
+        '409': {description: Operation in progress or immutable identity conflict}
+        '422': {description: Size or digest mismatch}
+        'default': {description: Stable error, content: {application/json: {schema: {$ref: Error.schema.json}}}}
+  /draft/v1/artifacts/{artifact_id}/verification:
+    get:
+      operationId: verifyArtifactCustody
+      parameters:
+        - in: path
+          name: artifact_id
+          required: true
+          schema: {type: string}
+        - in: query
+          name: digest
+          required: true
+          schema: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        - in: query
+          name: size_bytes
+          required: true
+          schema: {type: integer, minimum: 0, maximum: 9007199254740991}
+        - in: query
+          name: source_id
+          required: true
+          schema: {type: string}
+        - in: query
+          name: source_revision
+          required: true
+          schema: {type: string}
+        - in: header
+          name: X-DM-Tenant-ID
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Verification result, content: {application/json: {schema: {$ref: CustodyVerification.schema.json}}}}
+  /draft/v1/artifacts/{artifact_id}:
+    get:
+      operationId: readArtifactMetadata
+      parameters:
+        - in: path
+          name: artifact_id
+          required: true
+          schema: {type: string}
+        - in: header
+          name: X-DM-Tenant-ID
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Logical custody metadata; physical object locations are private, content: {application/json: {schema: {$ref: ArtifactMetadata.schema.json}}}}
+        '404': {description: Artifact not visible to this tenant}
+  /draft/v1/artifacts/{artifact_id}/content:
+    get:
+      operationId: streamArtifactBytes
+      parameters:
+        - in: path
+          name: artifact_id
+          required: true
+          schema: {type: string}
+        - in: header
+          name: X-DM-Tenant-ID
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Stream of stored bytes; caller can verify the SHA-256 advertised in the Digest header, content: {application/octet-stream: {schema: {type: string, format: binary}}}}
+        '404': {description: Artifact not visible to this tenant}
+  /draft/v1/outbox/pending:
+    get:
+      operationId: listPendingCustodyEvents
+      parameters:
+        - in: query
+          name: limit
+          schema: {type: integer, minimum: 1, maximum: 100}
+      responses:
+        '200': {description: Bounded pending BC06 events; no delivery guarantee}
+components:
+  securitySchemes:
+    LocalBearer: {type: http, scheme: bearer}

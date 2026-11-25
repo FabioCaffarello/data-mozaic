@@ -26,6 +26,7 @@ Todos os registros estão **Proposed**; não há decisões Accepted, Rejected ou
 | [020](020-scrapy-collector-multi-bot-project.md) | projeto Scrapy multi-bot, assembly, catálogo e execução isolada | Proposed |
 | [021](021-bc04-fixture-execution-coordination.md) | coordenação fixture-only e adapter Scrapy protegido | Proposed |
 | [022](022-bc05-acquisition-output.md) | domínio e contratos draft de Acquisition Output e OutputSet BC05 | Proposed |
+| [023](023-bc06-artifact-custody.md) | serviço BC06 em Go e perfil local de object storage S3 compatível | Proposed |
 
 Use o [template](template.md) para alterações que imponham restrições novas. Decisões menores e reversíveis podem permanecer nos documentos de arquitetura até existir evidência suficiente para ADR.
 7. [Recuperação durável de comandos Scout](007-scout-durable-recovery.md)

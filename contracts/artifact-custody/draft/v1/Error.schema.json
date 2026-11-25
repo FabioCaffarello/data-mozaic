@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/artifact-custody/draft/v1/Error.schema.json",
+  "title": "BC06 Stable Error",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {"const": "artifact-custody.v1"},
+    "code": {"enum": ["invalid_request", "unauthorized", "forbidden", "not_found", "operation_conflict", "operation_in_progress", "size_limit_exceeded", "digest_mismatch", "deadline_exceeded", "temporarily_unavailable", "integrity_inconsistent"]},
+    "message": {"type": "string", "maxLength": 256},
+    "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+  },
+  "required": ["contract_version", "code", "message", "request_id"]
+}

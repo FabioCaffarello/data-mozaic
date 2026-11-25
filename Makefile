@@ -1,7 +1,11 @@
-.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests acquisition-output-tests acquisition-output-fixture-example acquisition-output-mongo-setup acquisition-output-mongo-check-config acquisition-output-mongo-up acquisition-output-mongo-status acquisition-output-mongo-connectivity acquisition-output-mongo-provision acquisition-output-mongo-tests acquisition-output-mongo-example acquisition-output-mongo-backup-restore acquisition-output-mongo-benchmark acquisition-output-mongo-benchmark-100k acquisition-output-mongo-down scrapy-collector-multibot-conformance execution-coordination-protected-e2e test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
+.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests acquisition-output-tests acquisition-output-fixture-example acquisition-output-mongo-setup acquisition-output-mongo-check-config acquisition-output-mongo-up acquisition-output-mongo-status acquisition-output-mongo-connectivity acquisition-output-mongo-provision acquisition-output-mongo-tests acquisition-output-mongo-example acquisition-output-mongo-backup-restore acquisition-output-mongo-benchmark acquisition-output-mongo-benchmark-100k acquisition-output-mongo-down artifact-custody-setup artifact-custody-go-format-check artifact-custody-go-vet artifact-custody-go-test artifact-custody-go-race artifact-custody-go-build artifact-custody-go-vuln artifact-custody-up artifact-custody-status artifact-custody-down artifact-custody-integration artifact-custody-db-bootstrap artifact-custody-object-provision artifact-custody-reconcile artifact-custody-recovery-tests artifact-custody-benchmark artifact-custody-backup-restore scrapy-collector-multibot-conformance execution-coordination-protected-e2e test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
 
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 MONGO_COMPOSE_FILE := deployments/compose/mongodb.compose.yaml
+BC06_COMPOSE_FILE := deployments/compose/artifact-custody.compose.yaml
+MONGO_ENV_FILE := $(if $(wildcard .env.mongodb),.env.mongodb,$(if $(wildcard ../data-mozaic-mongodb/.env.mongodb),../data-mozaic-mongodb/.env.mongodb,.env.mongodb))
+GO ?= go
+GO_TOOLCHAIN := GOTOOLCHAIN=go1.27.4
 
 define require_env
 	@test -f .env || { echo 'Copy .env.example to .env and review local-only credentials.'; exit 2; }
@@ -47,47 +51,103 @@ execution-coordination-tests:
 acquisition-output-tests:
 	uv run --locked --package mozaic-acquisition-output python -m unittest discover -s apps/acquisition-output/tests -v
 
+artifact-custody-setup:
+	uv run --locked python tooling/artifact_custody_local_setup.py
+
+artifact-custody-go-format-check:
+	@test -z "$$($(GO_TOOLCHAIN) $(GO)fmt -l apps/artifact-custody)" || { $(GO_TOOLCHAIN) $(GO)fmt -l apps/artifact-custody; exit 1; }
+
+artifact-custody-go-vet:
+	cd apps/artifact-custody && $(GO_TOOLCHAIN) $(GO) vet ./...
+
+artifact-custody-go-test:
+	cd apps/artifact-custody && $(GO_TOOLCHAIN) $(GO) test ./...
+
+artifact-custody-go-race:
+	cd apps/artifact-custody && $(GO_TOOLCHAIN) $(GO) test -race ./...
+
+artifact-custody-go-build:
+	cd apps/artifact-custody && $(GO_TOOLCHAIN) env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build ./cmd/...
+
+artifact-custody-go-vuln:
+	cd apps/artifact-custody && $(GO_TOOLCHAIN) $(GO) run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
+
+artifact-custody-db-bootstrap: artifact-custody-setup
+	@test -f .env.artifact-custody || { echo 'Run make artifact-custody-setup first.'; exit 2; }
+	@set -a; . ./.env.artifact-custody; set +a; docker exec -i -e BC06_APP_PASSWORD="$$BC06_APP_DB_PASSWORD" -e BC06_OWNER_PASSWORD="$$BC06_OWNER_DB_PASSWORD" data-mozaic-scout-local-postgres-1 sh -ec 'psql -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -v app_user=bc06_app -v app_password="$$BC06_APP_PASSWORD" -v owner_user=bc06_owner -v owner_password="$$BC06_OWNER_PASSWORD" -f -' < tooling/artifact_custody_db_bootstrap.sql
+
+artifact-custody-object-provision: artifact-custody-setup
+	docker compose --env-file .env.artifact-custody -f $(BC06_COMPOSE_FILE) run --build --rm rustfs-provision
+
+artifact-custody-up: artifact-custody-db-bootstrap
+	docker compose --env-file .env.artifact-custody -f $(BC06_COMPOSE_FILE) up --wait -d rustfs
+	docker compose --env-file .env.artifact-custody -f $(BC06_COMPOSE_FILE) run --build --rm rustfs-provision
+	docker compose --env-file .env.artifact-custody -f $(BC06_COMPOSE_FILE) run --build --rm artifact-custody-migrate
+	docker compose --env-file .env.artifact-custody -f $(BC06_COMPOSE_FILE) up --build --wait -d artifact-custody
+
+artifact-custody-status:
+	docker compose --env-file .env.artifact-custody -f $(BC06_COMPOSE_FILE) ps
+
+artifact-custody-down:
+	docker compose --env-file .env.artifact-custody -f $(BC06_COMPOSE_FILE) down
+
+artifact-custody-integration: artifact-custody-up
+	@test -f $(MONGO_ENV_FILE) || { echo 'Run make acquisition-output-mongo-setup first or provide the preserved MongoDB worktree environment.'; exit 2; }
+	@set -a; . ./.env.artifact-custody; . $(MONGO_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/artifact_custody_integration.py
+
+artifact-custody-reconcile:
+	docker compose --env-file .env.artifact-custody -f $(BC06_COMPOSE_FILE) --profile operations run --build --rm artifact-custody-reconcile
+
+artifact-custody-recovery-tests: artifact-custody-up
+	docker compose --env-file .env.artifact-custody -f $(BC06_COMPOSE_FILE) --profile tests run --build --rm artifact-custody-integration-tests
+
+artifact-custody-benchmark: artifact-custody-up
+	@set -a; . ./.env.artifact-custody; set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked python tooling/benchmark_artifact_custody.py
+
+artifact-custody-backup-restore: artifact-custody-up
+	@set -a; . ./.env.artifact-custody; set +a; BC06_LOCAL_POSTGRES_PORT=$${SCOUT_POSTGRES_PORT:-55432} uv run --locked python tooling/artifact_custody_backup_restore_smoke.py
+
 acquisition-output-fixture-example:
 	uv run --locked --package mozaic-acquisition-output python examples/acquisition-output-fixture/consume.py
 
 acquisition-output-mongo-setup:
-	uv run --locked python tooling/mongodb_local_setup.py
+	@if [ ! -f $(MONGO_ENV_FILE) ]; then uv run --locked python tooling/mongodb_local_setup.py; else echo 'Using the existing MongoDB local environment.'; fi
 
 acquisition-output-mongo-check-config: acquisition-output-mongo-setup
-	@test -f .env.mongodb || { echo 'Run make acquisition-output-mongo-setup first.'; exit 2; }
-	@set -a; . ./.env.mongodb; set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli check-config
+	@test -f $(MONGO_ENV_FILE) || { echo 'Run make acquisition-output-mongo-setup first.'; exit 2; }
+	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli check-config
 
 acquisition-output-mongo-up: acquisition-output-mongo-check-config
-	docker compose --env-file .env.mongodb -f $(MONGO_COMPOSE_FILE) up --wait -d mongodb
-	docker compose --env-file .env.mongodb -f $(MONGO_COMPOSE_FILE) run --rm mongodb-init
+	docker compose --env-file $(MONGO_ENV_FILE) -f $(MONGO_COMPOSE_FILE) up --wait -d mongodb
+	docker compose --env-file $(MONGO_ENV_FILE) -f $(MONGO_COMPOSE_FILE) run --rm mongodb-init
 
 acquisition-output-mongo-status:
-	docker compose --env-file .env.mongodb -f $(MONGO_COMPOSE_FILE) ps
+	docker compose --env-file $(MONGO_ENV_FILE) -f $(MONGO_COMPOSE_FILE) ps
 
 acquisition-output-mongo-connectivity: acquisition-output-mongo-up
-	@set -a; . ./.env.mongodb; set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
-	docker compose --env-file .env.mongodb -f $(MONGO_COMPOSE_FILE) exec mongodb bash -ec 'mongosh --quiet --host mongodb:27017 --username "$$MONGO_INITDB_ROOT_USERNAME" --password "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval '\''db.hello().setName'\'''
+	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	docker compose --env-file $(MONGO_ENV_FILE) -f $(MONGO_COMPOSE_FILE) exec mongodb bash -ec 'mongosh --quiet --host mongodb:27017 --username "$$MONGO_INITDB_ROOT_USERNAME" --password "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval '\''db.hello().setName'\'''
 
 acquisition-output-mongo-provision: acquisition-output-mongo-up
-	@set -a; . ./.env.mongodb; set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
 
 acquisition-output-mongo-tests: acquisition-output-mongo-provision
-	@set -a; . ./.env.mongodb; set +a; uv run --locked --all-packages python -m unittest discover -s apps/acquisition-output/integration_tests -v
+	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m unittest discover -s apps/acquisition-output/integration_tests -v
 
 acquisition-output-mongo-example: acquisition-output-mongo-provision
-	@set -a; . ./.env.mongodb; set +a; uv run --locked --all-packages python examples/acquisition-output-mongodb/consume.py
+	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python examples/acquisition-output-mongodb/consume.py
 
 acquisition-output-mongo-backup-restore: acquisition-output-mongo-provision
-	@set -a; . ./.env.mongodb; set +a; uv run --locked --all-packages python tooling/mongodb_backup_restore_smoke.py
+	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python tooling/mongodb_backup_restore_smoke.py
 
 acquisition-output-mongo-benchmark: acquisition-output-mongo-provision
-	@set -a; . ./.env.mongodb; set +a; uv run --locked --all-packages python tooling/benchmark_acquisition_output_mongodb.py
+	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python tooling/benchmark_acquisition_output_mongodb.py
 
 acquisition-output-mongo-benchmark-100k: acquisition-output-mongo-provision
-	@set -a; . ./.env.mongodb; set +a; uv run --locked --all-packages python tooling/benchmark_acquisition_output_mongodb.py --counts=100000
+	@set -a; . $(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python tooling/benchmark_acquisition_output_mongodb.py --counts=100000
 
 acquisition-output-mongo-down:
-	docker compose --env-file .env.mongodb -f $(MONGO_COMPOSE_FILE) down
+	docker compose --env-file $(MONGO_ENV_FILE) -f $(MONGO_COMPOSE_FILE) down
 
 execution-coordination-protected-e2e:
 	uv run --locked --all-packages python tooling/run_execution_coordination_e2e.py --docker
@@ -95,7 +155,7 @@ execution-coordination-protected-e2e:
 test:
 	uv run --locked python -m unittest discover -s tests -v
 
-check: lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests acquisition-output-tests test
+check: lock-check lint format-check docs-check migration-check naming-check architecture-check artifact-custody-go-format-check artifact-custody-go-vet artifact-custody-go-test test-libraries test-scrapy-collector execution-coordination-tests acquisition-output-tests test
 
 hooks-install: sync
 	uv run --locked pre-commit install --hook-type pre-commit
