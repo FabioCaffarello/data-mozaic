@@ -21,6 +21,7 @@ from execution_coordination.domain import (
     ExecutionBinding,
     ExecutionReport,
     ExecutionRequest,
+    request_identities,
 )
 from execution_coordination.ports import ExecutionPortError
 
@@ -954,19 +955,3 @@ def _validate_worker_report(
             "non-success ExecutionReport cannot expose partial output"
         )
     return report
-
-
-def request_identities(binding: ExecutionBinding) -> dict[str, str]:
-    return {
-        "source_id": binding.source_id,
-        "source_revision": binding.source_revision,
-        "bot_id": binding.bot_id,
-        "build_id": binding.build_id,
-        "bot_build_manifest_digest": binding.bot_build_manifest_digest,
-        "assembly_id": binding.assembly_id,
-        "catalog_digest": binding.catalog_digest,
-        "oci_digest": binding.oci_digest,
-        "local_image_id": binding.local_image_id,
-        "fixture_bundle_id": binding.fixture_bundle_id,
-        "fixture_bundle_digest": binding.fixture_bundle_digest,
-    }

@@ -130,6 +130,12 @@ No `libs/python/collector-runtime` is justified yet: no consumer outside BC15 ex
 
 `mozaic-bot-build` is a narrow stdlib-only library with two concrete consumers: BC15's Python Reference/Scrapy verifiers and the `scrapy-collector` assembly/launcher. It checks manifest/build identity, exact file membership, runtime hashes, and safe paths before imports. It does not validate Playbook semantics, profiles, execution authorization, publisher signatures, or release approval. Consumer conformance tests exercise the same implementation from both packages. This is not a general runtime or worker SDK.
 
+### M2 acquisition import candidates
+
+`apps/acquisition-application/` retains result-bundle parsing, strict JSON, evidence checks, payload validation, and the BC06 upload adapter as cohesive application-owned modules. M2 has one import application and two evidence profiles, not two independently governed consumers. The Scrapy worker produces the BC15 result contract but does not consume an import API; that is insufficient to promote the reader to `libs/python/`. BC15 remains the contract owner, and the acquisition application remains the trusted consumer.
+
+No general strict-JSON library is extracted: duplicate-key rejection is required at several trust boundaries but the currently compatible parser behavior and error model are owner-local. No BC06 SDK is extracted: only the trusted acquisition application needs this upload workflow, while BC05's separate custody verifier has different application semantics. The HTTP adapter uses the public BC06 intent/upload/verification contract and owns neither retry policy nor provider state. No generic integrity, bounded-I/O, or contract-validation wrapper is justified by this increment. Revisit extraction only when a second named consumer needs the same stable API and conformance vectors.
+
 For each real library, include a small `library.yaml` next to its README. The first library includes actual ownership, consumers, exclusions and dependency/test policy; the manifest remains documentation until a validator needs machine-readable enforcement. Required fields:
 
 ```yaml

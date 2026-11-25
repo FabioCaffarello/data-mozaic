@@ -23,6 +23,8 @@
 
 BC05/BC16 são distinguíveis pela semântica de captura versus agendamento de tarefas; começar como módulos no mesmo deploy e fundir o limite se não houver linguagem ou ownership independente. BC02 descreve plugins; BC15 é dono do release. BC04 coordena execução; BC13 controla trabalho lógico. BC10 ingere fatos, não comanda estado alheio.
 
+`apps/acquisition-application/` é uma composição interna de aplicação, não um novo BC ou serviço. Ela verifica resultados e coordena interfaces existentes entre BC04 (execução/finalização), BC05 (CaptureOutput/OutputSet), BC06 (custody), BC15 (plano/semântica do resultado) e o gateway (evidência live). Ver [README](../../apps/acquisition-application/README.md), [ADR 027 Proposed](decisions/027-trusted-acquisition-application.md) e [evidência M2](assessments/trusted-acquisition-application-2026-11-25.md). Nenhum owner transfere estado ou decisão para essa aplicação.
+
 ```mermaid
 flowchart LR
  S[BC01 Source] -->|SourceRef e política| I[BC13 Intake]

@@ -17,9 +17,23 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import rfc8785
-from acquisition_live_gateway_smoke import _configuration, _write
+from acquisition_acceptance_support import (
+    InProcessBC05Publisher,
+    artifact_request,
+    configuration,
+    key_material,
+    write,
+)
+from acquisition_application import (
+    ExactJSONSchemaPayloadContractValidator,
+    FixtureImportError,
+    TrustedAcquisitionApplication,
+    stable_identifier,
+)
+from acquisition_application.adapters.artifact_custody import ArtifactCustodyHTTPClient
 from acquisition_output.adapters.http_custody import ArtifactCustodyHTTPAdapter
 from acquisition_output.adapters.mongodb import MongoOutputStore, MongoResources
 from acquisition_output.adapters.mongodb.config import MongoSettings
@@ -30,7 +44,6 @@ from acquisition_output.application import AcquisitionOutputApplication
 from acquisition_output.domain import (
     PayloadContractRef,
     ProducerIdentity,
-    SourceRevisionRef,
 )
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -49,19 +62,7 @@ from execution_coordination.adapters.publication_grant import (
 from execution_coordination.adapters.trusted_live_authority import TrustedLiveAuthority
 from execution_coordination.durable_application import DurableExecutionCoordinator
 from execution_coordination.durable_domain import FailureDisposition
-from fixture_acquisition import (
-    FixtureImportError,
-    FixturePayloadContractValidator,
-    _stable_id,
-    import_verified_bundle,
-)
-from live_acquisition_import import verify_live_result_bundle
 from mozaic_bot_build import canonical_json, verify_bot_build
-from run_durable_fixture_acquisition import (
-    _artifact_request,
-    _BC05Publisher,
-    _key_material,
-)
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "deployments/compose/acquisition-live.compose.yaml"
@@ -337,7 +338,7 @@ def _payload_contract() -> PayloadContractRef:
 def _application(
     store: MongoOutputStore, contract: PayloadContractRef
 ) -> AcquisitionOutputApplication:
-    seed, key_id, _ = _key_material()
+    seed, key_id, _ = key_material()
     public = (
         Ed25519PrivateKey.from_private_bytes(seed)
         .public_key()
@@ -346,7 +347,9 @@ def _application(
     return AcquisitionOutputApplication(
         store,
         store,
-        payload_contracts=FixturePayloadContractValidator(contract, PAYLOAD_SCHEMA),
+        payload_contracts=ExactJSONSchemaPayloadContractValidator(
+            contract, PAYLOAD_SCHEMA
+        ),
         custody=ArtifactCustodyHTTPAdapter(
             os.environ["ARTIFACT_CUSTODY_HTTP_URL"],
             os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"],
@@ -503,7 +506,7 @@ def _verify_outputs(
             raise RuntimeError("published output set contains no custody artifacts")
         artifact_digests: list[str] = []
         for ref in refs.values():
-            body = _artifact_request(tenant, ref.artifact_id)
+            body = artifact_request(tenant, ref.artifact_id)
             actual = hashlib.sha256(body).hexdigest()
             if len(body) != ref.size_bytes or actual != ref.digest.removeprefix(
                 "sha256:"
@@ -567,7 +570,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="dm-authorized-live-json-") as temporary:
         root = Path(temporary)
-        trusted_dir, capability_file, cap_seed, _initial_policy = _configuration(
+        trusted_dir, capability_file, cap_seed, _initial_policy = configuration(
             root / "trusted", root / "tls"
         )
         policy = _policy()
@@ -694,12 +697,12 @@ def main() -> int:
             authority_registry=repo,
         )
         cap_signer = ExecutionCapabilitySigner(cap_seed, key_id="gateway-test-key")
-        grant_seed, grant_key_id, _ = _key_material()
+        grant_seed, grant_key_id, _ = key_material()
         contract = _payload_contract()
         with MongoResources(MongoSettings.from_env()) as resources:
             store = MongoOutputStore(resources)
             app = _application(store, contract)
-            publisher = _BC05Publisher(app, lose_ack=CASE_KIND == "ack-loss")
+            publisher = InProcessBC05Publisher(app, lose_ack=CASE_KIND == "ack-loss")
             coordinator = DurableExecutionCoordinator(
                 repo,
                 publisher,
@@ -708,6 +711,15 @@ def main() -> int:
                 live_authority=authority,
                 execution_capability_signer=cap_signer,
                 execution_capability_verifier=cap_signer,
+            )
+            importer = TrustedAcquisitionApplication(
+                repo,
+                app,
+                ArtifactCustodyHTTPClient(
+                    os.environ["ARTIFACT_CUSTODY_HTTP_URL"],
+                    os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"],
+                ),
+                finalization=coordinator,
             )
             coordinator.admit_live_run(
                 tenant_id=TENANT,
@@ -808,7 +820,7 @@ def main() -> int:
                     .rstrip("=")
                 )
                 capability_file.chmod(0o600)
-                _write(capability_file, encoded.encode(), 0o444)
+                write(capability_file, encoded.encode(), 0o444)
                 try:
                     _run(
                         compose
@@ -941,38 +953,29 @@ def main() -> int:
                     if CASE_KIND in {"redirect-denied", "redirect-budget"}:
                         raise RuntimeError("gateway unexpectedly allowed redirect")
                 result_dir = results / "result"
+
+                def verify_result(
+                    directory: Path, tenant: str = TENANT, run: str = run_id
+                ):
+                    return importer.verify_live_result(
+                        tenant,
+                        run,
+                        result_dir=directory,
+                        gateway_evidence_url=f"http://127.0.0.1:{gateway_port}",
+                        gateway_evidence_token=evidence_token,
+                        build_root=build_dir,
+                        max_response_bytes=int(policy["max_response_bytes"]),
+                    )
+
                 for test_name, overrides in (
-                    ("stale-attempt", {"attempt_id": str(uuid.uuid4())}),
-                    ("cross-tenant", {"tenant_id": "tenant-not-authorized"}),
+                    ("stale-run", {"run": str(uuid.uuid4())}),
+                    ("cross-tenant", {"tenant": "tenant-not-authorized"}),
                 ):
                     try:
-                        verify_live_result_bundle(
+                        verify_result(
                             result_dir,
-                            tenant_id=overrides.get("tenant_id", TENANT),
-                            run_id=run_id,
-                            attempt_id=overrides.get("attempt_id", lease.attempt_id),
-                            generation=lease.generation,
-                            source_id=SOURCE_ID,
-                            source_revision_id=REVISION_ID,
-                            policy_digest=str(policy["policy_digest"]),
-                            release_id=release_id,
-                            build_manifest_digest=build_digest,
-                            gateway_evidence_url=f"http://127.0.0.1:{gateway_port}",
-                            gateway_evidence_token=evidence_token,
-                            expected_records_path=EXPECTED,
-                            max_response_bytes=int(policy["max_response_bytes"]),
-                            expected_media_type=MEDIA_TYPE,
-                            expected_path=SOURCE_PATH,
-                            expected_paths=(
-                                tuple(SOURCE_PATHS)
-                                if CASE_KIND in {"pagination", "pagination-planned"}
-                                else None
-                            ),
-                            expected_total_response_bytes=int(
-                                policy["max_total_response_bytes"]
-                            ),
-                            **PAGINATION_IMPORT_KWARGS,
-                            **REDIRECT_IMPORT_KWARGS,
+                            tenant=overrides.get("tenant", TENANT),
+                            run=overrides.get("run", run_id),
                         )
                     except FixtureImportError:
                         pass
@@ -996,34 +999,7 @@ def main() -> int:
                     )
                 )
                 try:
-                    verify_live_result_bundle(
-                        unknown_bundle,
-                        tenant_id=TENANT,
-                        run_id=run_id,
-                        attempt_id=lease.attempt_id,
-                        generation=lease.generation,
-                        source_id=SOURCE_ID,
-                        source_revision_id=REVISION_ID,
-                        policy_digest=str(policy["policy_digest"]),
-                        release_id=release_id,
-                        build_manifest_digest=build_digest,
-                        gateway_evidence_url=f"http://127.0.0.1:{gateway_port}",
-                        gateway_evidence_token=evidence_token,
-                        expected_records_path=EXPECTED,
-                        max_response_bytes=int(policy["max_response_bytes"]),
-                        expected_media_type=MEDIA_TYPE,
-                        expected_path=SOURCE_PATH,
-                        expected_paths=(
-                            tuple(SOURCE_PATHS)
-                            if CASE_KIND in {"pagination", "pagination-planned"}
-                            else None
-                        ),
-                        expected_total_response_bytes=int(
-                            policy["max_total_response_bytes"]
-                        ),
-                        **PAGINATION_IMPORT_KWARGS,
-                        **REDIRECT_IMPORT_KWARGS,
-                    )
+                    verify_result(unknown_bundle)
                 except FixtureImportError:
                     pass
                 else:
@@ -1041,88 +1017,49 @@ def main() -> int:
                     json.dumps(evidence_rows[0], separators=(",", ":")) + "\n"
                 )
                 try:
-                    verify_live_result_bundle(
-                        corrupt_bundle,
-                        tenant_id=TENANT,
-                        run_id=run_id,
-                        attempt_id=lease.attempt_id,
-                        generation=lease.generation,
-                        source_id=SOURCE_ID,
-                        source_revision_id=REVISION_ID,
-                        policy_digest=str(policy["policy_digest"]),
-                        release_id=release_id,
-                        build_manifest_digest=build_digest,
-                        gateway_evidence_url=f"http://127.0.0.1:{gateway_port}",
-                        gateway_evidence_token=evidence_token,
-                        expected_records_path=EXPECTED,
-                        max_response_bytes=int(policy["max_response_bytes"]),
-                        expected_media_type=MEDIA_TYPE,
-                        expected_path=SOURCE_PATH,
-                        expected_paths=(
-                            tuple(SOURCE_PATHS)
-                            if CASE_KIND in {"pagination", "pagination-planned"}
-                            else None
-                        ),
-                        expected_total_response_bytes=int(
-                            policy["max_total_response_bytes"]
-                        ),
-                        **PAGINATION_IMPORT_KWARGS,
-                        **REDIRECT_IMPORT_KWARGS,
-                    )
+                    verify_result(corrupt_bundle)
                 except FixtureImportError:
                     pass
                 else:
                     raise RuntimeError(
                         "live importer accepted divergent worker evidence"
                     )
-                verified = verify_live_result_bundle(
-                    result_dir,
-                    tenant_id=TENANT,
-                    run_id=run_id,
-                    attempt_id=lease.attempt_id,
-                    generation=lease.generation,
-                    source_id=SOURCE_ID,
-                    source_revision_id=REVISION_ID,
-                    policy_digest=str(policy["policy_digest"]),
-                    release_id=release_id,
-                    build_manifest_digest=build_digest,
-                    gateway_evidence_url=f"http://127.0.0.1:{gateway_port}",
-                    gateway_evidence_token=evidence_token,
-                    expected_records_path=EXPECTED,
-                    max_response_bytes=int(policy["max_response_bytes"]),
-                    expected_media_type=MEDIA_TYPE,
-                    expected_path=SOURCE_PATH,
-                    expected_paths=(
-                        tuple(SOURCE_PATHS)
-                        if CASE_KIND in {"pagination", "pagination-planned"}
-                        else None
-                    ),
-                    expected_total_response_bytes=int(
-                        policy["max_total_response_bytes"]
-                    ),
-                    **PAGINATION_IMPORT_KWARGS,
-                    **REDIRECT_IMPORT_KWARGS,
-                )
+                verified = verify_result(result_dir)
+                expected_records = [
+                    json.loads(line)
+                    for line in EXPECTED.read_text(encoding="utf-8").splitlines()
+                    if line
+                ]
+                actual_records = [
+                    {
+                        key: value
+                        for key, value in record.items()
+                        if key != "_provenance"
+                    }
+                    for record in verified.records
+                ]
+                if actual_records != expected_records:
+                    raise RuntimeError(
+                        "live acquisition differs from independent test oracle"
+                    )
+                if CASE_KIND in {"pagination", "pagination-planned"} and tuple(
+                    urlsplit(page.url).path for page in verified.pages
+                ) != tuple(SOURCE_PATHS):
+                    raise RuntimeError(
+                        "controlled live page sequence differs from its oracle"
+                    )
                 producer = ProducerIdentity(
                     str(manifest["bot_id"]),
                     "collector-live-v1",
                     "collector.scrapy-live-http",
                     str(manifest["backend_version"]),
-                    str(manifest["build_id"]),
+                    release_id,
                     build_digest,
                 )
                 import_arguments = {
                     "bundle": verified,
-                    "tenant_id": TENANT,
-                    "source": SourceRevisionRef(SOURCE_ID, REVISION_ID),
                     "producer": producer,
-                    "run_id": run_id,
-                    "attempt_id": lease.attempt_id,
-                    "fencing_generation": lease.generation,
-                    "observed_at": datetime.now(UTC),
                     "payload_contract": contract,
-                    "custody_base_url": os.environ["ARTIFACT_CUSTODY_HTTP_URL"],
-                    "custody_token": os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"],
                     "artifact_representation": "decoded_http_entity",
                     "retention_policy_ref": str(
                         policy["evidence_retention_policy_ref"]
@@ -1144,9 +1081,14 @@ def main() -> int:
                     else app
                 )
                 try:
-                    output_set_id, manifest_digest = import_verified_bundle(
-                        importer_app, **import_arguments
-                    )
+                    output_set_id, manifest_digest = TrustedAcquisitionApplication(
+                        repo,
+                        importer_app,
+                        ArtifactCustodyHTTPClient(
+                            os.environ["ARTIFACT_CUSTODY_HTTP_URL"],
+                            os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"],
+                        ),
+                    ).import_verified_result(TENANT, run_id, **import_arguments)
                 except _InjectedImportInterruption:
                     if CASE_KIND not in {
                         "custody-interruption",
@@ -1155,7 +1097,7 @@ def main() -> int:
                         raise
                     custodied: list[str] = []
                     for page in verified.pages:
-                        artifact_id = _stable_id(
+                        artifact_id = stable_identifier(
                             "artifact-",
                             {
                                 "tenant": TENANT,
@@ -1166,7 +1108,7 @@ def main() -> int:
                                 "digest": page.digest,
                             },
                         )
-                        stored = _artifact_request(TENANT, artifact_id)
+                        stored = artifact_request(TENANT, artifact_id)
                         if hashlib.sha256(
                             stored
                         ).hexdigest() != page.digest.removeprefix("sha256:"):
@@ -1213,8 +1155,8 @@ def main() -> int:
                         )
                     )
                     return 0
-                replay_set_id, replay_manifest_digest = import_verified_bundle(
-                    app, **import_arguments
+                replay_set_id, replay_manifest_digest = importer.import_verified_result(
+                    TENANT, run_id, **import_arguments
                 )
                 if (replay_set_id, replay_manifest_digest) != (
                     output_set_id,
@@ -1255,8 +1197,8 @@ def main() -> int:
                         "live replay changed durable OutputSet membership or custody references"
                     )
                 try:
-                    reservation, published_receipt = coordinator.reserve_and_publish(
-                        lease, output_set_id, manifest_digest, "publish-" + run_id
+                    reservation, published_receipt = importer.finalize_output_set(
+                        lease, output_set_id, manifest_digest
                     )
                 except TimeoutError:
                     if CASE_KIND != "ack-loss":
@@ -1286,7 +1228,16 @@ def main() -> int:
                         execution_capability_signer=cap_signer,
                         execution_capability_verifier=cap_signer,
                     )
-                    final = recovery_coordinator.reconcile_finalization(TENANT, run_id)
+                    recovery_importer = TrustedAcquisitionApplication(
+                        repo,
+                        app,
+                        ArtifactCustodyHTTPClient(
+                            os.environ["ARTIFACT_CUSTODY_HTTP_URL"],
+                            os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"],
+                        ),
+                        finalization=recovery_coordinator,
+                    )
+                    final = recovery_importer.reconcile_finalization(TENANT, run_id)
                     published_receipt = final.publication_receipt
                     if published_receipt != bc05_receipt:
                         raise RuntimeError(
