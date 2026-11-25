@@ -55,8 +55,9 @@ class ScrapyLiveBackendTests(unittest.TestCase):
             verified = verify_build(build)
             generated = (build / "bot.py").read_text(encoding="utf-8")
             self.assertEqual("scrapy-live-http", verified["backend_id"])
-            self.assertIn("select_html_records", generated)
-            self.assertIn("'text/html'", generated)
+            self.assertIn("scrapy_framework.run_live", generated)
+            self.assertIn("select.html_records", generated)
+            self.assertNotIn("CrawlerProcess", generated)
             ast.parse(generated)
 
     def test_compiles_bounded_live_next_url_pagination(self):
@@ -74,9 +75,10 @@ class ScrapyLiveBackendTests(unittest.TestCase):
                 target_platform="linux/amd64",
             )
             generated = (build / "bot.py").read_text(encoding="utf-8")
-            self.assertIn("PAGINATION =", generated)
-            self.assertIn("PAGINATION_LOOP", generated)
-            self.assertIn("planned_page_limit", generated)
+            self.assertIn("scrapy_framework.run_live", generated)
+            self.assertIn("'pagination':", generated)
+            self.assertNotIn("PAGINATION_LOOP", generated)
+            self.assertNotIn("CrawlerProcess", generated)
             ast.parse(generated)
 
 

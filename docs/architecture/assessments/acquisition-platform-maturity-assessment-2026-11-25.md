@@ -266,7 +266,7 @@ Keep apps/, apps/workers/, contracts/, owner migrations/, deployments/, tooling/
 
 ## I. Ordered roadmap and acceptance
 
-P0 correctness/security/ownership; P1 pre-source capability; P2 concrete operations; P3 future scale. This assessment does not start implementation.
+P0 correctness/security/ownership; P1 pre-source capability; P2 concrete operations; P3 future scale. This assessment originally stopped before implementation. The PR1 runtime consolidation is now implemented locally on `feat/scrapy-runtime-framework`; its evidence and remaining gaps are recorded below. Later roadmap increments remain unstarted.
 
 | PR | Objective, owner/scope, exclusions | Acceptance, ops, rollback, remaining limit |
 |---|---|---|
@@ -302,3 +302,32 @@ Open decisions: approver and key custody/rotation for BC01/11/15; local contract
 - Read-only repository/PR/worktree checks, current docs/ADRs, reference package/service inventory, and targeted compiler/worker/gateway/importer/BC05/BC06 inspection. No source, deployment, migration, destructive operation, commit, push, PR or ADR status change has occurred yet. Reference was not executed.
 
 The project owner confirmed that the initially untracked `data-mozaic.zip` was intentionally deleted. It was not restored or recreated.
+
+## M1 local implementation evidence — PR1 runtime consolidation
+
+The M0 assessment was integrated in PR #22 at `d38bb38bece832bbd14436b20dfc6e74682c449b` before this feature branch was created. This update records the local M1 implementation; it is not evidence of an M1 commit, PR, merge or remote CI run.
+
+BC15 now owns the private `collector_engineering.scrapy_framework` API (`run_fixture` and `run_live`). Fixture/live compiler output is an immutable plan plus a small entrypoint; the bundle includes framework and adapters in the BotBuild runtime file inventory. New runtime identity is `collector-runtime/1.1.0`; old `1.0.0` identities/toolchains remain explicitly allowlisted and historical build bytes are not rewritten. No standalone framework package, library, service, SDK or plugin mechanism was added. The worker still verifies catalog build identity, runtime-backed entrypoints and protected process results. Fixture handlers remain offline; live requests remain gateway delegated. BC04/05/06 authority remains unchanged.
+
+Generated source responsibility changed materially: compiler code no longer emits Scrapy Spider classes, callbacks, settings, handler-table checks, process startup, output writing or cleanup. It emits only the closed acquisition plan, exact runtime identity and a `main()` call into the embedded runtime. The framework owns those shared lifecycle behaviors while fixture and live transports remain separate. No code was moved from the trusted importer, no test oracle entered runtime, and no streaming redesign was attempted.
+
+Measured comparison against base `d38bb38` regenerated the historical generator functions with the same example IRs and reconstructed runtime identities from the exact historical Git blobs. Fixture HTML pagination generated source fell from 14,286 bytes/187 lines to 5,321 bytes/11 lines; live HTML generated source fell from 12,043 bytes/111 lines to 3,885 bytes/11 lines. First-party embedded runtime bytes per build changed from 40,602 (historical fixture) and 39,714 (historical live) to 74,535 for each new profile, since each new BotBuild now embeds the framework and both profile adapters. These are source and embedded-module byte counts, not compressed image size or throughput/memory claims. No performance improvement is claimed.
+
+Local verification completed before final documentation validation:
+
+- Focused Scrapy backend/runtime/compiler tests: 15 tests passed.
+- Focused framework initialization-cleanup tests: 2 tests passed; fixture and live temporary roots were removed when runtime-context initialization was injected to fail.
+- `make collector-cross-backend-conformance`: passed JSON/HTML parity, pagination, tamper/missing/partial-output failure handling, provenance/order, and network denial.
+- `make scrapy-collector-multibot-conformance`: passed protected multi-bot execution and callback failure/timeout cases.
+- `make execution-coordination-protected-e2e`: passed callback failure, cancellation, crash/recovery, healthy-after-crash, HTML/JSON/pagination and timeout cases.
+- `make acquisition-live-gateway-container-smoke`: passed gateway-only route enforcement and unauthorized-origin/direct-route denial.
+- `make authorized-live-json-acquisition`: passed end-to-end trusted import, custody and publication.
+- Live controlled acceptance targets for HTML, natural pagination, planned pagination, authorized redirect, redirect denial and redirect-budget exhaustion exited successfully.
+- `make authorized-live-publication-ack-loss`, `make authorized-live-pagination-cancellation`, `make authorized-live-custody-interruption` and `make authorized-live-partial-stage-interruption` exited successfully. The interruption cases left no published partial output and surfaced durable reconciliation state.
+- Separate `make authorized-live-scenario CASE=...` invocations for `gateway-restart`, `oversized`, `slow`, `malformed`, `invalid-output`, `interrupted-body` and `pagination-incomplete` exited successfully. These are expected terminal failure/recovery scenarios, not successful acquisitions.
+- The first combined generic-scenario attempt encountered a transient Docker TLS handshake timeout fetching the pinned Distroless manifest from GCR; the separate retry succeeded. Make deduplicates repeated instances of the same target, so each `CASE` was invoked separately.
+- Final `make check` exited 0: lock, Ruff check/format, documentation links/fences (74 Markdown files), nine migration names, naming, architecture, Go vet/tests, library/worker/context tests and repository tests passed; the final Python suite reported 225 passed and 26 skipped because `SCOUT_TEST_DATABASE_URL` was unset. The two added framework cleanup tests also passed through the focused command and BC15 test discovery.
+- Final `make collector-cross-backend-conformance scrapy-collector-multibot-conformance execution-coordination-protected-e2e acquisition-live-gateway-container-smoke` exited 0 after the cleanup change. Cross-backend cases preserved independent provenance/order and network denial; protected E2E retained failure/cancel/crash/timeout plus healthy recovery; live smoke remained gateway-only with direct/unauthorized routes denied.
+- Final `make docs-check naming-check architecture-check lint format-check` and `git diff --check` exited 0. No M1 remote CI exists because this branch is unpublished.
+
+M1's stated local acceptance criteria are ready for human review. Remaining limits are the later roadmap items: importer ownership/migration, contract/source/release resolver, Work Intake, raw-only artifact acquisition, measured streaming work and integrated independent raw consumer. No external source was implemented or accessed. Current implementation remains uncommitted and unpublished.

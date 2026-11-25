@@ -16,7 +16,10 @@ from collector_engineering.backend_scrapy_fixture import (
 )
 from collector_engineering.playbook_v2 import build_typed_ir, load_playbook_v2
 from collector_engineering.reference_runtime import RuntimeFailure
-from collector_engineering.runtime_identity import runtime_bundle_files
+from collector_engineering.runtime_identity import (
+    SCRAPY_RUNTIME_MODULES,
+    runtime_bundle_files,
+)
 from collector_engineering.scrapy_fixture_runtime import (
     REQUEST_META_KEYS,
     RequestGuardMiddleware,
@@ -58,18 +61,18 @@ class ScrapyFixtureBackendTests(unittest.TestCase):
             load_playbook_v2(folder / "capture-playbook.yaml"),
             fixture_root=folder / "fixtures",
         )
-        _, identity = runtime_bundle_files(
-            ("reference_runtime.py", "syntax.py", "scrapy_fixture_runtime.py")
-        )
+        _, identity = runtime_bundle_files(SCRAPY_RUNTIME_MODULES)
         fixtures = json.loads((folder / "fixtures/index.json").read_text())["pages"]
         generated = generate_spider(ir, fixtures, identity)
         self.assertEqual(generated, generate_spider(ir, fixtures, identity))
         compile(generated, "generated_scrapy_spider.py", "exec")
         source = generated.decode()
-        self.assertIn("class GeneratedSpider(Spider", source)
-        self.assertIn("def _op_select_", source)
-        self.assertIn("BUILD_RUNTIME_IMPORT_MISMATCH", source)
-        self.assertIn("FETCH_OPERATION_ID", source)
+        self.assertIn("scrapy_framework.run_fixture", source)
+        self.assertIn("PLAN =", source)
+        self.assertLess(len(generated), 8_000)
+        self.assertNotIn("class GeneratedSpider", source)
+        self.assertNotIn("CrawlerProcess", source)
+        self.assertNotIn("def parse_page", source)
         self.assertNotIn("exec(", source)
 
     def test_effective_scrapy_settings_are_closed_and_single_request(self):

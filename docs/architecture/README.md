@@ -1,6 +1,6 @@
 # Arquitetura Data Mozaic
 
-Status das decisões: **Proposed**, salvo indicação explícita; nenhuma ADR foi homologada. Os assessments registram evidências de incrementos implementados. Scout S1.6 é um fluxo offline com fixtures, doubles e relay durável. PR #4 adicionou um adapter HTTP experimental; PR #6 prova uma topologia opcional de egress isolado. O host MCP de autoria oferece Streamable HTTP com autenticação e limites; o pacote pode ser produzido fora do checkout. O deployment confiável ainda depende de provisionamento administrativo, allowlist Codex efetiva e verificação de identidade/permissões, conforme ADR 017. Não há navegação pública pelo host, integração produtiva de custody, sandbox do agente, serviço de captura ou runtime de agente.
+Status das decisões: **Proposed**, salvo indicação explícita; nenhuma ADR foi homologada. Os assessments registram evidências de incrementos implementados. Scout S1.6 é um fluxo offline com fixtures, doubles e relay durável. PR #4 adicionou um adapter HTTP experimental; PR #6 prova uma topologia opcional de egress isolado. O host MCP de autoria oferece Streamable HTTP com autenticação e limites; o pacote pode ser produzido fora do checkout. O deployment confiável ainda depende de provisionamento administrativo, allowlist Codex efetiva e verificação de identidade/permissões, conforme ADR 017. Não há navegação pública pelo host, integração produtiva de custody, sandbox global do agente nem runtime/deployment de agente operado pelo Scout. O runtime Scrapy de aquisição e seu acceptance controlado são capacidades separadas de BC15/worker e não demonstram uma fleet ou serviço de captura produtivo.
 
 1. [Baseline](assessments/repository-baseline.md)
 2. [Visão, planos e requisitos não funcionais](platform.md)
@@ -59,5 +59,6 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 50. [BCB Focus proposed reference case](../../examples/use-cases/bcb-focus/README.md)
 51. [Acquisition Gateway controlled foundation](../../apps/acquisition-gateway/README.md)
 52. [Acquisition platform maturity assessment — 2026-11-25](assessments/acquisition-platform-maturity-assessment-2026-11-25.md)
+53. [ADR 026 — BC15 versioned Scrapy runtime framework](decisions/026-bc15-scrapy-runtime-framework.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.

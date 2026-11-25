@@ -10,7 +10,17 @@ from .playbook_v2 import canonical_json
 from .syntax import PlaybookError
 
 RUNTIME_PACKAGE = "mozaic_bot_runtime"
-RUNTIME_PACKAGE_VERSION = "collector-runtime/1.0.0"
+RUNTIME_PACKAGE_VERSION = "collector-runtime/1.1.0"
+SUPPORTED_RUNTIME_PACKAGE_VERSIONS = frozenset(
+    {"collector-runtime/1.0.0", RUNTIME_PACKAGE_VERSION}
+)
+SCRAPY_RUNTIME_MODULES = (
+    "reference_runtime.py",
+    "syntax.py",
+    "scrapy_fixture_runtime.py",
+    "scrapy_live_runtime.py",
+    "scrapy_framework.py",
+)
 
 
 def runtime_bundle_files(module_names: Iterable[str]) -> tuple[dict[str, bytes], dict]:
@@ -42,7 +52,7 @@ def verify_runtime_identity(build_dir: Path, identity: dict) -> None:
     if (
         not isinstance(identity, dict)
         or identity.get("package") != RUNTIME_PACKAGE
-        or identity.get("version") != RUNTIME_PACKAGE_VERSION
+        or identity.get("version") not in SUPPORTED_RUNTIME_PACKAGE_VERSIONS
         or not isinstance(identity.get("files"), dict)
     ):
         raise PlaybookError("[BUILD_RUNTIME_UNSUPPORTED] incompatible runtime identity")

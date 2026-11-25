@@ -74,6 +74,8 @@ def _verify_selected(catalog: BotCatalog, entry: CatalogEntry) -> Path:
         or catalog.target_platform != runtime_platform_id()
         or compatibility.get("python_minor") != current_minor
         or compatibility.get("scrapy") != importlib.metadata.version("scrapy")
+        or compatibility.get("scrapy_runtime")
+        not in {"scrapy-fixture-runtime/1.0.0", "scrapy-fixture-runtime/1.1.0"}
         or manifest.get("dependency_identity", {}).get("lockfile_sha256")
         != catalog.dependency_lock_sha256
     ):

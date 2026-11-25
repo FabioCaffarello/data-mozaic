@@ -17,7 +17,7 @@ from .backend_python_http import _platform_slug, _safe_output_path
 from .backend_python_http import verify_build as _verify_build
 from .playbook_v2 import IR_VERSION, TypedIR, canonical_json
 from .reference_runtime import RUNTIME_VERSION
-from .runtime_identity import runtime_bundle_files
+from .runtime_identity import SCRAPY_RUNTIME_MODULES, runtime_bundle_files
 from .scrapy_live_runtime import LIVE_RUNTIME_VERSION
 from .syntax import PlaybookError
 
@@ -123,120 +123,30 @@ def _supported_graph(
 
 
 def generate_bot(ir: TypedIR, runtime_identity: dict[str, Any]) -> bytes:
+    """Generate a small executable entrypoint and immutable live plan."""
     fetch, select, extract, discover, pagination = _supported_graph(ir)
-    html = select["operator_type"] == "select.html_records"
+    plan = {
+        "profile": "scrapy-live-http-v1",
+        "source": ir.document["source"],
+        "budgets": ir.document["budgets"],
+        "fetch": fetch,
+        "select": select,
+        "extract": extract,
+        "discover": discover,
+        "pagination": pagination,
+    }
     lines = [
-        '"""Generated live Scrapy bot. All source HTTP is delegated to the gateway."""',
-        "import argparse, hashlib, json, os, sys, tempfile, shutil",
-        "from datetime import datetime",
+        '"""Generated BC15 live entrypoint; all source HTTP remains gateway delegated."""',
+        "import sys",
         "from pathlib import Path",
-        "from scrapy import Request, Spider, signals",
-        "from scrapy.crawler import CrawlerProcess",
-        "from scrapy.settings import Settings",
         "sys.path.insert(0, str(Path(__file__).resolve().parent / 'runtime'))",
-        "from mozaic_bot_runtime import reference_runtime, scrapy_live_runtime",
-        "from mozaic_bot_runtime.identity import verify as verify_runtime",
-        "RUNTIME_ROOT = (Path(__file__).resolve().parent / 'runtime' / 'mozaic_bot_runtime').resolve(strict=True)",
-        "if Path(reference_runtime.__file__).resolve().parent != RUNTIME_ROOT or Path(scrapy_live_runtime.__file__).resolve().parent != RUNTIME_ROOT: raise RuntimeError('[BUILD_RUNTIME_IMPORT_MISMATCH]')",
+        "from mozaic_bot_runtime import scrapy_framework",
         f"RUNTIME_IDENTITY = {runtime_identity!r}",
-        "verify_runtime(RUNTIME_ROOT, RUNTIME_IDENTITY['files'], RUNTIME_IDENTITY['sha256'])",
-        f"SOURCE = {ir.document['source']!r}",
-        f"BUDGETS = {ir.document['budgets']!r}",
-        f"START_URL = {fetch['inputs']['url']!r}",
-        f"SELECT = {select!r}",
-        f"EXTRACT = {extract!r}",
-        f"DISCOVER = {discover!r}",
-        f"PAGINATION = {pagination!r}",
-        "MAX_PAGES = BUDGETS['max_pages'] if PAGINATION is None else PAGINATION['inputs']['max_pages']",
-        "PAGINATION_COMPLETION_MODE = 'natural_end' if PAGINATION is None else PAGINATION['inputs'].get('completion_mode', 'natural_end')",
-        "class GeneratedLiveSpider(Spider):",
-        "    name = 'mozaic-generated-live-json'",
-        "    def __init__(self, output_root, **kwargs):",
-        "        super().__init__(**kwargs)",
-        "        self.output_root = Path(output_root).absolute()",
-        "        self.fixture_root = Path(tempfile.mkdtemp(prefix='dm-live-empty-fixtures-'))",
-        "        self.context_root = Path(tempfile.mkdtemp(prefix='dm-live-context-'))",
-        "        self.ctx = reference_runtime.RuntimeContext.create(str(self.fixture_root), str(self.output_root), SOURCE, BUDGETS, [])",
-        "        self.records = []; self.evidence = []; self.documents = []; self.failure = None; self.page_urls = [START_URL]; self.visited = {START_URL}; self.ctx.pages_used = 0; self.ctx.requests_used = 0; self.ctx.bytes_used = 0",
-        "    @classmethod",
-        "    def from_crawler(cls, crawler, *args, **kwargs):",
-        "        spider = super().from_crawler(crawler, *args, **kwargs)",
-        "        crawler.signals.connect(spider._closed, signal=signals.spider_closed)",
-        "        crawler.signals.connect(spider._spider_error, signal=signals.spider_error)",
-        "        crawler.signals.connect(spider._item_error, signal=signals.item_error)",
-        "        return spider",
-        "    def _verify_handlers(self):",
-        "        handlers = self.crawler.engine.downloader.handlers",
-        "        expected = 'mozaic_bot_runtime.scrapy_live_runtime.GatewayDownloadHandler'",
-        "        if set(handlers._paths) != {'http', 'https'} or any(handlers._paths[s] != expected for s in ('http','https')): raise RuntimeError('[HANDLER_TABLE_UNSAFE]')",
-        "        middleware = self.crawler.engine.downloader.middleware.middlewares",
-        "        if len(middleware) != 1 or type(middleware[0]).__name__ != 'LiveRequestGuard': raise RuntimeError('[MIDDLEWARE_TABLE_UNSAFE]')",
-        "    async def start(self):",
-        "        self._verify_handlers()",
-        "        yield Request(START_URL, callback=self.parse_page, errback=self._failed, cb_kwargs={'page_index': 0}, headers={'Accept': 'text/html' if SELECT['operator_type'] == 'select.html_records' else 'application/json'})",
-        "    def parse_page(self, response, page_index):",
-        "        self._verify_handlers()",
-        "        if response.status != 200:",
-        "            try: error_code = json.loads(response.body).get('error', 'unknown')",
-        "            except (ValueError, AttributeError): error_code = 'unknown'",
-        "            raise RuntimeError('[GATEWAY_FAILURE:' + str(response.status) + ':' + str(error_code) + ']')",
-        "        if len(response.body) > BUDGETS['max_response_bytes']: raise RuntimeError('[PLAYBOOK_RESPONSE_BUDGET_EXCEEDED]')",
-        "        digest = hashlib.sha256(response.body).hexdigest()",
-        "        expected_digest = response.headers.get(b'x-mozaic-body-sha256', b'').decode('ascii')",
-        "        fetch_id = response.headers.get(b'x-mozaic-fetch-id', b'').decode('ascii')",
-        "        evidence_ref = response.headers.get(b'x-mozaic-evidence-ref', b'').decode('ascii')",
-        "        acquired_at = response.headers.get(b'x-mozaic-acquired-at', b'').decode('ascii')",
-        "        media_type = response.headers.get(b'x-mozaic-media-type', b'').decode('ascii').split(';', 1)[0].lower()",
-        f"        allowed_media = {{'text/html'}} if {html!r} else {{'application/json','application/*+json'}}",
-        "        if 'sha256:' + digest != expected_digest or not fetch_id or not evidence_ref or media_type not in allowed_media: raise RuntimeError('[GATEWAY_EVIDENCE_INVALID]')",
-        "        datetime.fromisoformat(acquired_at.replace('Z', '+00:00'))",
-        "        document = {'url': response.url, 'requested_url': response.request.url, 'body': response.body, 'sha256': digest, 'evidence_ref': evidence_ref, 'content_type': media_type, 'status': response.status, 'page_index': page_index}",
-        "        self.documents.append(document)",
-        "        if SELECT['operator_type'] == 'select.html_records': selected = reference_runtime.select_html_records(self.ctx, document, selector=SELECT['inputs']['selector'], cardinality=SELECT['inputs']['cardinality'], max_matches=SELECT['inputs']['max_matches'], evidence_refs=[evidence_ref])",
-        "        else: selected = reference_runtime.select_json_records(self.ctx, document, array_path=SELECT['inputs']['array_path'], max_matches=SELECT['inputs']['max_matches'], evidence_refs=[evidence_ref])",
-        "        extracted = reference_runtime.extract_fields(self.ctx, selected, fields=EXTRACT['inputs']['fields'], operation_id=EXTRACT['operation_id'])",
-        "        if len(self.records) + len(extracted) > BUDGETS['max_records']: raise RuntimeError('[PLAYBOOK_RECORD_BUDGET_EXCEEDED]')",
-        "        self.records.extend(extracted)",
-        "        self.ctx.pages_used += 1; self.ctx.requests_used += 1; self.ctx.bytes_used += len(response.body)",
-        "        self.evidence.append({'fetch_id': fetch_id, 'evidence_ref': evidence_ref, 'source_url': response.url, 'status': response.status, 'acquired_at': acquired_at, 'media_type': media_type, 'body_sha256': digest, 'body_size_bytes': len(response.body), 'body_representation': response.headers.get(b'x-mozaic-body-representation', b'').decode('ascii')})",
-        "        if DISCOVER is not None:",
-        "            discovered = reference_runtime.discover_links(self.ctx, document, selector=DISCOVER['inputs']['selector'], max_links=DISCOVER['inputs']['max_links'], evidence_refs=[evidence_ref])",
-        "            candidates = discovered['urls']",
-        "            next_url = next((url for url in candidates if url not in self.visited), None)",
-        "            if next_url is None and any(url in self.visited for url in candidates): raise RuntimeError('[PAGINATION_LOOP]')",
-        "            if next_url is not None and page_index + 1 < MAX_PAGES:",
-        "                self.visited.add(next_url); self.page_urls.append(next_url)",
-        "                yield Request(next_url, callback=self.parse_page, errback=self._failed, cb_kwargs={'page_index': page_index + 1}, headers={'Accept': 'text/html'})",
-        "            elif next_url is not None and PAGINATION_COMPLETION_MODE == 'bounded_window': self.pagination_termination = 'planned_page_limit'",
-        "            elif next_url is not None: raise RuntimeError('[PAGINATION_UNEXPECTED_BUDGET_EXHAUSTED]')",
-        "            else: self.pagination_termination = 'natural_end'",
-        "    def _failed(self, failure): self.failure = failure.getErrorMessage()",
-        "    def _spider_error(self, failure, response, spider): self.failure = failure.getErrorMessage()",
-        "    def _item_error(self, item, response, spider, failure): self.failure = failure.getErrorMessage()",
-        "    def _closed(self, spider, reason):",
-        "        if reason not in {'finished'} and self.failure is None: self.failure = 'EXECUTION_CANCELLED'",
-        "    def close_runtime(self):",
-        "        shutil.rmtree(self.fixture_root, ignore_errors=True); shutil.rmtree(self.context_root, ignore_errors=True)",
+        f"PLAN = {plan!r}",
         "def main(argv=None):",
-        "    parser = argparse.ArgumentParser(); parser.add_argument('--output', required=True); args = parser.parse_args(argv)",
-        "    output = Path(args.output).absolute()",
-        "    if output.exists() or output.parent.is_symlink() or not output.parent.is_dir(): raise RuntimeError('[OUTPUT_PATH_UNSAFE]')",
-        "    settings = Settings(); settings.setdict(scrapy_live_runtime.live_handler_settings(), priority='cmdline')",
-        "    if PAGINATION is not None: settings.set('DOWNLOAD_DELAY', 1.1, priority='cmdline'); settings.set('RANDOMIZE_DOWNLOAD_DELAY', False, priority='cmdline')",
-        "    process = CrawlerProcess(settings=settings); crawler = process.create_crawler(GeneratedLiveSpider); process.crawl(crawler, output_root=args.output); process.start(stop_after_crawl=True)",
-        "    spider = crawler.spider",
-        "    if spider is None or spider.failure is not None or spider.ctx.pages_used < 1 or len(spider.evidence) != spider.ctx.pages_used:",
-        "        if spider is not None: spider.close_runtime()",
-        "        print(json.dumps({'state':'failed','diagnostic': None if spider is None else spider.failure}, sort_keys=True)); return 1",
-        "    try:",
-        "        report = reference_runtime.write_records(spider.ctx, spider.records)",
-        "        if PAGINATION is not None: report['pagination_termination'] = getattr(spider, 'pagination_termination', None)",
-        "        reference_runtime.write_report(spider.ctx, report)",
-        "        reference_runtime.write_raw_references(spider.ctx, spider.documents)",
-        "        (output / 'fetch-evidence.jsonl').write_bytes(b''.join((json.dumps(row, sort_keys=True, separators=(',', ':'))+'\\n').encode() for row in spider.evidence))",
-        "        print(json.dumps(report, sort_keys=True)); return 0",
-        "    finally: spider.close_runtime()",
-        "if __name__ == '__main__': raise SystemExit(main())",
+        "    return scrapy_framework.run_live(PLAN, RUNTIME_IDENTITY, argv)",
+        "if __name__ == '__main__':",
+        "    raise SystemExit(main())",
         "",
     ]
     return "\n".join(lines).encode("utf-8")
@@ -262,9 +172,7 @@ def compile_build(
     target_platform = target_platform or _platform_slug()
     if "/" not in target_platform:
         raise PlaybookError("[TARGET_PLATFORM_INVALID] target platform is invalid")
-    runtime_files, runtime_identity = runtime_bundle_files(
-        ("reference_runtime.py", "syntax.py", "scrapy_live_runtime.py")
-    )
+    runtime_files, runtime_identity = runtime_bundle_files(SCRAPY_RUNTIME_MODULES)
     files_map = {
         "bot.py": generate_bot(ir, runtime_identity),
         "capability-profile.json": canonical_json(PROFILE),
@@ -363,7 +271,6 @@ def verify_build(directory: Path) -> dict[str, Any]:
             "python_implementation": platform.python_implementation(),
             "platform_system": platform.system(),
             "platform_machine": platform.machine(),
-            "runtime": LIVE_RUNTIME_VERSION,
             "reference_runtime": RUNTIME_VERSION,
             "scrapy": version,
             "selectolax": "0.4.13",
@@ -378,5 +285,12 @@ def verify_build(directory: Path) -> dict[str, Any]:
     ):
         raise PlaybookError(
             "[BUILD_EXECUTION_MODE_UNSUPPORTED] live build binding differs"
+        )
+    if manifest.get("toolchain", {}).get("runtime") not in {
+        "scrapy-live-http-runtime/1.0.0",
+        LIVE_RUNTIME_VERSION,
+    }:
+        raise PlaybookError(
+            "[BUILD_TOOLCHAIN_UNSUPPORTED] Scrapy runtime is unsupported"
         )
     return manifest

@@ -15,7 +15,7 @@ from scrapy.responsetypes import responsetypes
 
 from .reference_runtime import RuntimeFailure, fetch_fixture
 
-SCRAPY_RUNTIME_VERSION = "scrapy-fixture-runtime/1.0.0"
+SCRAPY_RUNTIME_VERSION = "scrapy-fixture-runtime/1.1.0"
 REQUEST_META_KEYS = {
     "dm_operation",
     "dm_page_index",

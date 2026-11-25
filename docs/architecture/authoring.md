@@ -55,7 +55,7 @@ O incremento vertical de BC15 adiciona `contracts/capture-playbook/draft/v2/` se
 
 A referência de execução, perfil de capabilities e casos executáveis estão em [examples/playbooks](../../examples/playbooks/README.md); operação do CLI é descrita em [CapturePlaybook drafts](../operations/capture-playbook-drafts.md). Essa cadeia prova extração e acceptance contra fixtures sintéticas, não navegação remota autorizada, custody produtiva, aprovação de BotRelease ou runtime de produção. ADR 013 e ADR 017 continuam Proposed; os gates de deployment Scout descritos em ADR 017 permanecem separados.
 
-## Backend Scrapy fixture-only — incremento proposto
+## Backend Scrapy fixture-only — evidência histórica
 
 O backend `scrapy-fixture` também consome somente `collector-ir/v1`; não lê YAML nem redefine semântica. Seu gerador em BC15 emite uma Spider determinística, callbacks por operação suportada, Requests e uma configuração fechada. Scrapy Engine/Scheduler/Downloader organizam aquisição e paginação; um handler próprio resolve apenas URLs HTTP/HTTPS exatas do índice verificado. O handler não delega a download handlers de rede. Schemes não usados, retries, redirects, cookies, extensões, middleware padrão, feeds e settings de projeto ficam desabilitados.
 
@@ -63,7 +63,15 @@ Parser, conversões de campos, cardinalidade, normalização e provenance perman
 
 O primeiro perfil não declara `browser.rendered_dom` e falha antes de produzir build para capabilities ou grafos não suportados. Não há fallback de backend. A suite compara os dois builds contra oracles independentes e executa conformance com negação de rede. Em Linux, isolamento efetivo exige container não-root, root filesystem read-only, mounts de fixtures/build read-only, limites de recursos e `--network none`. A execução macOS por `sandbox-exec` é evidência local menos restritiva, não substitui o gate Linux.
 
-Esse incremento continua sem execução produtiva, worker distribuído, autorização de run, BotRelease ou Playwright. Validação de playbook e verificação de build são pré-requisitos técnicos, não autorização de execução.
+Esse incremento histórico não tinha execução live, worker distribuído, autorização de run, BotRelease ou Playwright. A evolução posterior de execução autorizada está registrada no ADR 025 e em seus assessments; Playbook validation e build verification continuam sendo pré-requisitos técnicos, não autorização de execução.
+
+## Scrapy runtime BC15 — implementação local após PR #21
+
+O branch M1 consolida o lifecycle Scrapy em `collector_engineering.scrapy_framework`, um limite interno governado por BC15, sem criar distribuição `frameworks/scrapy` neste incremento. O compilador continua dono de validação, capability checks, lowering da IR, plano determinístico e identidade do BotBuild. Ele agora emite um entrypoint pequeno com plano imutável, identidade exata da runtime e chamada `run_fixture` ou `run_live`. A runtime embutida mantém módulos próprios com hash individual e digest agregado; sua identidade de pacote mudou para `collector-runtime/1.1.0`.
+
+O framework interno interpreta somente planos produzidos pelos backends aprovados e mantém Scrapy lifecycle, configuração fechada, operadores, paginação limitada, montagem do resultado e cleanup. Fixture e live continuam com spiders, settings e transports distintos: fixture usa somente o handler de fixture e permanece `network none`; live delega cada request ao gateway. O framework não recebe chaves de autoridade nem credenciais de BC04/05/06 e não decide admissão, custódia ou publicação. O worker seleciona e verifica o BotBuild, aplica o processo protegido, cancelamento e timeout, e recolhe o resultado não confiável.
+
+Compatibilidade é explícita: builds históricos com identidade `collector-runtime/1.0.0` e toolchains Scrapy `1.0.0` continuam reconhecidos; os builds novos fixam `1.1.0`. Artefatos antigos não são reescritos nem executados com runtime substituível. Ver [ADR 026](decisions/026-bc15-scrapy-runtime-framework.md) para alternativas, limites e validação. A decisão permanece Proposed.
 
 ## Ciclos independentes
 

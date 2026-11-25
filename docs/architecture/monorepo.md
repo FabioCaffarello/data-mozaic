@@ -50,6 +50,8 @@ The scoped foundation now exists at `apps/artifact-custody/` as the repository's
 
 `libs/<language>/<library>/` é o destino para código reutilizável com ownership, API e consumidores demonstrados. Módulo interno de bounded context, library, SDK, framework adapter, plugin, contract package e deployable são unidades diferentes; seus critérios e governança estão na [Library Architecture](libraries.md). Não criar scaffolding vazio nem renomear caminhos em massa. Hoje `mozaic-observability` e `mozaic-bot-build` são libraries Python internas L2; BC14 permanece em `apps/scout/scout/`; BC05 Acquisition Output começa como pacote de aplicação/contexto em `apps/acquisition-output/`, não como library compartilhada.
 
+O runtime Scrapy BC15 é atualmente um módulo privado em `apps/collector-engineering/collector_engineering/scrapy_framework.py`, empacotado por digest dentro de cada BotBuild. Isso cria um limite interno testável e governado sem afirmar que `frameworks/` já é necessário. A promoção para uma distribuição framework independente depende de owner/API estáveis, runtime identity e compatibilidade, superfície de teste própria e integração efetiva com compiler e worker. O critério de dois consumidores para libraries não impede essa decisão de framework.
+
 Fontes oficiais: [Go workspaces](https://go.dev/doc/tutorial/workspaces), [uv workspaces](https://docs.astral.sh/uv/concepts/projects/workspaces/), [Cargo workspaces](https://doc.rust-lang.org/cargo/reference/workspaces.html), [pnpm workspace](https://pnpm.io/workspaces), [GitHub Actions](https://docs.github.com/en/actions).
 
 ## Inventário e templates

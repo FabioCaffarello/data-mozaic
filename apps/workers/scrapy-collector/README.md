@@ -2,7 +2,7 @@
 
 `mozaic-scrapy-collector` is one installable Scrapy project that assembles multiple immutable BC15 BotBuilds. It resolves each execution by the exact `(bot_id, build_id)` pair and starts a fresh Python process for the selected build.
 
-The initial profile is fixture-only. The worker does not parse CapturePlaybooks, compile IR, authorize source access, or download code dynamically. BotBuilds must be produced and reviewed before assembly.
+The worker hosts verified fixture and authorized-live BotBuilds. It does not parse CapturePlaybooks, compile IR, authorize source access, or download code dynamically. Each BotBuild carries its exact first-party BC15 runtime files and digest; the worker verifies the selected build before launching its fresh child process. BotBuilds must be produced and reviewed before assembly. The embedded `scrapy_framework` owns Scrapy lifecycle and approved plan interpretation, while the worker retains catalog, process, isolation, cancellation and result-collection responsibilities.
 
 The CLI starts a fresh Python child process, but that alone is not an OS sandbox. The protected Linux conformance path is `make scrapy-collector-multibot-conformance`; it runs one selected build per container with `--network none`, a non-root UID, read-only root filesystem, resource limits, and a private output volume for each execution. There is not yet a supported production container launcher or authorization integration. Do not run untrusted BotBuild code directly on a host or in a container with default networking and shared writable output mounts.
 
@@ -20,6 +20,6 @@ scrapy-collector assemble --manifest bot-catalog/manifest.yaml \
 
 The repository target `make scrapy-collector-multibot-conformance` builds HTML and JSON BotBuilds plus a second source revision, assembles them, and exercises isolated executions. Linux CI runs that target inside the non-root, network-disabled security gate.
 
-Compilation records both the compiler host toolchain and an explicit runtime target such as `linux/amd64`. Assembly rejects mismatched build targets, Python minor versions, Scrapy/runtime compatibility, or lockfile identity. The initial image supports Linux/amd64 only.
+Compilation records both the compiler host toolchain and an explicit runtime target such as `linux/amd64`. Assembly rejects mismatched build targets, Python minor versions, Scrapy/runtime compatibility, or lockfile identity. The worker accepts the explicitly supported historical runtime compatibility and current `1.1.0` compatibility; it does not resolve a mutable runtime version. The image supports Linux/amd64 only.
 
 See the proposed decision in [ADR 020](../../../docs/architecture/decisions/020-scrapy-collector-multi-bot-project.md) and the [BotBuild manifest v2 draft](../../../contracts/bot-build/draft/v2/README.md).
