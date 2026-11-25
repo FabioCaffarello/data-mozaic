@@ -1125,6 +1125,7 @@ def build_typed_ir(
                             "max_links",
                             "max_pages",
                             "stop_when_no_links",
+                            "completion_mode",
                             "wait_policy",
                             "documents",
                             "document",

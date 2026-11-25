@@ -1,0 +1,7 @@
+{
+  "complete": true,
+  "source": {"source_id": "controlled-http", "revision": "controlled-v1"},
+  "pages": [
+    {"url":"https://api.fixture.test/v1/items","status":200,"content_type":"application/json","evidence_ref":"controlled-json-response","body_file":"controlled.json","sha256":"2c0a70b19a7c260bcbed75f960401fec0f645500ddcf1b33c7b71e2cde5e291b","size_bytes":160}
+  ]
+}

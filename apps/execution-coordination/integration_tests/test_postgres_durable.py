@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import os
 import threading
 import time
@@ -11,11 +13,21 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import rfc8785
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from execution_coordination.adapters.execution_capability import (
+    ExecutionCapabilitySigner,
+    verify_execution_capability,
+)
 from execution_coordination.adapters.postgres_durable import (
     PostgresDurableRunRepository,
 )
 from execution_coordination.adapters.publication_grant import (
     Ed25519PublicationGrantSigner,
+)
+from execution_coordination.adapters.trusted_live_authority import (
+    TrustedLiveAuthority,
 )
 from execution_coordination.domain import CoordinationError, ExecutionBinding
 from execution_coordination.durable_application import (
@@ -27,6 +39,7 @@ from execution_coordination.durable_domain import (
     DurableRunIntent,
     DurableRunState,
     FailureDisposition,
+    LiveExecutionBinding,
 )
 
 
@@ -509,6 +522,282 @@ class PostgresDurableIntegrationTests(unittest.TestCase):
             self.assertEqual(final.state, DurableRunState.FINALIZATION_PENDING)
             self.assertEqual(final.reservation.reservation_id, grant.reservation_id)
             self.assertIsNotNone(final.cancel_requested_at)
+
+    def test_live_execution_binding_round_trips_through_durable_run(self):
+        digest = "a" * 64
+        binding = LiveExecutionBinding(
+            source_id="controlled-http",
+            source_revision_id="controlled-v1",
+            policy_id="controlled-get",
+            policy_version="1.0.0",
+            policy_digest="sha256:" + "b" * 64,
+            release_id="controlled-release-1",
+            build_id=digest,
+            build_manifest_digest="sha256:" + "c" * 64,
+            runtime_profile_id="scrapy-live-http-v1",
+            runtime_image_digest="sha256:" + "d" * 64,
+            authority_id="integration-authority",
+            authority_snapshot_generation=3,
+            authority_snapshot_digest="sha256:" + "e" * 64,
+            max_duration_seconds=60,
+            max_requests=8,
+            max_total_response_bytes=1_000_000,
+            max_concurrency=1,
+        )
+        intent = DurableRunIntent(
+            tenant_id="integration-tenant",
+            run_id=str(uuid4()),
+            request_id="live-binding-" + uuid4().hex,
+            idempotency_key="live-binding-" + uuid4().hex,
+            binding=binding,
+            deadline=datetime.now(UTC) + timedelta(minutes=2),
+        )
+        self.repository.create(intent)
+        reloaded = self.repository.get(intent.tenant_id, intent.run_id)
+        self.assertEqual(reloaded.intent.binding, binding)
+        self.assertEqual(reloaded.intent.binding.execution_mode, "live-authorized")
+
+    def test_signed_authority_admission_and_current_attempt_capability(self):
+        now = datetime.now(UTC)
+        private_key = Ed25519PrivateKey.from_private_bytes(b"v" * 32)
+        public_key = private_key.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+
+        def record_digest(value: dict[str, object], field: str) -> str:
+            unsigned = {key: item for key, item in value.items() if key != field}
+            return "sha256:" + hashlib.sha256(rfc8785.dumps(unsigned)).hexdigest()
+
+        source: dict[str, object] = {
+            "source_id": "controlled-authority-http",
+            "revision_id": "controlled-v1",
+            "status": "eligible",
+        }
+        source["configuration_digest"] = record_digest(source, "configuration_digest")
+        policy: dict[str, object] = {
+            "policy_id": "controlled-authority-get",
+            "policy_version": "1.0.0",
+            "source_id": "controlled-authority-http",
+            "source_revision_id": "controlled-v1",
+            "status": "eligible",
+            "policy_digest": "",
+            "deadline_seconds": 60,
+            "max_requests": 8,
+            "max_total_response_bytes": 2_000_000,
+            "max_concurrency": 1,
+        }
+        policy["policy_digest"] = record_digest(policy, "policy_digest")
+        build_id = "sha256:" + "3" * 64
+        build_manifest_digest = "sha256:" + "4" * 64
+        runtime_image_digest = "sha256:" + "5" * 64
+        release: dict[str, object] = {
+            "release_id": "controlled-authority-release",
+            "status": "approved",
+            "source_id": "controlled-authority-http",
+            "source_revision_id": "controlled-v1",
+            "policy_id": "controlled-authority-get",
+            "policy_version": "1.0.0",
+            "build_id": build_id,
+            "build_manifest_digest": build_manifest_digest,
+            "backend_id": "scrapy-live-http",
+            "runtime_profile_id": "scrapy-live-http-v1",
+            "runtime_image_digest": runtime_image_digest,
+        }
+        release["release_digest"] = record_digest(release, "release_digest")
+        snapshot: dict[str, object] = {
+            "contract_version": "live-authority-snapshot/v1",
+            "authority_id": "controlled-authority-" + uuid4().hex,
+            "generation": 4,
+            "issued_at": (now - timedelta(seconds=1)).isoformat(),
+            "expires_at": (now + timedelta(minutes=10)).isoformat(),
+            "source_revisions": [source],
+            "policies": [policy],
+            "releases": [release],
+        }
+        snapshot["snapshot_digest"] = record_digest(snapshot, "snapshot_digest")
+        envelope = {
+            "snapshot": snapshot,
+            "key_id": "controlled-authority-test-key",
+            "signature": base64.urlsafe_b64encode(
+                private_key.sign(rfc8785.dumps(snapshot))
+            )
+            .decode("ascii")
+            .rstrip("="),
+        }
+        authority = TrustedLiveAuthority(
+            json.dumps(envelope, separators=(",", ":")).encode(),
+            trusted_public_keys={"controlled-authority-test-key": public_key},
+            minimum_generation=4,
+            authority_registry=self.repository,
+        )
+        authority_id = str(snapshot["authority_id"])
+        snapshot_digest = (
+            "sha256:" + hashlib.sha256(rfc8785.dumps(snapshot)).hexdigest()
+        )
+        envelope_bytes = json.dumps(envelope, separators=(",", ":")).encode()
+        envelope_digest = "sha256:" + hashlib.sha256(envelope_bytes).hexdigest()
+        with self.assertRaisesRegex(CoordinationError, "rollback"):
+            self.repository.install_authority_snapshot(
+                authority_id=authority_id,
+                generation=3,
+                snapshot_digest="sha256:" + "1" * 64,
+                envelope_digest="sha256:" + "2" * 64,
+                signing_key_id="controlled-authority-test-key",
+                expires_at=now + timedelta(minutes=5),
+                signed_envelope=envelope,
+            )
+        with self.assertRaisesRegex(CoordinationError, "conflicts"):
+            self.repository.install_authority_snapshot(
+                authority_id=authority_id,
+                generation=4,
+                snapshot_digest="sha256:" + "1" * 64,
+                envelope_digest="sha256:" + "2" * 64,
+                signing_key_id="controlled-authority-test-key",
+                expires_at=now + timedelta(minutes=5),
+                signed_envelope=envelope,
+            )
+        self.assertTrue(
+            self.repository.authority_snapshot_is_current(
+                authority_id=authority_id,
+                generation=4,
+                snapshot_digest=snapshot_digest,
+            )
+        )
+        self.assertTrue(
+            self.repository.install_authority_snapshot(
+                authority_id=authority_id,
+                generation=4,
+                snapshot_digest=snapshot_digest,
+                envelope_digest=envelope_digest,
+                signing_key_id="controlled-authority-test-key",
+                expires_at=now + timedelta(minutes=10),
+                signed_envelope=envelope,
+            )
+            == 4
+        )
+        capability_seed = b"w" * 32
+        capability_signer = ExecutionCapabilitySigner(
+            capability_seed, key_id="bc04-live-integration"
+        )
+        coordinator = DurableExecutionCoordinator(
+            self.repository,
+            publication=object(),
+            grant_signer=None,
+            live_authority=authority,
+            execution_capability_signer=capability_signer,
+            execution_capability_verifier=capability_signer,
+        )
+        run = coordinator.admit_live_run(
+            tenant_id="integration-tenant",
+            run_id=str(uuid4()),
+            request_id="authorized-live-" + uuid4().hex,
+            idempotency_key="authorized-live-" + uuid4().hex,
+            deadline=now + timedelta(minutes=2),
+            source_id="controlled-authority-http",
+            source_revision_id="controlled-v1",
+            policy_id="controlled-authority-get",
+            policy_version="1.0.0",
+            release_id="controlled-authority-release",
+            build_id=build_id,
+            build_manifest_digest=build_manifest_digest,
+            runtime_image_digest=runtime_image_digest,
+        )
+        self.assertEqual(run.intent.binding.authority_snapshot_generation, 4)
+        lease = coordinator.acquire_attempt(
+            run.intent.tenant_id,
+            run.intent.run_id,
+            "live-worker",
+            "claim-live-" + uuid4().hex,
+        )
+        capability = coordinator.issue_execution_capability(
+            lease, audience="data-mozaic/acquisition-gateway"
+        )
+        verify_execution_capability(
+            capability,
+            trusted_public_keys={
+                "bc04-live-integration": Ed25519PrivateKey.from_private_bytes(
+                    capability_seed
+                )
+                .public_key()
+                .public_bytes(
+                    serialization.Encoding.Raw, serialization.PublicFormat.Raw
+                )
+            },
+            expected_audience="data-mozaic/acquisition-gateway",
+        )
+        renewed = coordinator.renew_attempt(lease, "renew-live-" + uuid4().hex)
+        with self.assertRaisesRegex(CoordinationError, "current attempt lease"):
+            coordinator.issue_execution_capability(
+                lease, audience="data-mozaic/acquisition-gateway"
+            )
+        replacement = coordinator.issue_execution_capability(
+            renewed, audience="data-mozaic/acquisition-gateway"
+        )
+        self.assertNotEqual(capability["capability_id"], replacement["capability_id"])
+        operation = coordinator.authorize_acquisition_operation(
+            replacement,
+            operation_id="gateway-op-" + uuid4().hex,
+            target_digest="sha256:" + "6" * 64,
+        )
+        self.assertTrue(operation["operation_id"].startswith("gateway-op-"))
+        with self.assertRaisesRegex(CoordinationError, "conflicts"):
+            coordinator.authorize_acquisition_operation(
+                replacement,
+                operation_id=str(operation["operation_id"]),
+                target_digest="sha256:" + "7" * 64,
+            )
+        coordinator.cancel(
+            "integration-tenant",
+            run.intent.run_id,
+            "cancel-live-" + uuid4().hex,
+        )
+        with self.assertRaisesRegex(CoordinationError, "not current and authorized"):
+            coordinator.authorize_acquisition_operation(
+                replacement,
+                operation_id="gateway-op-after-cancel-" + uuid4().hex,
+                target_digest="sha256:" + "8" * 64,
+            )
+
+        revoked = json.loads(json.dumps(snapshot))
+        revoked["generation"] = 5
+        revoked["releases"][0]["status"] = "revoked"
+        release = revoked["releases"][0]
+        release.pop("release_digest")
+        release["release_digest"] = (
+            "sha256:" + hashlib.sha256(rfc8785.dumps(release)).hexdigest()
+        )
+        revoked.pop("snapshot_digest")
+        revoked["snapshot_digest"] = (
+            "sha256:" + hashlib.sha256(rfc8785.dumps(revoked)).hexdigest()
+        )
+        revoked_envelope = {
+            "snapshot": revoked,
+            "key_id": "controlled-authority-test-key",
+            "signature": base64.urlsafe_b64encode(
+                private_key.sign(rfc8785.dumps(revoked))
+            )
+            .decode("ascii")
+            .rstrip("="),
+        }
+        revoked_authority = TrustedLiveAuthority(
+            json.dumps(revoked_envelope, separators=(",", ":")).encode(),
+            trusted_public_keys={"controlled-authority-test-key": public_key},
+            minimum_generation=4,
+            authority_registry=self.repository,
+        )
+        with self.assertRaisesRegex(CoordinationError, "stale or revoked"):
+            authority.assert_durably_current()
+        with self.assertRaisesRegex(CoordinationError, "not currently approved"):
+            revoked_authority.resolve(
+                source_id="controlled-authority-http",
+                source_revision_id="controlled-v1",
+                policy_id="controlled-authority-get",
+                policy_version="1.0.0",
+                release_id="controlled-authority-release",
+                build_id=build_id,
+                build_manifest_digest=build_manifest_digest,
+                runtime_image_digest=runtime_image_digest,
+            )
 
 
 if __name__ == "__main__":

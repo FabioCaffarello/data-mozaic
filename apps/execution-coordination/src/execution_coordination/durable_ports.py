@@ -12,6 +12,7 @@ from execution_coordination.durable_domain import (
     FailureDisposition,
     FinalizationGrant,
     FinalizationReservation,
+    TrustedLiveBinding,
 )
 
 
@@ -27,6 +28,13 @@ class DurableRunRepositoryPort(Protocol):
         operation_id: str,
         lease_seconds: int,
     ) -> AttemptLease: ...
+    def admit_acquisition_operation(
+        self,
+        capability: Mapping[str, object],
+        *,
+        operation_id: str,
+        target_digest: str,
+    ) -> Mapping[str, object]: ...
     def renew(
         self, lease: AttemptLease, operation_id: str, lease_seconds: int
     ) -> AttemptLease: ...
@@ -76,3 +84,36 @@ class PublicationPort(Protocol):
     def get_publication_receipt(
         self, tenant_id: str, output_set_id: str
     ) -> Mapping[str, object] | None: ...
+
+
+class LiveAuthorityPort(Protocol):
+    def assert_durably_current(self) -> None: ...
+
+    def resolve(
+        self,
+        *,
+        source_id: str,
+        source_revision_id: str,
+        policy_id: str,
+        policy_version: str,
+        release_id: str,
+        build_id: str,
+        build_manifest_digest: str,
+        runtime_image_digest: str,
+    ) -> TrustedLiveBinding: ...
+
+
+class AuthoritySnapshotRegistryPort(Protocol):
+    def install_authority_snapshot(self, **snapshot: object) -> int: ...
+
+    def authority_snapshot_is_current(
+        self, *, authority_id: str, generation: int, snapshot_digest: str
+    ) -> bool: ...
+
+
+class ExecutionCapabilityIssuerPort(Protocol):
+    def issue(self, lease: AttemptLease, **claims: object) -> Mapping[str, object]: ...
+
+
+class ExecutionCapabilityVerifierPort(Protocol):
+    def verify(self, capability: Mapping[str, object], *, audience: str) -> None: ...

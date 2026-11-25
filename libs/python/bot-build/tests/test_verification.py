@@ -19,6 +19,7 @@ def make_build(
     *,
     manifest_version: str = "bot-build-manifest/v2",
     runtime_identity_bytes: bytes = b"# identity\n",
+    execution_mode: str = "fixture-only",
 ) -> str:
     runtime_files = {"__init__.py": b"", "identity.py": runtime_identity_bytes}
     runtime_hashes = {
@@ -66,28 +67,42 @@ def make_build(
                 "compiler_version": "0.3.0",
                 "toolchain": {"python": "3.12.0"},
                 "dependency_lock_sha256": "a" * 64,
-                "input_fixtures": [
-                    {
-                        "url": "https://fixture.test/",
-                        "evidence_ref": "e-1",
-                        "sha256": "d" * 64,
-                        "size_bytes": 0,
-                        "source_id": "fixture-source",
-                        "source_revision": "rev-1",
-                    }
-                ],
+                "input_fixtures": (
+                    [
+                        {
+                            "url": "https://fixture.test/",
+                            "evidence_ref": "e-1",
+                            "sha256": "d" * 64,
+                            "size_bytes": 0,
+                            "source_id": "fixture-source",
+                            "source_revision": "rev-1",
+                        }
+                    ]
+                    if execution_mode == "fixture-only"
+                    else []
+                ),
                 "dependency_identity": {
                     "lockfile_sha256": "a" * 64,
                     "packages": {"scrapy": "2.20.0"},
                 },
                 "compatibility": {
                     "worker_contract": "scrapy-collector/v1",
-                    "execution_mode": "fixture-only",
+                    "execution_mode": execution_mode,
                     "python_minor": "3.12",
                     "target_platform": "linux/amd64",
+                    **(
+                        {"runtime_profile": "scrapy-live-http-v1"}
+                        if execution_mode == "live-authorized"
+                        else {}
+                    ),
                 },
             }
         )
+        if execution_mode == "live-authorized":
+            core["live_request"] = {
+                "method": "GET",
+                "url": "https://api.example.test/v1/items",
+            }
     manifest = {**core, "build_id": hashlib.sha256(canonical_json(core)).hexdigest()}
     manifest_path = root / "manifest.json"
     manifest_path.write_bytes(
@@ -109,6 +124,47 @@ class BotBuildVerificationTests(unittest.TestCase):
                 verified = verify_bot_build(root, digest, supported_versions=(version,))
                 self.assertEqual(version, verified.manifest["manifest_version"])
                 self.assertEqual(digest, verified.manifest_digest)
+
+    def test_accepts_explicit_live_manifest_without_fixture_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "build"
+            root.mkdir()
+            digest = make_build(root, execution_mode="live-authorized")
+            verified = verify_bot_build(
+                root, digest, supported_versions=("bot-build-manifest/v2",)
+            )
+            self.assertEqual(
+                "live-authorized", verified.manifest["compatibility"]["execution_mode"]
+            )
+            self.assertEqual([], verified.manifest["input_fixtures"])
+
+    def test_rejects_live_manifest_that_contains_fixture_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "build"
+            root.mkdir()
+            make_build(root, execution_mode="live-authorized")
+            manifest_path = root / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            fixture = {
+                "url": "https://fixture.test/",
+                "evidence_ref": "e-1",
+                "sha256": "d" * 64,
+                "size_bytes": 0,
+                "source_id": "fixture-source",
+                "source_revision": "rev-1",
+            }
+            manifest["input_fixtures"] = [fixture]
+            core = {key: value for key, value in manifest.items() if key != "build_id"}
+            manifest["build_id"] = hashlib.sha256(canonical_json(core)).hexdigest()
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True, indent=2) + "\n"
+            )
+            with self.assertRaises(BotBuildVerificationError):
+                verify_bot_build(
+                    root,
+                    hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                    supported_versions=("bot-build-manifest/v2",),
+                )
 
     def test_rejects_unsupported_version_and_expected_manifest_drift(self):
         with tempfile.TemporaryDirectory() as temporary:

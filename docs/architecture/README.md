@@ -54,5 +54,9 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 45. [BC04 durable coordination — branch implementation evidence](assessments/bc04-durable-coordination-2026-11-25.md)
 46. [Repository consolidation — 2026-11-24](assessments/repository-consolidation-2026-11-24.md)
 47. [Integrated fixture acquisition — implementation evidence](assessments/fixture-acquisition-integration-2026-11-25.md)
+48. [ADR 025 — Authorized live acquisition profile](decisions/025-authorized-live-acquisition-profile.md)
+49. [Authorized live acquisition — implementation assessment](assessments/authorized-live-acquisition-2026-11-25.md)
+50. [BCB Focus proposed reference case](../../examples/use-cases/bcb-focus/README.md)
+51. [Acquisition Gateway controlled foundation](../../apps/acquisition-gateway/README.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.

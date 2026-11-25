@@ -1,0 +1,13 @@
+{
+  "backend_id": "scrapy-live-http",
+  "backend_version": "1.0.0",
+  "profile_version": "capability-profile/v1",
+  "execution_mode": "live-authorized",
+  "runtime_profile": "scrapy-live-http-v1",
+  "capabilities": [
+    "http.fetch.live",
+    "json.path_restricted",
+    "records.extract",
+    "output.records.jsonl"
+  ]
+}

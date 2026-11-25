@@ -96,6 +96,8 @@ class VerifiedFixturePage:
     digest: str
     media_type: str
     body: bytes
+    acquired_at: datetime | None = None
+    redirect_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,8 +419,12 @@ def import_verified_bundle(
     payload_contract: PayloadContractRef,
     custody_base_url: str,
     custody_token: str,
+    artifact_representation: str = "synthetic_fixture_http_response_body",
+    retention_policy_ref: str = "local-fixture-v1",
+    artifact_title: str = "Synthetic fixture HTTP entity",
+    artifact_role: str = "fixture-http-entity",
 ) -> tuple[str, str]:
-    """Custody fixture entities, stage deterministic CompositeOutputs, then seal."""
+    """Custody verified response entities, stage deterministic outputs, then seal."""
     references: dict[tuple[str, str, str], ArtifactRef] = {}
     for page in bundle.pages:
         artifact_id = _stable_id(
@@ -459,9 +465,9 @@ def import_verified_bundle(
             },
             "representation": "other_declared",
             "classification": "internal",
-            "retention_policy_ref": "local-fixture-v1",
+            "retention_policy_ref": retention_policy_ref,
             "metadata": {
-                "declared_representation": "synthetic_fixture_http_response_body",
+                "declared_representation": artifact_representation,
                 "evidence_ref": page.evidence_ref,
             },
         }
@@ -579,7 +585,18 @@ def import_verified_bundle(
             identity=OutputIdentity(
                 output_id,
                 observation_id,
-                observed_at,
+                next(
+                    (
+                        page.acquired_at
+                        for page in bundle.pages
+                        if page.url == provenance["source_url"]
+                        and page.evidence_ref == provenance["evidence_ref"]
+                        and page.digest.removeprefix("sha256:")
+                        == provenance["raw_sha256"]
+                        and page.acquired_at is not None
+                    ),
+                    observed_at,
+                ),
                 natural_key=record.get("id"),
             ),
             operation=ScopedOperationIdentity(
@@ -594,8 +611,8 @@ def import_verified_bundle(
                 ArtifactItem(
                     artifact,
                     ArtifactDescription(
-                        title="Synthetic fixture HTTP entity",
-                        role="fixture-http-entity",
+                        title=artifact_title,
+                        role=artifact_role,
                     ),
                 ),
             ),

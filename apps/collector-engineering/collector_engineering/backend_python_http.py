@@ -437,6 +437,7 @@ def verify_build(
         expected_profile_id = {
             "python-http-reference": "python-http-reference-v1",
             "scrapy-fixture": "scrapy-fixture-v1",
+            "scrapy-live-http": "scrapy-live-http-v1",
         }.get(expected_backend_id)
         if manifest.get("capability_profile_id") != expected_profile_id:
             raise PlaybookError("[BUILD_PROFILE_UNSUPPORTED] profile identity differs")

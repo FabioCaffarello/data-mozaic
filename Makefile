@@ -1,8 +1,9 @@
-.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests execution-coordination-durable-setup execution-coordination-durable-migrate execution-coordination-durable-tests execution-coordination-finalization-tests execution-coordination-example execution-coordination-reconcile execution-coordination-recover-run acquisition-output-tests acquisition-output-fixture-example acquisition-output-mongo-setup acquisition-output-mongo-check-config acquisition-output-mongo-up acquisition-output-mongo-status acquisition-output-mongo-connectivity acquisition-output-mongo-provision acquisition-output-mongo-tests acquisition-output-mongo-example acquisition-output-mongo-backup-restore acquisition-output-mongo-benchmark acquisition-output-mongo-benchmark-100k acquisition-output-mongo-down artifact-custody-setup artifact-custody-go-format-check artifact-custody-go-vet artifact-custody-go-test artifact-custody-go-race artifact-custody-go-build artifact-custody-go-vuln artifact-custody-up artifact-custody-status artifact-custody-down artifact-custody-integration artifact-custody-db-bootstrap artifact-custody-object-provision artifact-custody-reconcile artifact-custody-recovery-tests artifact-custody-benchmark artifact-custody-backup-restore scrapy-collector-multibot-conformance execution-coordination-protected-e2e test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
+.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector collector-live-admission-tests execution-coordination-tests execution-coordination-durable-setup execution-coordination-durable-migrate execution-coordination-durable-tests execution-coordination-finalization-tests execution-coordination-example execution-coordination-reconcile execution-coordination-recover-run authorized-live-json-acquisition authorized-live-html-acquisition authorized-live-pagination-acquisition authorized-live-pagination-planned-acquisition authorized-live-redirect-acquisition authorized-live-redirect-denial authorized-live-redirect-budget-exhaustion authorized-live-publication-ack-loss authorized-live-pagination-cancellation authorized-live-custody-interruption authorized-live-partial-stage-interruption acquisition-output-tests acquisition-output-fixture-example acquisition-output-mongo-setup acquisition-output-mongo-check-config acquisition-output-mongo-up acquisition-output-mongo-status acquisition-output-mongo-connectivity acquisition-output-mongo-provision acquisition-output-mongo-tests acquisition-output-mongo-example acquisition-output-mongo-backup-restore acquisition-output-mongo-benchmark acquisition-output-mongo-benchmark-100k acquisition-output-mongo-down artifact-custody-setup artifact-custody-go-format-check artifact-custody-go-vet artifact-custody-go-test artifact-custody-go-race artifact-custody-go-build artifact-custody-go-vuln acquisition-gateway-go-format-check acquisition-gateway-go-vet acquisition-gateway-go-test acquisition-gateway-go-race acquisition-gateway-go-build acquisition-gateway-go-vuln acquisition-live-gateway-container-smoke artifact-custody-up artifact-custody-status artifact-custody-down artifact-custody-integration artifact-custody-db-bootstrap artifact-custody-object-provision artifact-custody-reconcile artifact-custody-recovery-tests artifact-custody-benchmark artifact-custody-backup-restore scrapy-collector-multibot-conformance execution-coordination-protected-e2e test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
+.PHONY: authorized-live-scenario
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 MONGO_COMPOSE_FILE := deployments/compose/mongodb.compose.yaml
 BC06_COMPOSE_FILE := deployments/compose/artifact-custody.compose.yaml
-BC06_ENV_FILE ?= .env.artifact-custody
+BC06_ENV_FILE ?= $(if $(wildcard .env.artifact-custody),.env.artifact-custody,../data-mozaic-artifact-custody/.env.artifact-custody)
 MONGO_ENV_FILE := $(if $(wildcard .env.mongodb),.env.mongodb,$(if $(wildcard ../data-mozaic-mongodb/.env.mongodb),../data-mozaic-mongodb/.env.mongodb,.env.mongodb))
 GO ?= go
 GO_TOOLCHAIN := GOTOOLCHAIN=go1.27.4
@@ -45,6 +46,9 @@ test-libraries:
 test-scrapy-collector:
 	uv run --locked --package mozaic-scrapy-collector python -m unittest discover -s apps/workers/scrapy-collector/tests -v
 
+collector-live-admission-tests:
+	uv run --locked --package mozaic-collector-engineering python -m unittest discover -s apps/collector-engineering/tests -v
+
 execution-coordination-tests:
 	uv run --locked --package mozaic-execution-coordination python -m unittest discover -s apps/execution-coordination/tests -v
 
@@ -79,6 +83,79 @@ execution-coordination-fixture-acquisition: execution-coordination-durable-migra
 	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
 	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; BC04_LOCAL_FIXTURE_PROFILE=1 ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_durable_fixture_acquisition.py
 
+authorized-live-json-acquisition: execution-coordination-durable-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_authorized_live_json.py
+
+authorized-live-html-acquisition: execution-coordination-durable-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case html
+
+authorized-live-pagination-acquisition: execution-coordination-durable-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case pagination
+
+authorized-live-pagination-planned-acquisition: execution-coordination-durable-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case pagination-planned
+
+authorized-live-redirect-acquisition: execution-coordination-durable-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case redirect
+
+authorized-live-redirect-denial: execution-coordination-durable-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case redirect-denied
+
+authorized-live-redirect-budget-exhaustion: execution-coordination-durable-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case redirect-budget
+
+authorized-live-publication-ack-loss: execution-coordination-durable-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case ack-loss
+
+authorized-live-pagination-cancellation: execution-coordination-durable-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case pagination-cancel
+
+authorized-live-custody-interruption: execution-coordination-durable-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case custody-interruption
+
+authorized-live-partial-stage-interruption: execution-coordination-durable-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case partial-stage-interruption
+
+authorized-live-scenario: execution-coordination-durable-migrate
+	@test -n "$(CASE)" || { echo 'Set CASE to one controlled response-failure scenario.'; exit 2; }
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case "$(CASE)"
+
 acquisition-output-tests:
 	uv run --locked --package mozaic-acquisition-output python -m unittest discover -s apps/acquisition-output/tests -v
 
@@ -102,6 +179,27 @@ artifact-custody-go-build:
 
 artifact-custody-go-vuln:
 	cd apps/artifact-custody && $(GO_TOOLCHAIN) $(GO) run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
+
+acquisition-gateway-go-format-check:
+	@test -z "$$(cd apps/acquisition-gateway && $(GO_TOOLCHAIN) $(GO)fmt -l cmd internal)" || { cd apps/acquisition-gateway && $(GO_TOOLCHAIN) $(GO)fmt -l cmd internal; exit 1; }
+
+acquisition-gateway-go-vet:
+	cd apps/acquisition-gateway && $(GO_TOOLCHAIN) $(GO) vet ./...
+
+acquisition-gateway-go-test:
+	cd apps/acquisition-gateway && $(GO_TOOLCHAIN) $(GO) test ./...
+
+acquisition-gateway-go-race:
+	cd apps/acquisition-gateway && $(GO_TOOLCHAIN) $(GO) test -race ./...
+
+acquisition-gateway-go-build:
+	cd apps/acquisition-gateway && $(GO_TOOLCHAIN) env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build ./cmd/...
+
+acquisition-gateway-go-vuln:
+	cd apps/acquisition-gateway && $(GO_TOOLCHAIN) $(GO) run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
+
+acquisition-live-gateway-container-smoke:
+	uv run --locked --all-packages python tooling/acquisition_live_gateway_smoke.py
 
 artifact-custody-db-bootstrap: artifact-custody-setup
 	@test -f .env.artifact-custody || { echo 'Run make artifact-custody-setup first.'; exit 2; }
@@ -186,7 +284,7 @@ execution-coordination-protected-e2e:
 test:
 	uv run --locked python -m unittest discover -s tests -v
 
-check: lock-check lint format-check docs-check migration-check naming-check architecture-check artifact-custody-go-format-check artifact-custody-go-vet artifact-custody-go-test test-libraries test-scrapy-collector execution-coordination-tests acquisition-output-tests test
+check: lock-check lint format-check docs-check migration-check naming-check architecture-check artifact-custody-go-format-check artifact-custody-go-vet artifact-custody-go-test acquisition-gateway-go-format-check acquisition-gateway-go-vet acquisition-gateway-go-test test-libraries test-scrapy-collector collector-live-admission-tests execution-coordination-tests acquisition-output-tests test
 
 hooks-install: sync
 	uv run --locked pre-commit install --hook-type pre-commit

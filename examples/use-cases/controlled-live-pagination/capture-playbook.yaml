@@ -1,0 +1,62 @@
+dsl_version: capture-playbook-draft/v2
+playbook_id: controlled-live-pagination-records
+status: draft
+source:
+  source_id: controlled-http
+  revision: controlled-v1
+  origin: https://api.fixture.test
+  path_prefixes: [/v1/pages]
+objective: Read two bounded controlled HTML pages by following one observed next link.
+proposal_ref: controlled-live-pagination-v1
+findings:
+  - finding_id: controlled-test-pagination
+    classification: observed
+    evidence_refs: [controlled-page-1, controlled-page-2]
+evidence:
+  - {evidence_ref: controlled-page-1, sha256: cb909ca7007ae31688b9dd733aa7c53efb736a1e0a0ad21e5f78f3d50fd16b19}
+  - {evidence_ref: controlled-page-2, sha256: c4ff11d40d3ad61569e13cda3c74bc2745c0e16ac7b28c34e1f48eea286c7425}
+capabilities: [http.fetch.fixture, links.discover.fixture, pagination.bounded.fixture, html.css_select, records.extract, output.records.jsonl, output.raw.reference]
+budgets: {max_requests: 2, max_pages: 2, max_response_bytes: 512, max_records: 10, max_output_bytes: 1000000}
+failure_policy: {missing_fixture: fail, invalid_record: fail, missing_required_field: fail, conversion_error: fail}
+output_contract:
+  record_type: object
+  fields:
+    id: {type: string, required: true}
+    name: {type: string, required: true}
+operations:
+  - id: start
+    op: http.fetch/v1
+    url: https://api.fixture.test/v1/pages/1
+    content_type: text/html
+    evidence_refs: [controlled-page-1]
+  - id: discovered
+    op: links.discover/v1
+    document: {operation: start, port: document}
+    selector: a.next
+    attribute: href
+    max_links: 5
+    evidence_refs: [controlled-page-1]
+  - id: pages
+    op: pagination.bounded/v1
+    links: {operation: discovered, port: links}
+    max_pages: 2
+    stop_when_no_links: true
+  - id: items
+    op: select.html_records/v1
+    documents: {operation: pages, port: documents}
+    selector: article.item
+    cardinality: many
+    max_matches: 10
+    evidence_refs: [controlled-page-1, controlled-page-2]
+  - id: extract
+    op: extract.fields/v1
+    records: {operation: items, port: records}
+    fields:
+      id: {source: attribute, attribute: data-id, type: string, required: true, normalize: [trim]}
+      name: {source: text, selector: .name, type: string, required: true, normalize: [trim]}
+  - id: emit
+    op: output.records/v1
+    records: {operation: extract, port: records}
+  - id: raw_refs
+    op: output.raw/v1
+    documents: {operation: pages, port: documents}

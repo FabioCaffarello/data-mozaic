@@ -4,6 +4,8 @@
 
 Trabalhe em branch própria e integre por pull request revisado; não faça push direto em `main`. Cada PR descreve problema, mudanças, decisões, verificações, riscos e limitações. Proteção de branch e checks obrigatórios dependem de configuração no GitHub; este repositório não os configura automaticamente. A criação de commits, push e PR depende de autorização aplicável.
 
+O fluxo futuro é sequencial e usa somente o checkout principal: sincronize `main` por fast-forward, crie branches de feature com `git switch`, conclua um incremento por vez e retorne ao mesmo checkout depois do merge. Não crie worktrees adicionais. A exceção para concluir o worktree já existente de Authorized Live Acquisition Foundation e o gate de consolidação pós-merge estão definidos em [AGENTS.md](../../AGENTS.md); não remova worktrees antes desse gate.
+
 ## Ambiente e comandos
 
 O projeto raiz é um projeto de ferramentas não publicável e membro raiz do workspace uv. `members = []` é intencional: acrescente projetos reais explicitamente, com seus próprios `pyproject.toml`; os membros compartilham resolução e `uv.lock`, portanto suas restrições precisam ser compatíveis. `.python-version` define Python 3.12 para desenvolvimento e CI; o projeto requer Python >=3.12. O CI fixa uv 0.9.8, enquanto desenvolvedores devem usar uma versão compatível com o lock. Instale uv e Make antes de começar.

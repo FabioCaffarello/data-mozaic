@@ -8,6 +8,7 @@ reservation required when multiple coordinator processes share PostgreSQL.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -18,6 +19,16 @@ from execution_coordination.domain import CoordinationError, ExecutionBinding
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ID_MAX = 256
 _MAX_ATTEMPTS = 5
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedLiveBinding:
+    source_revision: Mapping[str, object]
+    policy: Mapping[str, object]
+    release: Mapping[str, object]
+    authority_id: str
+    snapshot_generation: int
+    snapshot_digest: str
 
 
 def _identity(value: str, label: str) -> None:
@@ -59,12 +70,68 @@ class FailureDisposition(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class LiveExecutionBinding:
+    """Immutable owner-authorized bindings persisted with a live CaptureRun."""
+
+    source_id: str
+    source_revision_id: str
+    policy_id: str
+    policy_version: str
+    policy_digest: str
+    release_id: str
+    build_id: str
+    build_manifest_digest: str
+    runtime_profile_id: str
+    runtime_image_digest: str
+    authority_id: str
+    authority_snapshot_generation: int
+    authority_snapshot_digest: str
+    max_duration_seconds: int
+    max_requests: int
+    max_total_response_bytes: int
+    max_concurrency: int
+    execution_mode: str = "live-authorized"
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.source_id, "source_id"),
+            (self.source_revision_id, "source_revision_id"),
+            (self.policy_id, "policy_id"),
+            (self.policy_version, "policy_version"),
+            (self.release_id, "release_id"),
+            (self.runtime_profile_id, "runtime_profile_id"),
+            (self.authority_id, "authority_id"),
+        ):
+            _identity(value, label)
+        for value, label in (
+            (self.policy_digest, "policy digest"),
+            (self.build_manifest_digest, "BotBuild manifest digest"),
+            (self.runtime_image_digest, "runtime image digest"),
+            (self.authority_snapshot_digest, "authority snapshot digest"),
+        ):
+            if not _DIGEST.fullmatch(value):
+                raise CoordinationError(f"{label} is invalid")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.build_id):
+            raise CoordinationError("BotBuild identity is invalid")
+        if self.execution_mode != "live-authorized":
+            raise CoordinationError("live binding execution mode is invalid")
+        if self.authority_snapshot_generation < 1:
+            raise CoordinationError("authority snapshot generation is invalid")
+        if not 1 <= self.max_duration_seconds <= 300:
+            raise CoordinationError("duration budget is outside trusted limits")
+        if not 1 <= self.max_requests <= 50 or not 1 <= self.max_concurrency <= 4:
+            raise CoordinationError("live request budget is outside trusted limits")
+        if not 1 <= self.max_total_response_bytes <= 100_000_000:
+            raise CoordinationError("live byte budget is outside trusted limits")
+
+
+@dataclass(frozen=True, slots=True)
 class DurableRunIntent:
     tenant_id: str
     run_id: str
     request_id: str
     idempotency_key: str
-    binding: ExecutionBinding
+    binding: ExecutionBinding | LiveExecutionBinding
     deadline: datetime
     max_attempts: int = 3
 

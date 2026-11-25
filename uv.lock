@@ -1243,6 +1243,7 @@ name = "mozaic-collector-engineering"
 version = "0.3.0"
 source = { editable = "apps/collector-engineering" }
 dependencies = [
+    { name = "aiohttp" },
     { name = "jsonschema" },
     { name = "mozaic-bot-build" },
     { name = "pyyaml" },
@@ -1252,6 +1253,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.10,<4" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "mozaic-bot-build", editable = "libs/python/bot-build" },
     { name = "pyyaml", specifier = ">=6.0,<7" },

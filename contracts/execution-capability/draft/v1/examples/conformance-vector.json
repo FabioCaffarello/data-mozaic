@@ -1,0 +1,29 @@
+{
+  "public_key": "p_bfr484uJuozmSbWU-R5NAf3Ff5yUk99DteUKmYc2c",
+  "capability": {
+    "contract_version": "execution-capability/v1",
+    "issuer": "urn:data-mozaic:bc04:execution-coordination",
+    "recipient": "urn:data-mozaic:acquisition-gateway",
+    "algorithm": "Ed25519",
+    "key_id": "vector-key-1",
+    "audience": "gateway/test",
+    "tenant_id": "tenant-controlled",
+    "run_id": "00000000-0000-4000-8000-000000000001",
+    "attempt_id": "00000000-0000-4000-8000-000000000002",
+    "generation": 3,
+    "source_id": "controlled-http",
+    "source_revision_id": "controlled-v1",
+    "policy_id": "controlled-get",
+    "policy_version": "1.0.0",
+    "policy_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "release_id": "release-controlled-1",
+    "build_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "build_manifest_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "runtime_profile_id": "scrapy-live-http-v1",
+    "issued_at": "2026-11-25T16:00:00Z",
+    "expires_at": "2026-11-25T16:01:00Z",
+    "execution_deadline": "2026-11-25T16:02:00Z",
+    "capability_id": "conformance-vector-1",
+    "signature": "ed25519:sABcXzErE4n_hEfiAqJxTjaD_Q42Ju9bpflp32OicbArjrodZaiZzeN6nkyT10XhRsjwhcnZ3OR2mBvg7dgbAw"
+  }
+}
