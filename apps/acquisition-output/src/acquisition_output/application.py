@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Mapping
 
 from .domain import (
     CaptureOutputVariant,
@@ -25,6 +26,7 @@ from .ports import (
     OutputSetRepositoryPort,
     PayloadContractValidationPort,
     PendingOutboxEventPort,
+    PublicationGrantVerificationPort,
 )
 
 
@@ -39,12 +41,14 @@ class AcquisitionOutputApplication:
         payload_contracts: PayloadContractValidationPort,
         custody: ArtifactCustodyPort,
         outbox: PendingOutboxEventPort | None = None,
+        publication_grants: PublicationGrantVerificationPort | None = None,
     ) -> None:
         self._repository = repository
         self._publisher = publisher
         self._payload_contracts = payload_contracts
         self._custody = custody
         self._outbox = outbox
+        self._publication_grants = publication_grants
 
     def create_output_set(
         self, spec: OutputSetSpec, operation: ScopedOperationIdentity
@@ -131,15 +135,46 @@ class AcquisitionOutputApplication:
         output_set_id: str,
         manifest_digest: str,
         operation: ScopedOperationIdentity,
+        *,
+        publication_grant: Mapping[str, object] | None = None,
     ) -> PublicationReceipt:
         self._require_scope(operation, tenant_id)
+        snapshot = self._repository.inspect(tenant_id, output_set_id)
+        if snapshot is None:
+            raise OutputError("OutputSet does not exist")
+        execution = snapshot.binding.execution
+        authorization = None
+        if execution.run_id is not None:
+            if publication_grant is None or self._publication_grants is None:
+                raise OutputError(
+                    "run-bound OutputSet publication requires a BC04 grant"
+                )
+            authorization = self._publication_grants.verify(publication_grant)
+            if (
+                authorization.tenant_id != tenant_id
+                or authorization.run_id != execution.run_id
+                or authorization.attempt_id != execution.attempt_id
+                or authorization.fencing_generation != execution.fencing_token
+                or authorization.output_set_id != output_set_id
+                or authorization.manifest_digest != manifest_digest
+                or authorization.operation_id != operation.operation_id
+            ):
+                raise OutputError(
+                    "BC04 publication grant does not match sealed OutputSet"
+                )
+        elif publication_grant is not None:
+            raise OutputError(
+                "unbound OutputSet cannot consume a BC04 publication grant"
+            )
         receipt = self._publisher.publish(
-            tenant_id, output_set_id, manifest_digest, operation
+            tenant_id, output_set_id, manifest_digest, operation, authorization
         )
         if (
             receipt.tenant_id != tenant_id
             or receipt.output_set_id != output_set_id
             or receipt.manifest_digest != manifest_digest
+            or receipt.finalization_reservation_id
+            != (authorization.reservation_id if authorization else None)
         ):
             raise OutputError(
                 "publisher returned a receipt for different OutputSet intent"

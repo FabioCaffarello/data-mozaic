@@ -45,7 +45,7 @@ Rejected: output membership and payloads can grow without bound. Keep member doc
 
 ## Local guarantees and unresolved integration
 
-The first increment guarantees only BC05 local invariants and whatever atomicity a single OutputSet repository adapter can provide for each operation. It does not establish whether a run/attempt/fencing token is current across PostgreSQL and MongoDB. A read-current-then-publish sequence is racy. Before durable cross-store integration, define a BC04-owned durable finalization reservation/grant or equivalent protocol for exact `(run, attempt, fence, OutputSet, manifest digest)`, including the reservation linearization point, cancellation ordering, grant expiry, competing finalization, coordinator restart, lost acknowledgment and published-before-run-complete recovery. No in-memory fence comparison is a distributed guarantee.
+Review amendment, 2026-11-25: the dedicated `feat/execution-coordination-durable` branch implements a draft reservation/grant protocol and adds a BC05 verifier requirement for Run-bound OutputSets. BC04 reservation in PostgreSQL is the authorization point; BC05 MongoDB publication is separate; the stores do not share a transaction. The initial policy keeps unresolved reservations authoritative indefinitely, prevents attempt replacement, lets cancellation win only before reservation, and requires BC04 to complete from the exact durable BC05 receipt. See [execution consistency protocol](../execution.md). This implementation is local/test scoped and does not change this ADR's Proposed status or establish production service authentication, revocation, HA, or exactly-once delivery.
 
 ## Consequences and risks
 

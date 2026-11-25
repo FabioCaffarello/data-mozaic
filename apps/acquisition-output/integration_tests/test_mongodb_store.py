@@ -18,8 +18,12 @@ from acquisition_output.adapters.mongodb.errors import MongoProvisioningDrift
 from acquisition_output.adapters.mongodb.provision import provision
 from acquisition_output.application import AcquisitionOutputApplication
 from acquisition_output.domain import (
+    ExecutionBinding as OutputExecutionBinding,
+)
+from acquisition_output.domain import (
     InvalidTransition,
     OutputConflict,
+    OutputError,
     OutputIdentity,
     OutputSetBinding,
     OutputSetSpec,
@@ -32,6 +36,7 @@ from acquisition_output.domain import (
     canonical_digest,
     output_intent_digest,
 )
+from acquisition_output.ports import PublicationAuthorization
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError, WriteError
 
@@ -363,6 +368,54 @@ class MongoOutputStoreIntegrationTests(unittest.TestCase):
         else:
             self.assertIsInstance(publish_result, InvalidTransition)
             self.assertNotIsInstance(abort_result, InvalidTransition)
+
+    def test_run_bound_set_requires_exact_verified_publication_authorization(self):
+        set_id = "run-set-" + uuid4().hex
+        run_id = str(uuid4())
+        attempt_id = str(uuid4())
+        binding = replace(
+            self.binding,
+            execution=OutputExecutionBinding(run_id, attempt_id, 3),
+        )
+        self.store.create(
+            OutputSetSpec(set_id, binding, (self.contract,), 1),
+            ScopedOperationIdentity(self.tenant, "create-" + set_id),
+        )
+        output = replace(
+            self._output(1),
+            output_set_id=set_id,
+            binding=binding,
+            operation=ScopedOperationIdentity(self.tenant, "stage-" + set_id),
+        )
+        self.store.stage(output, output_intent_digest(output), ())
+        sealed = self.store.seal(
+            self.tenant,
+            set_id,
+            ScopedOperationIdentity(self.tenant, "seal-" + set_id),
+        )
+        publish_operation = ScopedOperationIdentity(self.tenant, "publish-" + set_id)
+        with self.assertRaises(OutputError):
+            self.store.publish(
+                self.tenant, set_id, sealed.manifest_digest, publish_operation
+            )
+        wrong = PublicationAuthorization(
+            self.tenant,
+            run_id,
+            attempt_id,
+            2,
+            set_id,
+            sealed.manifest_digest,
+            "res-" + "a" * 64,
+            publish_operation.operation_id,
+        )
+        with self.assertRaises(OutputConflict):
+            self.store.publish(
+                self.tenant,
+                set_id,
+                sealed.manifest_digest,
+                publish_operation,
+                wrong,
+            )
 
     def test_lost_ack_after_commit_is_resolved_by_operation_replay(self):
         self.app.stage_output(self._output(1))

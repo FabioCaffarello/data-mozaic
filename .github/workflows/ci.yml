@@ -96,6 +96,8 @@ jobs:
         run: make artifact-custody-integration
       - name: Exercise real PostgreSQL/RustFS recovery and independent writers
         run: make artifact-custody-recovery-tests
+      - name: Exercise durable BC04 runs and BC04-to-BC05 finalization
+        run: make execution-coordination-finalization-tests
       - name: Verify BC06 PostgreSQL logical restore into an isolated schema
         run: make artifact-custody-backup-restore
       - name: Run one bounded BC06 reconciliation pass

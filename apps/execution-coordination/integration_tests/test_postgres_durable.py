@@ -1,0 +1,423 @@
+"""Real PostgreSQL tests for durable BC04 coordination invariants."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import threading
+import time
+import unittest
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+
+from execution_coordination.adapters.postgres_durable import (
+    PostgresDurableRunRepository,
+)
+from execution_coordination.adapters.publication_grant import (
+    Ed25519PublicationGrantSigner,
+)
+from execution_coordination.domain import CoordinationError, ExecutionBinding
+from execution_coordination.durable_application import (
+    DurableExecutionCoordinator,
+    FinalizationRecoveryState,
+)
+from execution_coordination.durable_domain import (
+    DurableRunIntent,
+    DurableRunState,
+    FailureDisposition,
+)
+
+
+def fixture_binding() -> ExecutionBinding:
+    digest = "a" * 64
+    return ExecutionBinding(
+        source_id="synthetic-fixture-source",
+        source_revision="fixture-v1",
+        bot_id="bot-" + digest,
+        build_id=digest,
+        bot_build_manifest_digest=digest,
+        assembly_id=digest,
+        catalog_digest=digest,
+        oci_image="registry.invalid/fixture@sha256:" + digest,
+        oci_digest="sha256:" + digest,
+        local_image_id="sha256:" + digest,
+        fixture_bundle_id="synthetic-fixture-bundle",
+        fixture_bundle_digest=digest,
+    )
+
+
+class PostgresDurableIntegrationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        dsn = os.environ.get("BC04_DATABASE_URL")
+        if not dsn:
+            raise RuntimeError("BC04_DATABASE_URL is required for integration tests")
+        cls.repository = PostgresDurableRunRepository(dsn)
+        cls.repository.get("integration-probe", str(uuid4()))
+
+    def create_run(self, *, max_attempts: int = 3):
+        run_id = str(uuid4())
+        intent = DurableRunIntent(
+            tenant_id="integration-tenant",
+            run_id=run_id,
+            request_id="request-" + uuid4().hex,
+            idempotency_key="create-" + uuid4().hex,
+            binding=fixture_binding(),
+            deadline=datetime.now(UTC) + timedelta(minutes=2),
+            max_attempts=max_attempts,
+        )
+        return intent, self.repository.create(intent)
+
+    def _reserve_fixture_finalization(self):
+        intent, _ = self.create_run()
+        lease = self.repository.claim(
+            intent.tenant_id,
+            intent.run_id,
+            "fixture-worker",
+            "lease-" + uuid4().hex,
+            "claim-" + uuid4().hex,
+            30,
+        )
+        signer = Ed25519PublicationGrantSigner(b"r" * 32, key_id="recovery-test-v1")
+        grant = signer.issue(
+            {
+                "tenant_id": intent.tenant_id,
+                "run_id": intent.run_id,
+                "attempt_id": lease.attempt_id,
+                "fencing_generation": lease.generation,
+                "output_set_id": "set-recovery-" + uuid4().hex,
+                "manifest_digest": "sha256:" + "9" * 64,
+                "reservation_id": "res-"
+                + hashlib.sha256(intent.run_id.encode()).hexdigest(),
+                "operation_id": "publish-recovery-" + uuid4().hex,
+                "issued_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        reservation = self.repository.reserve_finalization(lease, grant)
+        return intent, reservation
+
+    def test_bounded_reconciliation_keeps_unavailable_reservation_pending(self):
+        intent, reservation = self._reserve_fixture_finalization()
+
+        class UnavailablePublication:
+            def get_publication_receipt(self, _tenant, _set_id):
+                raise TimeoutError("synthetic BC05 timeout")
+
+            def publish_grant(self, _grant):
+                raise AssertionError("must not publish after receipt lookup timed out")
+
+        coordinator = DurableExecutionCoordinator(
+            self.repository, UnavailablePublication(), grant_signer=None
+        )
+        results = coordinator.reconcile(
+            limit=1,
+            timeout_seconds=1,
+            tenant_id=intent.tenant_id,
+            run_id=intent.run_id,
+        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].state, FinalizationRecoveryState.UNRESOLVED)
+        self.assertEqual(results[0].reason_code, "TimeoutError")
+        pending = self.repository.get(intent.tenant_id, intent.run_id)
+        self.assertEqual(pending.state, DurableRunState.FINALIZATION_PENDING)
+        self.assertEqual(pending.reservation, reservation)
+
+    def test_reconciliation_classifies_mismatched_receipt_without_resolving_reservation(
+        self,
+    ):
+        intent, reservation = self._reserve_fixture_finalization()
+        mismatched = {
+            "contract_version": "publication-receipt/v1",
+            "tenant_id": intent.tenant_id,
+            "operation_id": reservation.operation_id,
+            "output_set_id": reservation.output_set_id,
+            "manifest_digest": "sha256:" + "8" * 64,
+            "publication_id": "pub-mismatch",
+            "published_at": datetime.now(UTC).isoformat(),
+            "finalization_reservation_id": reservation.reservation_id,
+        }
+
+        class ConflictingPublication:
+            def get_publication_receipt(self, _tenant, _set_id):
+                return mismatched
+
+            def publish_grant(self, _grant):
+                raise AssertionError("must not replay after a mismatched receipt")
+
+        coordinator = DurableExecutionCoordinator(
+            self.repository, ConflictingPublication(), grant_signer=None
+        )
+        results = coordinator.reconcile(
+            limit=1,
+            timeout_seconds=1,
+            tenant_id=intent.tenant_id,
+            run_id=intent.run_id,
+        )
+        self.assertEqual(results[0].state, FinalizationRecoveryState.CONFLICT)
+        pending = self.repository.get(intent.tenant_id, intent.run_id)
+        self.assertEqual(pending.state, DurableRunState.FINALIZATION_PENDING)
+        self.assertIsNone(pending.publication_receipt)
+
+    def test_create_and_claim_replay_are_durable(self):
+        intent, first = self.create_run()
+        self.assertEqual(first.state, DurableRunState.ACCEPTED)
+        self.assertEqual(self.repository.create(intent), first)
+        operation_id = "claim-" + uuid4().hex
+        lease = self.repository.claim(
+            intent.tenant_id,
+            intent.run_id,
+            "fixture-worker",
+            "secret-lease-token",
+            operation_id,
+            30,
+        )
+        replay = self.repository.claim(
+            intent.tenant_id,
+            intent.run_id,
+            "fixture-worker",
+            "different-generated-token",
+            operation_id,
+            30,
+        )
+        self.assertEqual(lease.generation, 1)
+        self.assertEqual(replay, lease)
+        self.assertEqual(
+            self.repository.get(intent.tenant_id, intent.run_id).attempt_id,
+            lease.attempt_id,
+        )
+
+    def test_create_idempotency_rejects_changed_intent(self):
+        intent, _ = self.create_run()
+        changed = DurableRunIntent(
+            tenant_id=intent.tenant_id,
+            run_id=str(uuid4()),
+            request_id=intent.request_id,
+            idempotency_key=intent.idempotency_key,
+            binding=intent.binding,
+            deadline=intent.deadline,
+            max_attempts=intent.max_attempts,
+        )
+        with self.assertRaises(CoordinationError):
+            self.repository.create(changed)
+
+    def test_independent_clients_serialize_attempt_acquisition(self):
+        intent, _ = self.create_run()
+        barrier = threading.Barrier(2)
+
+        def claim(worker: str):
+            repo = PostgresDurableRunRepository(os.environ["BC04_DATABASE_URL"])
+            barrier.wait(timeout=5)
+            try:
+                return repo.claim(
+                    intent.tenant_id,
+                    intent.run_id,
+                    worker,
+                    "token-" + intent.run_id + worker,
+                    "op-" + intent.run_id + worker,
+                    30,
+                )
+            except CoordinationError as error:
+                return ("error", str(error))
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(claim, ("worker-a", "worker-b")))
+        self.assertEqual(
+            sum(
+                not (isinstance(value, tuple) and value[0] == "error")
+                for value in outcomes
+            ),
+            1,
+            [
+                value[1] if isinstance(value, tuple) else type(value).__name__
+                for value in outcomes
+            ],
+        )
+        snapshot = self.repository.get(intent.tenant_id, intent.run_id)
+        self.assertEqual(snapshot.generation, 1)
+        self.assertEqual(snapshot.attempt_count, 1)
+
+    def test_expired_lease_gets_new_monotonic_generation(self):
+        intent, _ = self.create_run()
+        first = self.repository.claim(
+            intent.tenant_id,
+            intent.run_id,
+            "fixture-worker",
+            "token-1",
+            "claim-1-" + uuid4().hex,
+            1,
+        )
+        time.sleep(1.1)
+        second = self.repository.claim(
+            intent.tenant_id,
+            intent.run_id,
+            "fixture-worker",
+            "token-2",
+            "claim-2-" + uuid4().hex,
+            30,
+        )
+        self.assertEqual(second.generation, first.generation + 1)
+        with self.assertRaises(CoordinationError):
+            self.repository.fail_attempt(
+                first,
+                FailureDisposition.PERMANENT,
+                "STALE_WORKER",
+                "stale-" + uuid4().hex,
+            )
+
+    def test_reserved_finalization_survives_cancellation_and_receipt_replay(self):
+        intent, _ = self.create_run()
+        lease = self.repository.claim(
+            intent.tenant_id,
+            intent.run_id,
+            "fixture-worker",
+            "token-finalize",
+            "claim-finalize-" + uuid4().hex,
+            30,
+        )
+        operation_id = "publish-" + uuid4().hex
+        digest = "sha256:" + "b" * 64
+        signer = Ed25519PublicationGrantSigner(b"x" * 32, key_id="integration-key")
+        grant = signer.issue(
+            {
+                "tenant_id": intent.tenant_id,
+                "run_id": intent.run_id,
+                "attempt_id": lease.attempt_id,
+                "fencing_generation": lease.generation,
+                "output_set_id": "set-" + uuid4().hex,
+                "manifest_digest": digest,
+                "reservation_id": "res-"
+                + hashlib.sha256(intent.run_id.encode()).hexdigest(),
+                "operation_id": operation_id,
+                "issued_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        reservation = self.repository.reserve_finalization(lease, grant)
+        replayed_reservation = self.repository.reserve_finalization(lease, grant)
+        self.assertEqual(replayed_reservation, reservation)
+        changed_intent = signer.issue(
+            {
+                "tenant_id": intent.tenant_id,
+                "run_id": intent.run_id,
+                "attempt_id": lease.attempt_id,
+                "fencing_generation": lease.generation,
+                "output_set_id": reservation.output_set_id,
+                "manifest_digest": "sha256:" + "c" * 64,
+                "reservation_id": reservation.reservation_id,
+                "operation_id": operation_id,
+                "issued_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        with self.assertRaises(CoordinationError):
+            self.repository.reserve_finalization(lease, changed_intent)
+        self.repository.cancel(intent.tenant_id, intent.run_id, "cancel-" + uuid4().hex)
+        receipt = {
+            "contract_version": "publication-receipt/v1",
+            "tenant_id": intent.tenant_id,
+            "operation_id": operation_id,
+            "output_set_id": reservation.output_set_id,
+            "manifest_digest": digest,
+            "publication_id": "pub-" + uuid4().hex,
+            "published_at": datetime.now(UTC).isoformat(),
+            "finalization_reservation_id": reservation.reservation_id,
+        }
+        completed = self.repository.complete_finalization(
+            intent.tenant_id,
+            intent.run_id,
+            reservation.reservation_id,
+            receipt,
+            "complete-" + uuid4().hex,
+        )
+        self.assertEqual(completed.state, DurableRunState.SUCCEEDED)
+        self.assertIsNotNone(completed.cancel_requested_at)
+        self.assertEqual(completed.publication_receipt, receipt)
+
+    def test_cancel_before_reservation_prevents_publication_authorization(self):
+        intent, _ = self.create_run()
+        lease = self.repository.claim(
+            intent.tenant_id,
+            intent.run_id,
+            "fixture-worker",
+            "token-cancel-first",
+            "claim-cancel-first-" + uuid4().hex,
+            30,
+        )
+        self.repository.cancel(
+            intent.tenant_id, intent.run_id, "cancel-first-" + uuid4().hex
+        )
+        signer = Ed25519PublicationGrantSigner(b"y" * 32, key_id="integration-key")
+        grant = signer.issue(
+            {
+                "tenant_id": intent.tenant_id,
+                "run_id": intent.run_id,
+                "attempt_id": lease.attempt_id,
+                "fencing_generation": lease.generation,
+                "output_set_id": "set-" + uuid4().hex,
+                "manifest_digest": "sha256:" + "d" * 64,
+                "reservation_id": "res-"
+                + hashlib.sha256(intent.run_id.encode()).hexdigest(),
+                "operation_id": "publish-" + uuid4().hex,
+                "issued_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        with self.assertRaises(CoordinationError):
+            self.repository.reserve_finalization(lease, grant)
+
+    def test_cancel_racing_reservation_has_one_serialized_policy_winner(self):
+        intent, _ = self.create_run()
+        lease = self.repository.claim(
+            intent.tenant_id,
+            intent.run_id,
+            "fixture-worker",
+            "token-race-" + intent.run_id,
+            "claim-race-" + intent.run_id,
+            30,
+        )
+        signer = Ed25519PublicationGrantSigner(b"z" * 32, key_id="integration-key")
+        grant = signer.issue(
+            {
+                "tenant_id": intent.tenant_id,
+                "run_id": intent.run_id,
+                "attempt_id": lease.attempt_id,
+                "fencing_generation": lease.generation,
+                "output_set_id": "set-race-" + intent.run_id,
+                "manifest_digest": "sha256:" + "f" * 64,
+                "reservation_id": "res-"
+                + hashlib.sha256(intent.run_id.encode()).hexdigest(),
+                "operation_id": "publish-race-" + intent.run_id,
+                "issued_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        barrier = threading.Barrier(2)
+
+        def cancel():
+            repo = PostgresDurableRunRepository(os.environ["BC04_DATABASE_URL"])
+            barrier.wait(timeout=5)
+            return repo.cancel(
+                intent.tenant_id, intent.run_id, "cancel-race-" + intent.run_id
+            )
+
+        def reserve():
+            repo = PostgresDurableRunRepository(os.environ["BC04_DATABASE_URL"])
+            barrier.wait(timeout=5)
+            try:
+                return repo.reserve_finalization(lease, grant)
+            except CoordinationError as error:
+                return ("rejected", str(error))
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            cancel_future = pool.submit(cancel)
+            reserve_future = pool.submit(reserve)
+            cancel_future.result(timeout=10)
+            reserve_future.result(timeout=10)
+        final = self.repository.get(intent.tenant_id, intent.run_id)
+        if final.reservation is None:
+            self.assertEqual(final.state, DurableRunState.CANCELLED)
+        else:
+            self.assertEqual(final.state, DurableRunState.FINALIZATION_PENDING)
+            self.assertEqual(final.reservation.reservation_id, grant.reservation_id)
+            self.assertIsNotNone(final.cancel_requested_at)
+
+
+if __name__ == "__main__":
+    unittest.main()

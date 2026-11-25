@@ -15,6 +15,10 @@ SOURCE_ROOTS = (
         ROOT / "apps/workers/scrapy-collector/src/scrapy_collector",
         "scrapy_collector",
     ),
+    (
+        ROOT / "apps/execution-coordination/src/execution_coordination",
+        "execution_coordination",
+    ),
     (ROOT / "apps/acquisition-output/src/acquisition_output", "acquisition_output"),
     (
         ROOT / "libs/python/bot-build/src/mozaic_bot_build",
@@ -72,6 +76,28 @@ ALLOWED = {
     "collector_engineering": {"mozaic_bot_build"},
     "mozaic_bot_build": set(),
     "scrapy_collector": {"mozaic_bot_build"},
+    "execution_coordination": {"execution_coordination.domain"},
+    "execution_coordination.domain": set(),
+    "execution_coordination.ports": {"execution_coordination.domain"},
+    "execution_coordination.application": {
+        "execution_coordination.domain",
+        "execution_coordination.ports",
+    },
+    "execution_coordination.durable_domain": {"execution_coordination.domain"},
+    "execution_coordination.durable_ports": {
+        "execution_coordination.durable_domain",
+    },
+    "execution_coordination.durable_application": {
+        "execution_coordination.domain",
+        "execution_coordination.durable_domain",
+        "execution_coordination.durable_ports",
+    },
+    "execution_coordination.adapters": {
+        "execution_coordination.domain",
+        "execution_coordination.ports",
+        "execution_coordination.durable_domain",
+        "execution_coordination.durable_ports",
+    },
     "acquisition_output": set(),
     "acquisition_output.domain": set(),
     "acquisition_output.ports": {"acquisition_output.domain"},
@@ -89,6 +115,9 @@ ALLOWED = {
         "acquisition_output.domain",
         "acquisition_output.adapters",
     },
+    "acquisition_output.adapters.publication_grant": {
+        "acquisition_output.domain",
+    },
     "acquisition_output.adapters.mongodb": {
         "acquisition_output.domain",
         "acquisition_output.ports",
@@ -102,7 +131,14 @@ ALLOWED = {
         "acquisition_output.domain",
         "acquisition_output.adapters.mongodb",
         "acquisition_output.adapters.http_custody",
+        "acquisition_output.adapters.publication_grant",
         "acquisition_output.wire",
+        "execution_coordination.adapters",
+        "execution_coordination.application",
+        "execution_coordination.domain",
+        "execution_coordination.durable_application",
+        "execution_coordination.durable_domain",
+        "execution_coordination",
         "collector_engineering",
         "mozaic_bot_build",
         "scrapy_collector",
@@ -114,6 +150,7 @@ INTERNAL_ROOTS = (
     "mozaic_bot_build",
     "scrapy_collector",
     "acquisition_output",
+    "execution_coordination",
     "collector_engineering",
     "tooling",
 )

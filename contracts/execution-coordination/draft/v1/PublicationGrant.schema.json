@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.invalid/contracts/execution-coordination/draft/v1/PublicationGrant.schema.json",
+  "title": "BC04 PublicationGrant draft v1",
+  "description": "A narrow BC04-issued authorization to publish one exact sealed BC05 OutputSet. The unresolved PostgreSQL reservation, not a short clock expiry, owns grant validity.",
+  "type": "object",
+  "additionalProperties": false,
+    "required": ["contract_version", "issuer", "recipient", "algorithm", "key_id", "tenant_id", "run_id", "attempt_id", "fencing_generation", "output_set_id", "manifest_digest", "reservation_id", "operation_id", "issued_at", "signature"],
+  "properties": {
+    "contract_version": {"const": "publication-grant/v1"},
+    "issuer": {"const": "urn:data-mozaic:bc04:execution-coordination"},
+    "recipient": {"const": "urn:data-mozaic:bc05:acquisition-output"},
+    "algorithm": {"const": "Ed25519"},
+    "key_id": {"type": "string", "minLength": 1, "maxLength": 64},
+    "tenant_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "run_id": {"type": "string", "format": "uuid"},
+    "attempt_id": {"type": "string", "format": "uuid"},
+    "fencing_generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "output_set_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "manifest_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "reservation_id": {"type": "string", "pattern": "^res-[0-9a-f]{64}$"},
+    "operation_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "issued_at": {"type": "string", "format": "date-time"},
+    "signature": {"type": "string", "pattern": "^ed25519:[A-Za-z0-9_-]{86}$"}
+  }
+}

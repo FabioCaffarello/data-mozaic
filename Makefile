@@ -1,8 +1,9 @@
-.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests acquisition-output-tests acquisition-output-fixture-example acquisition-output-mongo-setup acquisition-output-mongo-check-config acquisition-output-mongo-up acquisition-output-mongo-status acquisition-output-mongo-connectivity acquisition-output-mongo-provision acquisition-output-mongo-tests acquisition-output-mongo-example acquisition-output-mongo-backup-restore acquisition-output-mongo-benchmark acquisition-output-mongo-benchmark-100k acquisition-output-mongo-down artifact-custody-setup artifact-custody-go-format-check artifact-custody-go-vet artifact-custody-go-test artifact-custody-go-race artifact-custody-go-build artifact-custody-go-vuln artifact-custody-up artifact-custody-status artifact-custody-down artifact-custody-integration artifact-custody-db-bootstrap artifact-custody-object-provision artifact-custody-reconcile artifact-custody-recovery-tests artifact-custody-benchmark artifact-custody-backup-restore scrapy-collector-multibot-conformance execution-coordination-protected-e2e test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
+.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector execution-coordination-tests execution-coordination-durable-setup execution-coordination-durable-migrate execution-coordination-durable-tests execution-coordination-finalization-tests execution-coordination-example execution-coordination-reconcile acquisition-output-tests acquisition-output-fixture-example acquisition-output-mongo-setup acquisition-output-mongo-check-config acquisition-output-mongo-up acquisition-output-mongo-status acquisition-output-mongo-connectivity acquisition-output-mongo-provision acquisition-output-mongo-tests acquisition-output-mongo-example acquisition-output-mongo-backup-restore acquisition-output-mongo-benchmark acquisition-output-mongo-benchmark-100k acquisition-output-mongo-down artifact-custody-setup artifact-custody-go-format-check artifact-custody-go-vet artifact-custody-go-test artifact-custody-go-race artifact-custody-go-build artifact-custody-go-vuln artifact-custody-up artifact-custody-status artifact-custody-down artifact-custody-integration artifact-custody-db-bootstrap artifact-custody-object-provision artifact-custody-reconcile artifact-custody-recovery-tests artifact-custody-benchmark artifact-custody-backup-restore scrapy-collector-multibot-conformance execution-coordination-protected-e2e test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
 
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 MONGO_COMPOSE_FILE := deployments/compose/mongodb.compose.yaml
 BC06_COMPOSE_FILE := deployments/compose/artifact-custody.compose.yaml
+BC06_ENV_FILE ?= .env.artifact-custody
 MONGO_ENV_FILE := $(if $(wildcard .env.mongodb),.env.mongodb,$(if $(wildcard ../data-mozaic-mongodb/.env.mongodb),../data-mozaic-mongodb/.env.mongodb,.env.mongodb))
 GO ?= go
 GO_TOOLCHAIN := GOTOOLCHAIN=go1.27.4
@@ -47,6 +48,26 @@ test-scrapy-collector:
 
 execution-coordination-tests:
 	uv run --locked --package mozaic-execution-coordination python -m unittest discover -s apps/execution-coordination/tests -v
+
+execution-coordination-durable-setup:
+	@set -a; if [ -f .env ]; then . ./.env; fi; set +a; uv run --locked --package mozaic-execution-coordination python tooling/execution_coordination_local_setup.py
+
+execution-coordination-durable-migrate: execution-coordination-durable-setup
+	@set -a; . ./.env.execution-coordination; set +a; uv run --locked --package mozaic-execution-coordination python tooling/execution_coordination_migrate.py
+
+execution-coordination-durable-tests: execution-coordination-durable-migrate
+	@set -a; . ./.env.execution-coordination; set +a; uv run --locked --package mozaic-execution-coordination python -m unittest discover -s apps/execution-coordination/integration_tests -v
+
+execution-coordination-finalization-tests: execution-coordination-durable-tests
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@test -f $(BC06_ENV_FILE) || { echo 'Use the preserved BC06 local environment and make artifact-custody-up from its worktree first.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/execution_coordination_finalization_integration.py
+
+execution-coordination-example: execution-coordination-finalization-tests
+
+execution-coordination-reconcile: execution-coordination-durable-migrate
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); set +a; BC04_LOCAL_FIXTURE_PROFILE=1 uv run --locked --all-packages python tooling/execution_coordination_reconcile.py
 
 acquisition-output-tests:
 	uv run --locked --package mozaic-acquisition-output python -m unittest discover -s apps/acquisition-output/tests -v

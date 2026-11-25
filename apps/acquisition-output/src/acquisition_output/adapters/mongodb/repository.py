@@ -29,6 +29,7 @@ from acquisition_output.domain import (
     OutputSetSnapshot,
     OutputSetSpec,
     OutputSetState,
+    PublicationAuthorization,
     PublicationReceipt,
     ScopedOperationIdentity,
     canonical_digest,
@@ -567,14 +568,28 @@ class MongoOutputStore(
         output_set_id: str,
         manifest_digest: str,
         operation: ScopedOperationIdentity,
+        authorization: PublicationAuthorization | None = None,
     ) -> PublicationReceipt:
         self._require_tenant(tenant_id, operation)
+        auth_fields = None
+        if authorization is not None:
+            auth_fields = {
+                "tenant_id": authorization.tenant_id,
+                "run_id": authorization.run_id,
+                "attempt_id": authorization.attempt_id,
+                "fencing_generation": authorization.fencing_generation,
+                "output_set_id": authorization.output_set_id,
+                "manifest_digest": authorization.manifest_digest,
+                "reservation_id": authorization.reservation_id,
+                "operation_id": authorization.operation_id,
+            }
         intent = canonical_digest(
             {
                 "command": "publish",
                 "tenant_id": tenant_id,
                 "output_set_id": output_set_id,
                 "manifest_digest": manifest_digest,
+                "authorization": auth_fields,
             }
         )
         key = {"tenant_id": tenant_id, "output_set_id": output_set_id}
@@ -589,6 +604,7 @@ class MongoOutputStore(
             manifest_digest,
             publication_id,
             published_at,
+            authorization.reservation_id if authorization else None,
         )
 
         def transaction(session: Any) -> PublicationReceipt:
@@ -603,6 +619,28 @@ class MongoOutputStore(
             if raw is None:
                 raise OutputError("OutputSet does not exist")
             root = mapper.root_from_document(raw)
+            execution = root.binding.execution
+            if execution.run_id is not None:
+                if authorization is None or auth_fields is None:
+                    raise OutputError(
+                        "run-bound OutputSet requires a verified publication grant"
+                    )
+                if (
+                    authorization.tenant_id != tenant_id
+                    or authorization.run_id != execution.run_id
+                    or authorization.attempt_id != execution.attempt_id
+                    or authorization.fencing_generation != execution.fencing_token
+                    or authorization.output_set_id != output_set_id
+                    or authorization.manifest_digest != manifest_digest
+                    or authorization.operation_id != operation.operation_id
+                ):
+                    raise OutputConflict(
+                        "publication grant does not match OutputSet binding"
+                    )
+            elif authorization is not None:
+                raise OutputConflict(
+                    "unbound OutputSet cannot consume a publication grant"
+                )
             if root.state == OutputSetState.PUBLISHED:
                 if root.manifest_digest != manifest_digest:
                     raise OutputConflict("published OutputSet manifest cannot change")
@@ -610,6 +648,19 @@ class MongoOutputStore(
                 if stored is None:
                     raise OutputConflict("published OutputSet is missing its receipt")
                 existing_receipt = mapper.publication_receipt_from_document(stored)
+                if existing_receipt.finalization_reservation_id != (
+                    authorization.reservation_id if authorization else None
+                ):
+                    raise OutputConflict(
+                        "published OutputSet has a different authorization"
+                    )
+                if (
+                    authorization is not None
+                    and existing_receipt.operation_id != authorization.operation_id
+                ):
+                    raise OutputConflict(
+                        "published OutputSet has a different grant operation"
+                    )
                 self._remember(
                     operation,
                     intent,
