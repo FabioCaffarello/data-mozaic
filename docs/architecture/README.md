@@ -58,5 +58,6 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 49. [Authorized live acquisition — implementation assessment](assessments/authorized-live-acquisition-2026-11-25.md)
 50. [BCB Focus proposed reference case](../../examples/use-cases/bcb-focus/README.md)
 51. [Acquisition Gateway controlled foundation](../../apps/acquisition-gateway/README.md)
+52. [Acquisition platform maturity assessment — 2026-11-25](assessments/acquisition-platform-maturity-assessment-2026-11-25.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.
