@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/controlled-input/limit/v1",
+  "title": "Controlled input parameter set",
+  "description": "Input Contract for controlled M5 acquisitions; limits the requested result count to the local fixture source's approved values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["limit"],
+  "properties": {
+    "limit": {"type": "integer", "minimum": 1, "maximum": 3}
+  }
+}

@@ -50,7 +50,7 @@ def make_build(
             name: hashlib.sha256(data).hexdigest() for name, data in generated.items()
         },
     }
-    if manifest_version == "bot-build-manifest/v2":
+    if manifest_version in {"bot-build-manifest/v2", "bot-build-manifest/v3"}:
         core.update(
             {
                 "playbook_id": "fixture-playbook",
@@ -103,6 +103,11 @@ def make_build(
                 "method": "GET",
                 "url": "https://api.example.test/v1/items",
             }
+            if manifest_version == "bot-build-manifest/v3":
+                core["live_request"]["input_query"] = {
+                    "parameter": "limit",
+                    "query_name": "limit",
+                }
     manifest = {**core, "build_id": hashlib.sha256(canonical_json(core)).hexdigest()}
     manifest_path = root / "manifest.json"
     manifest_path.write_bytes(
@@ -137,6 +142,40 @@ class BotBuildVerificationTests(unittest.TestCase):
                 "live-authorized", verified.manifest["compatibility"]["execution_mode"]
             )
             self.assertEqual([], verified.manifest["input_fixtures"])
+
+    def test_accepts_v3_with_a_bound_live_query(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "build"
+            root.mkdir()
+            digest = make_build(
+                root,
+                manifest_version="bot-build-manifest/v3",
+                execution_mode="live-authorized",
+            )
+            verified = verify_bot_build(root, digest)
+            self.assertEqual(
+                "bot-build-manifest/v3", verified.manifest["manifest_version"]
+            )
+
+    def test_rejects_malformed_v3_parameter_binding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "build"
+            root.mkdir()
+            make_build(
+                root,
+                manifest_version="bot-build-manifest/v3",
+                execution_mode="live-authorized",
+            )
+            manifest_path = root / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["live_request"]["input_query"]["unexpected"] = "value"
+            core = {key: value for key, value in manifest.items() if key != "build_id"}
+            manifest["build_id"] = hashlib.sha256(canonical_json(core)).hexdigest()
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n")
+            with self.assertRaisesRegex(BotBuildVerificationError, "v3 live input"):
+                verify_bot_build(
+                    root, hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+                )
 
     def test_rejects_live_manifest_that_contains_fixture_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:

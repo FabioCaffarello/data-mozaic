@@ -76,6 +76,42 @@ class ExecutionCapabilityTests(unittest.TestCase):
         self.assertEqual(verified["generation"], 3)
         self.assertNotIn("lease_token", capability)
 
+    def test_work_intake_parameter_digest_is_bound_and_schema_valid(self):
+        digest = "sha256:" + "e" * 64
+        capability = self._issue(input_parameters_digest=digest)
+        schema_path = (
+            Path(__file__).parents[3]
+            / "contracts/execution-capability/draft/v1/ExecutionCapability.schema.json"
+        )
+        Draft202012Validator(
+            json.loads(schema_path.read_text()), format_checker=FormatChecker()
+        ).validate(capability)
+        verified = verify_execution_capability(
+            capability,
+            trusted_public_keys={"bc04-live-1": self.public_key},
+            expected_audience="acquisition-gateway/local-test",
+            now=self.now + timedelta(seconds=1),
+        )
+        self.assertEqual(verified["input_parameters_digest"], digest)
+
+    def test_work_intake_initial_target_is_bound_and_schema_valid(self):
+        digest = "sha256:" + "f" * 64
+        capability = self._issue(expected_initial_target_digest=digest)
+        schema_path = (
+            Path(__file__).parents[3]
+            / "contracts/execution-capability/draft/v1/ExecutionCapability.schema.json"
+        )
+        Draft202012Validator(
+            json.loads(schema_path.read_text()), format_checker=FormatChecker()
+        ).validate(capability)
+        verified = verify_execution_capability(
+            capability,
+            trusted_public_keys={"bc04-live-1": self.public_key},
+            expected_audience="acquisition-gateway/local-test",
+            now=self.now + timedelta(seconds=1),
+        )
+        self.assertEqual(verified["expected_initial_target_digest"], digest)
+
     def test_expiry_is_capped_by_lease_and_hard_deadline(self):
         capability = self._issue(execution_deadline=self.now + timedelta(seconds=40))
         self.assertEqual(

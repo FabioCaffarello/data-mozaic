@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mozaic-work-intake"
+version = "0.1.0"
+description = "BC13 logical acquisition input and durable submission intent"
+requires-python = ">=3.12"
+dependencies = [
+    "mozaic-acquisition-lifecycle==0.1.0",
+    "mozaic-contract-resolution==0.1.0",
+    "mozaic-execution-coordination==0.1.0",
+    "psycopg[binary]>=3.2,<4",
+    "rfc8785>=0.1.4,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/work_intake"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/work_intake/**", "pyproject.toml"]

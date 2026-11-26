@@ -24,6 +24,13 @@ _ACTIVE_APP: AcquisitionLifecycle | None = None
 _ACTIVE_RELEASE_ID: str | None = None
 
 
+def active_lifecycle() -> AcquisitionLifecycle:
+    """Return the lifecycle application installed by the current acceptance."""
+    if _ACTIVE_APP is None:
+        raise RuntimeError("controlled lifecycle acceptance is not configured")
+    return _ACTIVE_APP
+
+
 class ControlledTestApproval:
     """Approval authority whose identity and scope are limited to this harness."""
 
@@ -47,6 +54,7 @@ def publish_controlled_release(
     build_directory: Path,
     playbook_path: Path,
     runtime_digest: str,
+    input_contract: ContractReference | None = None,
     release_id: str,
     expected_generation: int,
     authority_id: str,
@@ -96,7 +104,7 @@ def publish_controlled_release(
             "origins": ["https://api.fixture.test"],
             "methods": ["GET"],
             "path_prefixes": list(source_path_prefixes),
-            "query_parameter_values": {},
+            "query_parameter_values": dict(policy.get("query_parameter_values", {})),
         },
         "configuration_version": "1.0.0",
         "configuration_digest": "",
@@ -132,6 +140,7 @@ def publish_controlled_release(
         build_id=registered_build["build_id"],
         runtime_image_digest=registered_build["runtime_image_digest"],
         contract=payload_contract,
+        input_contract=input_contract,
         playbook_digest=playbook_digest,
         actor_id="controlled-test-operator",
     )
@@ -150,7 +159,10 @@ def revoke_and_verify_admission_denial() -> dict[str, Any]:
         raise RuntimeError("controlled lifecycle state was not initialized")
     app = _ACTIVE_APP
     release_id = _ACTIVE_RELEASE_ID
-    previous = app.resolve_eligible_release(release_id)["approved_release"]
+    before = app.inspect_release(release_id)
+    previous = before.get("approved_release")
+    if not isinstance(previous, dict):
+        raise TypeError("controlled release history has no approved document")
     app.revoke_release(release_id, actor_id="controlled-test-operator")
     envelope, authority = app.publish_authority_snapshot()
     historical = app.inspect_release(release_id)

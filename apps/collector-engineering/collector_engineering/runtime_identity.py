@@ -10,9 +10,9 @@ from .playbook_v2 import canonical_json
 from .syntax import PlaybookError
 
 RUNTIME_PACKAGE = "mozaic_bot_runtime"
-RUNTIME_PACKAGE_VERSION = "collector-runtime/1.1.0"
+RUNTIME_PACKAGE_VERSION = "collector-runtime/1.2.0"
 SUPPORTED_RUNTIME_PACKAGE_VERSIONS = frozenset(
-    {"collector-runtime/1.0.0", RUNTIME_PACKAGE_VERSION}
+    {"collector-runtime/1.0.0", "collector-runtime/1.1.0", RUNTIME_PACKAGE_VERSION}
 )
 SCRAPY_RUNTIME_MODULES = (
     "reference_runtime.py",

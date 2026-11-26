@@ -1,6 +1,6 @@
 # Roadmap pós-S1
 
-> **Estado atualizado em 2026-11-26:** PR #21 integrou a fundação live autorizada; PR #22 integrou a avaliação de maturidade; PR #23 integrou o runtime Scrapy versionado; PR #24 integrou a Trusted Acquisition Application; PR #25 integrou a resolução imutável BC08. O lifecycle Source/Release está em revisão local no branch `feat/source-release-lifecycle`, ainda sem commit ou PR. Consulte a [avaliação de maturidade](../architecture/assessments/acquisition-platform-maturity-assessment-2026-11-25.md), [aplicação de aquisição](../../apps/acquisition-application/README.md), [aplicação de lifecycle](../../apps/acquisition-lifecycle/README.md), [ADR 029 Proposed](../architecture/decisions/029-source-release-lifecycle-management.md) e [evidência M4](../architecture/assessments/source-release-lifecycle-2026-11-25.md). Nenhuma fonte externa foi implementada ou explorada.
+> **Estado atualizado em 2026-11-26:** PRs #21–#26 integraram aquisição live autorizada, avaliação de maturidade, runtime Scrapy, Trusted Acquisition Application, resolução imutável BC08 e lifecycle Source/Release. M5 estabelece Work Intake durável e aquisição parametrizada; seu estado de revisão e integração é registrado pela [assessment M5](../architecture/assessments/work-intake-2026-11-26.md). Consulte também a [avaliação de maturidade](../architecture/assessments/acquisition-platform-maturity-assessment-2026-11-25.md), [aplicação de aquisição](../../apps/acquisition-application/README.md), [aplicação de lifecycle](../../apps/acquisition-lifecycle/README.md), [ADR 029 Proposed](../architecture/decisions/029-source-release-lifecycle-management.md) e [evidência M4](../architecture/assessments/source-release-lifecycle-2026-11-25.md). Nenhuma fonte externa foi implementada ou explorada.
 
 ## Estado atual
 
@@ -115,4 +115,8 @@ O gate local executou integração PostgreSQL e um fluxo sintético PostgreSQL/M
 
 PR #24 integrou o Trusted Acquisition Application; veja [M2 implementation assessment](../architecture/assessments/trusted-acquisition-application-2026-11-25.md). M3 está em implementação local na branch `feat/immutable-contract-resolution`: BC08 instala e resolve revisões imutáveis de payload; BotRelease v2 vincula o ref; BC04 persiste a binding. O incremento permanece não publicado até revisão humana; veja [M3 assessment](../architecture/assessments/immutable-contract-resolution-2026-11-25.md) e [ADR 028 Proposed](../architecture/decisions/028-immutable-payload-contract-resolution.md).
 
-M3 não conclui a aprovação operacional de fontes/releases. Não iniciar M4 antes da revisão e integração deste incremento. Nenhuma fonte externa faz parte desta sequência.
+M3 não concluiu sozinho a aprovação operacional de fontes/releases. PR #25 integrou a resolução imutável de contratos; PR #26 integrou o lifecycle de Source e Release. ADRs 028 e 029 permanecem Proposed até aprovação humana. Nenhuma fonte externa fez parte desses incrementos.
+
+## M5 — Work Intake e aquisição parametrizada
+
+M5 inclui composição reutilizável de BC13 com os adapters existentes de BC04 e M4, migração PostgreSQL owner-scoped, submissões idempotentes, claims recuperáveis e binding v3 de um parâmetro query escalar. A aceitação controlada executa três Inputs distintos com o mesmo BotBuild e BotRelease por worker, gateway, BC06 e BC05, além de exercitar reconciliação de ACK perdido e falha pós-admission sem publicação. ADR 030 permanece Proposed. A matriz W1–W18, limites e evidência executada estão no [assessment M5](../architecture/assessments/work-intake-2026-11-26.md).

@@ -38,6 +38,7 @@ _POLICY_SCHEMA = (
     _ROOT / "contracts/acquisition-policy/draft/v1/AcquisitionPolicy.schema.json"
 )
 _RELEASE_SCHEMA = _ROOT / "contracts/bot-release/draft/v2/BotRelease.schema.json"
+_RELEASE_SCHEMA_V3 = _ROOT / "contracts/bot-release/draft/v3/BotRelease.schema.json"
 _RELEASE_ID = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 
 
@@ -226,6 +227,7 @@ class AcquisitionLifecycle:
         build_id: str,
         runtime_image_digest: str,
         contract: ContractReference,
+        input_contract: ContractReference | None = None,
         playbook_digest: str,
         actor_id: str,
     ) -> dict[str, Any]:
@@ -276,6 +278,13 @@ class AcquisitionLifecycle:
             self._contracts.resolve(contract)
         except Exception as error:
             raise LifecycleError("payload contract is not exactly installed") from error
+        if input_contract is not None:
+            try:
+                self._contracts.resolve(input_contract)
+            except Exception as error:
+                raise LifecycleError(
+                    "input contract is not exactly installed"
+                ) from error
         candidate = {
             "contract_version": "bot-release-candidate/v1",
             "release_id": release_id,
@@ -305,6 +314,30 @@ class AcquisitionLifecycle:
                 "digest": contract.digest,
             },
         }
+        if input_contract is not None:
+            live_request = manifest.get("live_request")
+            input_query = (
+                live_request.get("input_query")
+                if isinstance(live_request, dict)
+                else None
+            )
+            if not isinstance(input_query, dict) or set(input_query) != {
+                "parameter",
+                "query_name",
+            }:
+                raise LifecycleError(
+                    "BotRelease input contract requires a parameterized BotBuild"
+                )
+            candidate["input_contract"] = {
+                "contract_id": input_contract.contract_id,
+                "version": input_contract.version,
+                "digest": input_contract.digest,
+            }
+            candidate["input_request"] = {
+                "method": "GET",
+                "url": live_request["url"],
+                "input_query": input_query,
+            }
         approved = self._release_document(
             candidate, status="approved", actor_id=actor_id
         )
@@ -409,6 +442,26 @@ class AcquisitionLifecycle:
             raise LifecycleError(
                 "BotRelease payload contract is unavailable"
             ) from error
+        if document.get("contract_version") == "bot-release/v3":
+            input_contract = document.get("input_contract")
+            try:
+                if not isinstance(input_contract, dict):
+                    raise TypeError("input contract missing")
+                input_request = document.get("input_request")
+                expected_request = verified["manifest"].get("live_request")
+                if input_request != expected_request:
+                    raise TypeError("input request differs from verified build")
+                self._contracts.resolve(
+                    ContractReference(
+                        input_contract["contract_id"],
+                        input_contract["version"],
+                        input_contract["digest"],
+                    )
+                )
+            except Exception as error:
+                raise LifecycleError(
+                    "BotRelease input contract is unavailable"
+                ) from error
         return resolved
 
     def inspect_release(self, release_id: str) -> dict[str, Any]:
@@ -555,41 +608,49 @@ class AcquisitionLifecycle:
         policy = candidate["policy"]
         build = candidate["build"]
         payload = candidate["payload_contract"]
-        return _with_digest(
-            {
-                "contract_version": "bot-release/v2",
-                "release_id": candidate["release_id"],
-                "status": status,
-                "bot_id": candidate["bot_id"],
-                "build_id": build["build_id"],
-                "build_manifest_digest": build["manifest_digest"],
-                "backend_id": "scrapy-live-http",
-                "backend_version": "1.0.0",
-                "runtime_profile_id": "scrapy-live-http-v1",
-                "runtime_image_digest": build["runtime_image_digest"],
-                "source_id": source["source_id"],
-                "source_revision_id": source["revision_id"],
-                "policy_id": policy["policy_id"],
-                "policy_version": policy["policy_version"],
-                "compiler_compatibility": "scrapy-live-http/v1",
-                "approved_at": datetime.now(UTC).isoformat(),
-                "approval_evidence_ref": evidence_ref
-                or f"operator://{actor_id}/release/{candidate['release_id']}",
-                "payload_contract": payload,
-            },
-            "release_digest",
-        )
+        document = {
+            "contract_version": (
+                "bot-release/v3" if "input_contract" in candidate else "bot-release/v2"
+            ),
+            "release_id": candidate["release_id"],
+            "status": status,
+            "bot_id": candidate["bot_id"],
+            "build_id": build["build_id"],
+            "build_manifest_digest": build["manifest_digest"],
+            "backend_id": "scrapy-live-http",
+            "backend_version": "1.0.0",
+            "runtime_profile_id": "scrapy-live-http-v1",
+            "runtime_image_digest": build["runtime_image_digest"],
+            "source_id": source["source_id"],
+            "source_revision_id": source["revision_id"],
+            "policy_id": policy["policy_id"],
+            "policy_version": policy["policy_version"],
+            "compiler_compatibility": "scrapy-live-http/v1",
+            "approved_at": datetime.now(UTC).isoformat(),
+            "approval_evidence_ref": evidence_ref
+            or f"operator://{actor_id}/release/{candidate['release_id']}",
+            "payload_contract": payload,
+        }
+        if "input_contract" in candidate:
+            document["input_contract"] = candidate["input_contract"]
+            document["input_request"] = candidate["input_request"]
+        return _with_digest(document, "release_digest")
 
     @staticmethod
     def _validate_release_schema(document: dict[str, Any]) -> None:
-        schema = json.loads(_RELEASE_SCHEMA.read_bytes())
+        schema_path = (
+            _RELEASE_SCHEMA_V3
+            if document.get("contract_version") == "bot-release/v3"
+            else _RELEASE_SCHEMA
+        )
+        schema = json.loads(schema_path.read_bytes())
         try:
             Draft202012Validator(schema, format_checker=FormatChecker()).validate(
                 document
             )
         except ValidationError as error:
             raise LifecycleError(
-                "BotRelease v2 document is structurally invalid"
+                "BotRelease document is structurally invalid"
             ) from error
 
 

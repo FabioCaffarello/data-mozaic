@@ -128,12 +128,16 @@ jobs:
         run: make artifact-custody-recovery-tests
       - name: Exercise durable BC04 runs and BC04-to-BC05 finalization
         run: make execution-coordination-finalization-tests
+      - name: Exercise BC13 PostgreSQL submission, idempotency, claims, and runtime grants
+        run: make work-intake-postgres-tests
       - name: Execute protected Scrapy fixture through durable BC04/BC05/BC06
         run: make execution-coordination-fixture-acquisition
       - name: Execute authorized controlled live Scrapy JSON through BC04/BC05/BC06
         run: make authorized-live-json-acquisition
       - name: Execute the Source and Release lifecycle through protected acquisition
         run: make acquisition-lifecycle-acceptance
+      - name: Execute durable three-input BC13 parameterized acquisition
+        run: make work-intake-acceptance
       - name: Execute authorized controlled live Scrapy HTML through BC04/BC05/BC06
         run: make authorized-live-html-acquisition
       - name: Execute authorized controlled live paginated Scrapy through BC04/BC05/BC06

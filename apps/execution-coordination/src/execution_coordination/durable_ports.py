@@ -19,6 +19,9 @@ from execution_coordination.durable_domain import (
 class DurableRunRepositoryPort(Protocol):
     def create(self, intent: DurableRunIntent) -> DurableRunSnapshot: ...
     def get(self, tenant_id: str, run_id: str) -> DurableRunSnapshot | None: ...
+    def get_by_idempotency(
+        self, tenant_id: str, idempotency_key: str
+    ) -> DurableRunSnapshot | None: ...
     def claim(
         self,
         tenant_id: str,

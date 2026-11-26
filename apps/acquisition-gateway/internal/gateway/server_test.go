@@ -128,7 +128,11 @@ func TestCurrentAttemptAuthorizationPrecedesEveryUpstreamRequest(t *testing.T) {
 }
 
 func TestPolicyDeniesOriginPathQueryAndDuplicateQuery(t *testing.T) {
-	upstream := httptest.NewServer(http.NotFoundHandler())
+	var seen atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.Add(1)
+		http.NotFound(w, r)
+	}))
 	defer upstream.Close()
 	g, cap, _ := testGateway(t, upstream.URL, nil)
 	for _, target := range []string{
@@ -144,6 +148,9 @@ func TestPolicyDeniesOriginPathQueryAndDuplicateQuery(t *testing.T) {
 		if response.Code < 400 {
 			t.Errorf("unauthorized URL passed: %s", target)
 		}
+	}
+	if seen.Load() != 0 {
+		t.Fatalf("gateway contacted the source for a denied target: requests=%d", seen.Load())
 	}
 }
 
@@ -298,6 +305,20 @@ func TestExecutionCapabilityCrossLanguageConformanceVector(t *testing.T) {
 	err = VerifyCapability(vector.Capability, map[string]ed25519.PublicKey{"vector-key-1": key}, "gateway/test", time.Date(2026, 11, 25, 16, 0, 30, 0, time.UTC), time.Date(2026, 11, 25, 15, 59, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("Python RFC 8785/Ed25519 vector rejected: %v", err)
+	}
+}
+
+func TestExecutionCapabilityAcceptsBoundInputParameterDigest(t *testing.T) {
+	g, cap, private := testGateway(t, "https://example.test", nil)
+	cap.InputParametersDigest = "sha256:" + strings.Repeat("e", 64)
+	cap = resignCapability(t, private, cap)
+	if err := VerifyCapability(cap, g.keys, g.audience, time.Now().UTC(), g.started); err != nil {
+		t.Fatalf("valid input parameter digest rejected: %v", err)
+	}
+	cap.InputParametersDigest = "sha256:invalid"
+	cap = resignCapability(t, private, cap)
+	if err := VerifyCapability(cap, g.keys, g.audience, time.Now().UTC(), g.started); err == nil {
+		t.Fatal("invalid input parameter digest was accepted")
 	}
 }
 

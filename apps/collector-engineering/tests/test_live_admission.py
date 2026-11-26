@@ -131,6 +131,45 @@ class LiveAdmissionTests(unittest.TestCase):
         self.assertEqual(result.release_id, "release-1")
         self.assertEqual(result.policy_id, "policy-test")
 
+    def test_v3_release_requires_and_digest_binds_an_input_contract(self):
+        self.manifest["live_request"] = {
+            "method": "GET",
+            "url": "https://example.test/api/v1/reports",
+            "input_query": {"parameter": "top", "query_name": "top"},
+        }
+        release = dict(self.release)
+        release["contract_version"] = "bot-release/v3"
+        release["input_contract"] = {
+            "contract_id": "controlled.input",
+            "version": "1.0.0",
+            "digest": "sha256:" + "e" * 64,
+        }
+        release["input_request"] = self.manifest["live_request"]
+        release["build_manifest_digest"] = (
+            "sha256:" + hashlib.sha256(canonical_json(self.manifest)).hexdigest()
+        )
+        release["release_digest"] = self._digest(release, "release_digest")
+        schema = json.loads(
+            (CONTRACTS / "bot-release/draft/v3/BotRelease.schema.json").read_text()
+        )
+        Draft202012Validator(schema, format_checker=FormatChecker()).validate(release)
+        validate_live_admission(
+            source_revision=self.source,
+            policy=self.policy,
+            release=release,
+            build_manifest=self.manifest,
+            requested_urls=("https://example.test/api/v1/reports?top=10",),
+        )
+        release["input_contract"]["digest"] = "sha256:" + "f" * 64
+        with self.assertRaisesRegex(PlaybookError, "digest"):
+            validate_live_admission(
+                source_revision=self.source,
+                policy=self.policy,
+                release=release,
+                build_manifest=self.manifest,
+                requested_urls=("https://example.test/api/v1/reports?top=10",),
+            )
+
     def test_revoked_or_mismatched_documents_fail_closed(self):
         cases = (
             ({**self.source, "status": "revoked"}, self.policy, self.release),

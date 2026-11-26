@@ -34,7 +34,27 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"records":[{"id":"controlled-1","label":"alpha"},{"id":"controlled-2","label":"beta"}]}`)
 	})
-	mux.HandleFunc("/v1/items", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/v1/items", func(w http.ResponseWriter, r *http.Request) {
+		if values, present := r.URL.Query()["limit"]; present {
+			if len(values) != 1 {
+				http.Error(w, "query denied", http.StatusBadRequest)
+				return
+			}
+			limit, err := strconv.Atoi(values[0])
+			if err != nil || limit < 1 || limit > 3 {
+				http.Error(w, "query denied", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if os.Getenv("CONTROLLED_SOURCE_MALFORMED") == "1" {
+				// A valid authorized request whose source response is malformed
+				// exercises post-admission acquisition failure without publication.
+				_, _ = fmt.Fprint(w, `{"items":[`)
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"items":[{"id":"parameter-%d","quantity":%d,"unit_price":%d.25,"enabled":true}]}`, limit, limit, limit)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"items":[{"id":"controlled-1","quantity":2,"unit_price":1.25,"enabled":true},{"id":"controlled-2","quantity":5,"unit_price":3.5,"enabled":false}]}`)
 	})

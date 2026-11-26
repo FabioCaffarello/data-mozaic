@@ -394,6 +394,8 @@ class TrustedAcquisitionApplication:
             maximum_total_response_bytes=context.maximum_total_response_bytes,
             maximum_requests=context.maximum_requests,
             execution_deadline=context.deadline,
+            input_parameters_json=context.input_parameters_json,
+            input_parameters_digest=context.input_parameters_digest,
         )
 
     def import_fixture_result(

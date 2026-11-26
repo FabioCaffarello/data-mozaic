@@ -21,6 +21,7 @@ members = [
     "mozaic-scout",
     "mozaic-scrapy-collector",
     "mozaic-trusted-acquisition-application",
+    "mozaic-work-intake",
 ]
 
 [[package]]
@@ -1387,6 +1388,27 @@ requires-dist = [
     { name = "mozaic-collector-engineering", editable = "apps/collector-engineering" },
     { name = "mozaic-contract-resolution", editable = "libs/python/contract-resolution" },
     { name = "mozaic-execution-coordination", editable = "apps/execution-coordination" },
+]
+
+[[package]]
+name = "mozaic-work-intake"
+version = "0.1.0"
+source = { editable = "apps/work-intake" }
+dependencies = [
+    { name = "mozaic-acquisition-lifecycle" },
+    { name = "mozaic-contract-resolution" },
+    { name = "mozaic-execution-coordination" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "rfc8785" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mozaic-acquisition-lifecycle", editable = "apps/acquisition-lifecycle" },
+    { name = "mozaic-contract-resolution", editable = "libs/python/contract-resolution" },
+    { name = "mozaic-execution-coordination", editable = "apps/execution-coordination" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
+    { name = "rfc8785", specifier = ">=0.1.4,<1" },
 ]
 
 [[package]]

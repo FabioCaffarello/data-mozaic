@@ -48,6 +48,8 @@ services:
     build:
       context: ../../apps/acquisition-gateway
       dockerfile: Dockerfile.controlled-source
+    environment:
+      CONTROLLED_SOURCE_MALFORMED: "${CONTROLLED_SOURCE_MALFORMED:-0}"
     networks:
       controlled-source:
         ipv4_address: 172.30.249.10
@@ -81,11 +83,13 @@ services:
         MOZAIC_LIVE_FIXTURES: ${MOZAIC_LIVE_FIXTURES:-examples/use-cases/controlled-live-json/fixtures}
     environment:
       MOZAIC_EXECUTION_CAPABILITY_FILE: /run/mozaic/capability
+      MOZAIC_INPUT_PARAMETERS_FILE: ${MOZAIC_ENABLE_INPUT_PARAMETERS:-}
       MOZAIC_ACQUISITION_GATEWAY_URL: http://acquisition-gateway:8090
       MOZAIC_RESULT_DIRECTORY: /result-parent/result
       MOZAIC_BC04_TEST_PORT: ${MOZAIC_BC04_TEST_PORT:-}
     volumes:
       - ${MOZAIC_LIVE_CAPABILITY_FILE:?set MOZAIC_LIVE_CAPABILITY_FILE}:/run/mozaic/capability:ro
+      - ${MOZAIC_LIVE_INPUT_PARAMETERS_FILE:-/dev/null}:/run/mozaic/input-parameters:ro
       - ${MOZAIC_LIVE_RESULT_PARENT:?set MOZAIC_LIVE_RESULT_PARENT}:/result-parent
     networks: [worker-gateway]
     read_only: true
