@@ -9,32 +9,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
-from acquisition_output.application import AcquisitionOutputApplication
-from acquisition_output.domain import (
-    ArtifactDescription,
-    ArtifactItem,
-    ArtifactRef,
-    CompositeOutput,
-    OutputError,
-    OutputIdentity,
-    OutputSetBinding,
-    OutputSetSpec,
-    PayloadContractRef,
-    ProducerIdentity,
-    ScopedOperationIdentity,
-    SourceRevisionRef,
-    canonical_json,
-    derive_output_id,
-)
-from acquisition_output.domain import (
-    ExecutionBinding as OutputExecutionBinding,
-)
-from execution_coordination.adapters.scrapy_container import request_identities
-from execution_coordination.domain import ExecutionReport
+from acquisition_output.domain import OutputError, canonical_json
+from execution_coordination.domain import ExecutionReport, request_identities
 from jsonschema import Draft202012Validator, FormatChecker
 
 MAX_REPORT_BYTES = 64_000
@@ -98,6 +75,7 @@ class VerifiedFixturePage:
     body: bytes
     acquired_at: datetime | None = None
     redirect_count: int = 0
+    effective_path_digest: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +84,7 @@ class VerifiedResultBundle:
     pages: tuple[VerifiedFixturePage, ...]
     records_digest: str
     total_bytes: int
+    trusted_bot_id: str | None = None
 
 
 def verify_result_bundle(
@@ -114,8 +93,9 @@ def verify_result_bundle(
     *,
     fixture_root: Path,
     catalog_entry: Any,
-    expected_records_path: Path,
+    compiled_plan: dict[str, Any],
     execution_report_schema_path: Path,
+    trusted_bot_id: str | None = None,
 ) -> VerifiedResultBundle:
     """Validate the trusted adapter's persisted files and immutable fixtures."""
     binding = execution_report.binding
@@ -202,7 +182,12 @@ def verify_result_bundle(
         file_bytes["execution-report.json"], "execution report"
     )
     schema = _strict_json(
-        execution_report_schema_path.read_bytes(), "execution report schema"
+        _read_regular(
+            execution_report_schema_path,
+            maximum=64_000,
+            label="execution report schema",
+        ),
+        "execution report schema",
     )
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(worker_report)
     identities = request_identities(binding)
@@ -341,289 +326,16 @@ def verify_result_bundle(
     if not observed_page_keys.issubset(page_keys):
         raise FixtureImportError("records refer to a page omitted from raw references")
 
-    expected_bytes = _read_regular(
-        expected_records_path,
-        maximum=MAX_RESULT_BYTES,
-        label="independent expected records",
-    )
-    expected_records = [
-        _strict_json(line, "expected record")
-        for line in expected_bytes.splitlines()
-        if line
-    ]
-    if records != expected_records:
-        raise FixtureImportError("worker records differ from independent expectations")
-
     relevant_pages = tuple(indexed_pages[key] for key in sorted(observed_page_keys))
+    from .plan_validation import verify_plan_results
+
+    verify_plan_results(
+        plan=compiled_plan,
+        pages=relevant_pages,
+        records=tuple(records),
+        source_id=binding.source_id,
+        source_revision=binding.source_revision,
+    )
     return VerifiedResultBundle(
-        tuple(records), relevant_pages, records_digest, total_bytes
+        tuple(records), relevant_pages, records_digest, total_bytes, trusted_bot_id
     )
-
-
-class FixturePayloadContractValidator:
-    def __init__(self, contract: PayloadContractRef, schema_path: Path) -> None:
-        schema_data = _read_regular(schema_path, maximum=64_000, label="payload schema")
-        self._contract = contract
-        self._validator = Draft202012Validator(
-            _strict_json(schema_data, "payload schema"), format_checker=FormatChecker()
-        )
-
-    def validate(self, contract: PayloadContractRef, payload: dict[str, Any]) -> None:
-        if contract != self._contract:
-            raise FixtureImportError(
-                "payload contract differs from the trusted fixture"
-            )
-        self._validator.validate(payload)
-
-
-def _stable_id(prefix: str, identity: object) -> str:
-    return prefix + hashlib.sha256(canonical_json(identity)).hexdigest()
-
-
-def _custody_request(
-    base_url: str,
-    token: str,
-    tenant_id: str,
-    path: str,
-    *,
-    method: str,
-    body: bytes,
-):
-    request = Request(
-        base_url.rstrip("/") + path,
-        data=body,
-        method=method,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "X-DM-Tenant-ID": tenant_id,
-        },
-    )
-    try:
-        with urlopen(request, timeout=30) as response:
-            return _strict_json(response.read(64_000), "BC06 response")
-    except (HTTPError, URLError, TimeoutError, OSError, FixtureImportError) as error:
-        raise FixtureImportError("BC06 custody request failed") from error
-
-
-def import_verified_bundle(
-    application: AcquisitionOutputApplication,
-    *,
-    bundle: VerifiedResultBundle,
-    tenant_id: str,
-    source: SourceRevisionRef,
-    producer: ProducerIdentity,
-    run_id: str,
-    attempt_id: str,
-    fencing_generation: int,
-    observed_at: datetime,
-    payload_contract: PayloadContractRef,
-    custody_base_url: str,
-    custody_token: str,
-    artifact_representation: str = "synthetic_fixture_http_response_body",
-    retention_policy_ref: str = "local-fixture-v1",
-    artifact_title: str = "Synthetic fixture HTTP entity",
-    artifact_role: str = "fixture-http-entity",
-) -> tuple[str, str]:
-    """Custody verified response entities, stage deterministic outputs, then seal."""
-    references: dict[tuple[str, str, str], ArtifactRef] = {}
-    for page in bundle.pages:
-        artifact_id = _stable_id(
-            "artifact-",
-            {
-                "tenant": tenant_id,
-                "run": run_id,
-                "attempt": attempt_id,
-                "url": page.url,
-                "page": page.evidence_ref,
-                "digest": page.digest,
-            },
-        )
-        operation_id = _stable_id(
-            "op-",
-            {
-                "purpose": "fixture-custody",
-                "tenant": tenant_id,
-                "run": run_id,
-                "attempt": attempt_id,
-                "artifact": artifact_id,
-            },
-        )
-        artifact = ArtifactRef(
-            artifact_id, page.digest, len(page.body), page.media_type
-        )
-        intent = {
-            "contract_version": "artifact-custody.v1",
-            "operation_id": operation_id,
-            "tenant_id": tenant_id,
-            "artifact_id": artifact_id,
-            "source": {"source_id": source.source_id, "revision": source.revision},
-            "artifact": {
-                "artifact_id": artifact_id,
-                "digest": artifact.digest,
-                "size_bytes": artifact.size_bytes,
-                "media_type": artifact.media_type,
-            },
-            "representation": "other_declared",
-            "classification": "internal",
-            "retention_policy_ref": retention_policy_ref,
-            "metadata": {
-                "declared_representation": artifact_representation,
-                "evidence_ref": page.evidence_ref,
-            },
-        }
-        payload = json.dumps(intent, ensure_ascii=False, separators=(",", ":")).encode()
-        reservation = _custody_request(
-            custody_base_url,
-            custody_token,
-            tenant_id,
-            "/draft/v1/artifact-intents",
-            method="POST",
-            body=payload,
-        )
-        if reservation.get("artifact_id") != artifact_id:
-            raise FixtureImportError("BC06 reserved a different artifact identity")
-        receipt = reservation.get("receipt")
-        if not isinstance(receipt, dict):
-            receipt = _custody_request(
-                custody_base_url,
-                custody_token,
-                tenant_id,
-                f"/draft/v1/artifact-intents/{operation_id}/content",
-                method="PUT",
-                body=page.body,
-            )
-        query = (
-            "/draft/v1/artifacts/"
-            + artifact_id
-            + "/verification?"
-            + urlencode(
-                {
-                    "digest": artifact.digest,
-                    "size_bytes": artifact.size_bytes,
-                    "source_id": source.source_id,
-                    "source_revision": source.revision,
-                }
-            )
-        )
-        verification = _custody_request(
-            custody_base_url,
-            custody_token,
-            tenant_id,
-            query,
-            method="GET",
-            body=b"",
-        )
-        receipt = verification.get("receipt")
-        if (
-            verification.get("status") != "confirmed"
-            or not isinstance(receipt, dict)
-            or receipt.get("tenant_id") != tenant_id
-            or receipt.get("artifact", {}).get("artifact_id") != artifact_id
-            or receipt.get("artifact", {}).get("digest") != artifact.digest
-            or receipt.get("artifact", {}).get("size_bytes") != artifact.size_bytes
-        ):
-            raise FixtureImportError("BC06 did not confirm the exact fixture bytes")
-        references[
-            (page.url, page.evidence_ref, page.digest.removeprefix("sha256:"))
-        ] = artifact
-
-    output_binding = OutputSetBinding(
-        tenant_id,
-        source,
-        producer,
-        OutputExecutionBinding(run_id, attempt_id, fencing_generation),
-    )
-    output_set_id = _stable_id(
-        "set-",
-        {
-            "tenant": tenant_id,
-            "run": run_id,
-            "attempt": attempt_id,
-            "records": bundle.records_digest,
-        },
-    )
-    application.create_output_set(
-        OutputSetSpec(
-            output_set_id,
-            output_binding,
-            (payload_contract,),
-            expected_output_count=len(bundle.records),
-        ),
-        ScopedOperationIdentity(
-            tenant_id,
-            _stable_id("op-", {"purpose": "create-set", "output_set": output_set_id}),
-        ),
-    )
-    for record in bundle.records:
-        provenance = record["_provenance"]
-        page_key = (
-            provenance["source_url"],
-            provenance["evidence_ref"],
-            provenance["raw_sha256"],
-        )
-        artifact = references.get(page_key)
-        if artifact is None:
-            raise FixtureImportError("record has no custody-confirmed fixture page")
-        observation_id = _stable_id(
-            "obs-",
-            {
-                "run": run_id,
-                "attempt": attempt_id,
-                "page_index": provenance["page_index"],
-                "record_index": provenance["record_index"],
-                "records_digest": bundle.records_digest,
-            },
-        )
-        output_id = derive_output_id(
-            tenant_id=tenant_id,
-            source=source,
-            producer=producer,
-            output_key=f"fixture-record:{provenance['page_index']}:{provenance['record_index']}",
-            observation_id=observation_id,
-        )
-        output = CompositeOutput(
-            identity=OutputIdentity(
-                output_id,
-                observation_id,
-                next(
-                    (
-                        page.acquired_at
-                        for page in bundle.pages
-                        if page.url == provenance["source_url"]
-                        and page.evidence_ref == provenance["evidence_ref"]
-                        and page.digest.removeprefix("sha256:")
-                        == provenance["raw_sha256"]
-                        and page.acquired_at is not None
-                    ),
-                    observed_at,
-                ),
-                natural_key=record.get("id"),
-            ),
-            operation=ScopedOperationIdentity(
-                tenant_id,
-                _stable_id("op-", {"purpose": "stage-output", "output_id": output_id}),
-            ),
-            output_set_id=output_set_id,
-            binding=output_binding,
-            payload_contract=payload_contract,
-            payload=record,
-            artifacts=(
-                ArtifactItem(
-                    artifact,
-                    ArtifactDescription(
-                        title=artifact_title,
-                        role=artifact_role,
-                    ),
-                ),
-            ),
-        )
-        application.stage_output(output)
-    sealed = application.seal_output_set(
-        tenant_id,
-        output_set_id,
-        ScopedOperationIdentity(
-            tenant_id,
-            _stable_id("op-", {"purpose": "seal-set", "output_set": output_set_id}),
-        ),
-    )
-    return output_set_id, sealed.manifest_digest

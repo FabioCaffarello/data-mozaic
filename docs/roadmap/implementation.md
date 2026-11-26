@@ -1,6 +1,6 @@
 # Roadmap pós-S1
 
-> **Estado atualizado em 2026-11-25:** a sequência abaixo é um snapshot histórico. PR #21 integrou a fundação live autorizada, incluindo JSON, HTML e paginação next-URL limitada, gateway, evidência confiável e custody/publicação. PR #22 integrou a avaliação de maturidade. O branch `feat/scrapy-runtime-framework` implementa localmente o primeiro incremento dessa avaliação; consulte o [assessment atual](../architecture/assessments/acquisition-platform-maturity-assessment-2026-11-25.md). Não há fonte externa implementada ou explorada.
+> **Estado atualizado em 2026-11-25:** PR #21 integrou a fundação live autorizada; PR #22 integrou a avaliação de maturidade; PR #23 integrou o runtime Scrapy versionado. M2 está em implementação local no branch `feat/trusted-acquisition-application` e ainda não foi publicado. Consulte o [assessment de maturidade](../architecture/assessments/acquisition-platform-maturity-assessment-2026-11-25.md), [ADR 026](../architecture/decisions/026-bc15-scrapy-runtime-framework.md), [aplicação de aquisição](../../apps/acquisition-application/README.md), [ADR 027 Proposed](../architecture/decisions/027-trusted-acquisition-application.md) e [evidência M2](../architecture/assessments/trusted-acquisition-application-2026-11-25.md). Não há fonte externa implementada ou explorada.
 
 ## Estado atual
 

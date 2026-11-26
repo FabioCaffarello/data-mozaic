@@ -105,6 +105,23 @@ class ExecutionBinding:
             raise CoordinationError("output budgets exceed the fixture profile maximum")
 
 
+def request_identities(binding: ExecutionBinding) -> dict[str, str]:
+    """Project the immutable BC04 binding into the worker report contract."""
+    return {
+        "source_id": binding.source_id,
+        "source_revision": binding.source_revision,
+        "bot_id": binding.bot_id,
+        "build_id": binding.build_id,
+        "bot_build_manifest_digest": binding.bot_build_manifest_digest,
+        "assembly_id": binding.assembly_id,
+        "catalog_digest": binding.catalog_digest,
+        "oci_digest": binding.oci_digest,
+        "local_image_id": binding.local_image_id,
+        "fixture_bundle_id": binding.fixture_bundle_id,
+        "fixture_bundle_digest": binding.fixture_bundle_digest,
+    }
+
+
 @dataclass(frozen=True)
 class ExecutionRequest:
     contract_version: str

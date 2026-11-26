@@ -8,10 +8,12 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+from acquisition_application.result_bundle import (
+    FixtureImportError,
+    verify_result_bundle,
+)
 from execution_coordination.adapters.scrapy_container import request_identities
 from execution_coordination.domain import ExecutionBinding, ExecutionReport
-
-from tooling.fixture_acquisition import FixtureImportError, verify_result_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "contracts/execution-report/draft/v0/ExecutionReport.schema.json"
@@ -28,7 +30,7 @@ class FixtureResultBundleTests(unittest.TestCase):
         self.attempt_id = "22222222-2222-4222-8222-222222222222"
         self.result_dir = root / "results" / self.run_id / self.attempt_id
         self.result_dir.mkdir(parents=True)
-        self.body = b"<html><title>Synthetic fixture</title></html>"
+        self.body = b'<article class="product" data-id="synthetic-1"><h2 class="title">Fixture item</h2><span class="price">3.25</span></article>'
         self.digest = hashlib.sha256(self.body).hexdigest()
         self.url = "https://html.fixture.test/catalog/"
         self.evidence_ref = "e-fixture-1"
@@ -115,6 +117,57 @@ class FixtureResultBundleTests(unittest.TestCase):
         )
         self.expected = Path(self.temporary.name) / "expected.jsonl"
         self.expected.write_bytes(self.records_bytes)
+        self.plan = {
+            "profile": "scrapy-fixture-v1",
+            "source": {
+                "source_id": self.binding.source_id,
+                "revision": self.binding.source_revision,
+                "origin": "https://html.fixture.test",
+                "path_prefixes": ["/catalog/"],
+            },
+            "budgets": {
+                "max_records": 10,
+                "max_output_bytes": 1_000_000,
+                "max_pages": 1,
+            },
+            "fetch": {"inputs": {"url": self.url}},
+            "select": {
+                "operator_type": "select.html_records",
+                "inputs": {
+                    "selector": "article.product",
+                    "cardinality": "many",
+                    "max_matches": 10,
+                },
+            },
+            "extract": {
+                "operation_id": "extract",
+                "inputs": {
+                    "fields": {
+                        "id": {
+                            "source": "attribute",
+                            "attribute": "data-id",
+                            "type": "string",
+                            "required": True,
+                            "normalize": ["trim"],
+                        },
+                        "title": {
+                            "source": "text",
+                            "selector": ".title",
+                            "type": "string",
+                            "required": True,
+                            "normalize": ["trim"],
+                        },
+                        "price": {
+                            "source": "text",
+                            "selector": ".price",
+                            "type": "decimal",
+                            "required": True,
+                            "normalize": ["trim"],
+                        },
+                    }
+                },
+            },
+        }
         self._write_bundle()
 
     def _write_bundle(self) -> None:
@@ -176,7 +229,7 @@ class FixtureResultBundleTests(unittest.TestCase):
             self.report,
             fixture_root=self.fixture_root,
             catalog_entry=self.catalog_entry,
-            expected_records_path=self.expected,
+            compiled_plan=self.plan,
             execution_report_schema_path=SCHEMA,
         )
 
@@ -268,10 +321,10 @@ class FixtureResultBundleTests(unittest.TestCase):
         with self.assertRaises(FixtureImportError):
             self._verify()
 
-    def test_rejects_records_that_differ_from_independent_expectations(self):
+    def test_production_validation_does_not_consume_test_oracle_files(self):
         self.expected.write_text("{}\n")
-        with self.assertRaises(FixtureImportError):
-            self._verify()
+        bundle = self._verify()
+        self.assertEqual((self.record,), bundle.records)
 
 
 if __name__ == "__main__":

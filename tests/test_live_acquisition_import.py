@@ -1,122 +1,175 @@
 from __future__ import annotations
 
-import sys
+import hashlib
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tooling"))
-
-from fixture_acquisition import FixtureImportError, VerifiedFixturePage
-from live_acquisition_import import (
-    _controlled_next_links,
-    _controlled_record_values,
-    _validate_pagination_completion,
+from acquisition_application.live_evidence import _plan_pagination_urls
+from acquisition_application.plan_validation import verify_plan_results
+from acquisition_application.result_bundle import (
+    FixtureImportError,
+    VerifiedFixturePage,
 )
 
 
-class ControlledLivePayloadTests(unittest.TestCase):
-    def test_html_payload_maps_only_declared_product_fields(self):
-        records = _controlled_record_values(
-            b'<article class="product" data-id=" sku-1 "><h2 class="title"> Mug </h2><span class="price">12.5</span></article>',
+class AcquisitionPlanValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = {
+            "source_id": "controlled-http",
+            "revision": "controlled-v1",
+            "origin": "https://api.fixture.test",
+            "path_prefixes": ["/v1/"],
+        }
+        self.url = "https://api.fixture.test/v1/items"
+        self.plan = {
+            "profile": "scrapy-live-http-v1",
+            "source": self.source,
+            "fetch": {"inputs": {"url": self.url}},
+            "budgets": {"max_records": 10, "max_output_bytes": 100_000, "max_pages": 1},
+            "select": {
+                "operator_type": "select.html_records",
+                "inputs": {
+                    "selector": "article.product",
+                    "cardinality": "many",
+                    "max_matches": 10,
+                },
+            },
+            "extract": {
+                "operation_id": "extract",
+                "inputs": {
+                    "fields": {
+                        "id": {
+                            "source": "attribute",
+                            "attribute": "data-id",
+                            "type": "string",
+                            "required": True,
+                            "normalize": ["trim"],
+                        },
+                        "title": {
+                            "source": "text",
+                            "selector": ".title",
+                            "type": "string",
+                            "required": True,
+                            "normalize": ["trim"],
+                        },
+                        "price": {
+                            "source": "text",
+                            "selector": ".price",
+                            "type": "decimal",
+                            "required": True,
+                            "normalize": ["trim"],
+                        },
+                    }
+                },
+            },
+        }
+        self.body = b'<article class="product" data-id=" sku-1 "><h2 class="title"> Mug </h2><span class="price">12.50</span></article>'
+        self.digest = hashlib.sha256(self.body).hexdigest()
+        self.page = VerifiedFixturePage(
+            self.url,
+            "fetch-1",
+            "sha256:" + self.digest,
             "text/html",
+            self.body,
         )
-        self.assertEqual([{"id": "sku-1", "title": "Mug", "price": "12.5"}], records)
+        self.record = {
+            "id": "sku-1",
+            "title": "Mug",
+            "price": "12.5",
+            "_provenance": {
+                "source_id": "controlled-http",
+                "source_revision": "controlled-v1",
+                "source_url": self.url,
+                "requested_url": self.url,
+                "effective_url": self.url,
+                "evidence_ref": "fetch-1",
+                "raw_sha256": self.digest,
+                "operation_id": "extract",
+                "page_index": 0,
+                "record_index": 0,
+            },
+        }
 
-    def test_html_payload_rejects_missing_required_fields(self):
-        with self.assertRaises(FixtureImportError):
-            _controlled_record_values(
-                b'<article class="product" data-id="sku-1"><h2 class="title">Mug</h2></article>',
-                "text/html",
-            )
-
-    def test_html_payload_rejects_unclosed_product(self):
-        with self.assertRaises(FixtureImportError):
-            _controlled_record_values(
-                b'<article class="product" data-id="sku-1"><h2 class="title">Mug</h2><span class="price">12</span>',
-                "text/html",
-            )
-
-    def test_unsupported_controlled_media_type_fails_closed(self):
-        with self.assertRaises(FixtureImportError):
-            _controlled_record_values(b"body", "application/octet-stream")
-
-    def test_pagination_link_is_resolved_against_the_trusted_page(self):
-        links = _controlled_next_links(
-            b'<a class="next" href="/v1/pages/2">Next</a>',
-            "https://api.fixture.test/v1/pages/1",
+    def test_result_is_recomputed_from_compiled_plan_and_trusted_body(self):
+        verify_plan_results(
+            plan=self.plan,
+            pages=(self.page,),
+            records=(self.record,),
+            source_id="controlled-http",
+            source_revision="controlled-v1",
         )
-        self.assertEqual(["https://api.fixture.test/v1/pages/2"], links)
 
-    def test_duplicate_pagination_identity_is_rejected(self):
+    def test_worker_cannot_replace_extracted_value_or_source_binding(self):
+        changed = {**self.record, "title": "Forged"}
         with self.assertRaises(FixtureImportError):
-            _controlled_next_links(
-                b'<a class="next" href="/v1/pages/2">Next</a><a class="next" href="/v1/pages/2">Again</a>',
-                "https://api.fixture.test/v1/pages/1",
+            verify_plan_results(
+                plan=self.plan,
+                pages=(self.page,),
+                records=(changed,),
+                source_id="controlled-http",
+                source_revision="controlled-v1",
+            )
+        with self.assertRaises(FixtureImportError):
+            verify_plan_results(
+                plan=self.plan,
+                pages=(self.page,),
+                records=(self.record,),
+                source_id="other-tenant-source",
+                source_revision="controlled-v1",
             )
 
-    def test_planned_window_accepts_only_explicit_full_page_limit(self):
+    def test_planned_pagination_is_recomputed_from_plan_and_page_bodies(self):
         first = VerifiedFixturePage(
-            "https://api.fixture.test/v1/window/1",
+            self.url,
             "fetch-1",
             "sha256:" + "1" * 64,
             "text/html",
-            b'<a class="next" href="/v1/window/2">Next</a>',
-            None,
+            b'<a class="next" href="/v1/pages/2">Next</a>',
         )
+        second_url = "https://api.fixture.test/v1/pages/2"
         second = VerifiedFixturePage(
-            "https://api.fixture.test/v1/window/2",
+            second_url,
             "fetch-2",
             "sha256:" + "2" * 64,
             "text/html",
-            b'<a class="next" href="/v1/window/3">Next</a>',
-            None,
+            b'<a class="next" href="/v1/pages/3">Next</a>',
         )
-        _validate_pagination_completion(
-            [first, second],
-            "planned_page_limit",
-            authorized_mode="bounded_window",
-            authorized_max_pages=2,
-            authorized_origin="https://api.fixture.test",
-            authorized_path_prefixes=("/v1/window/",),
-        )
+        plan = {
+            **self.plan,
+            "discover": {"inputs": {"selector": "a.next", "max_links": 1}},
+            "pagination": {
+                "inputs": {"max_pages": 2, "completion_mode": "bounded_window"}
+            },
+        }
+        _plan_pagination_urls(plan, [first, second], "planned_page_limit")
+        with self.assertRaises(FixtureImportError):
+            _plan_pagination_urls(plan, [first], "planned_page_limit")
 
-    def test_worker_cannot_claim_planned_limit_without_trusted_permission(self):
-        page = VerifiedFixturePage(
-            "https://api.fixture.test/v1/window/1",
+    def test_natural_pagination_requires_evidence_of_natural_end(self):
+        first = VerifiedFixturePage(
+            self.url,
             "fetch-1",
             "sha256:" + "1" * 64,
             "text/html",
-            b'<a class="next" href="/v1/window/2">Next</a>',
-            None,
+            b'<a class="next" href="/v1/pages/2">Next</a>',
         )
-        with self.assertRaises(FixtureImportError):
-            _validate_pagination_completion(
-                [page],
-                "planned_page_limit",
-                authorized_mode="natural_end",
-                authorized_max_pages=None,
-                authorized_origin="https://api.fixture.test",
-                authorized_path_prefixes=("/v1/window/",),
-            )
-
-    def test_planned_limit_rejects_wrong_page_count_and_out_of_scope_continuation(self):
-        page = VerifiedFixturePage(
-            "https://api.fixture.test/v1/window/1",
-            "fetch-1",
-            "sha256:" + "1" * 64,
+        second_url = "https://api.fixture.test/v1/pages/2"
+        second = VerifiedFixturePage(
+            second_url,
+            "fetch-2",
+            "sha256:" + "2" * 64,
             "text/html",
-            b'<a class="next" href="https://other.test/v1/window/2">Next</a>',
-            None,
+            b"<main>End</main>",
         )
+        plan = {
+            **self.plan,
+            "discover": {"inputs": {"selector": "a.next", "max_links": 1}},
+            "pagination": {
+                "inputs": {"max_pages": 3, "completion_mode": "natural_end"}
+            },
+        }
+        _plan_pagination_urls(plan, [first, second], "natural_end")
         with self.assertRaises(FixtureImportError):
-            _validate_pagination_completion(
-                [page],
-                "planned_page_limit",
-                authorized_mode="bounded_window",
-                authorized_max_pages=2,
-                authorized_origin="https://api.fixture.test",
-                authorized_path_prefixes=("/v1/window/",),
-            )
+            _plan_pagination_urls(plan, [first], "natural_end")
 
 
 if __name__ == "__main__":

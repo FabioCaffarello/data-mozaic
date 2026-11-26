@@ -18,6 +18,7 @@ members = [
     "mozaic-observability",
     "mozaic-scout",
     "mozaic-scrapy-collector",
+    "mozaic-trusted-acquisition-application",
 ]
 
 [[package]]
@@ -1323,6 +1324,27 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "scrapy", specifier = "==2.20.0" },
     { name = "selectolax", specifier = "==0.4.13" },
+]
+
+[[package]]
+name = "mozaic-trusted-acquisition-application"
+version = "0.1.0"
+source = { editable = "apps/acquisition-application" }
+dependencies = [
+    { name = "jsonschema" },
+    { name = "mozaic-acquisition-output" },
+    { name = "mozaic-bot-build" },
+    { name = "mozaic-collector-engineering" },
+    { name = "mozaic-execution-coordination" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jsonschema", specifier = ">=4.23,<5" },
+    { name = "mozaic-acquisition-output", editable = "apps/acquisition-output" },
+    { name = "mozaic-bot-build", editable = "libs/python/bot-build" },
+    { name = "mozaic-collector-engineering", editable = "apps/collector-engineering" },
+    { name = "mozaic-execution-coordination", editable = "apps/execution-coordination" },
 ]
 
 [[package]]

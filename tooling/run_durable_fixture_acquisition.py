@@ -13,9 +13,19 @@ import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
+from acquisition_acceptance_support import (
+    InProcessBC05Publisher,
+    artifact_request,
+    key_material,
+)
+from acquisition_application import (
+    ExactJSONSchemaPayloadContractValidator,
+    FixtureImportError,
+    TrustedAcquisitionApplication,
+)
+from acquisition_application.adapters.artifact_custody import ArtifactCustodyHTTPClient
+from acquisition_application.result_bundle import _strict_json
 from acquisition_output.adapters.http_custody import ArtifactCustodyHTTPAdapter
 from acquisition_output.adapters.mongodb import MongoOutputStore, MongoResources
 from acquisition_output.adapters.mongodb.config import MongoSettings
@@ -26,11 +36,7 @@ from acquisition_output.application import AcquisitionOutputApplication
 from acquisition_output.domain import (
     PayloadContractRef,
     ProducerIdentity,
-    SourceRevisionRef,
 )
-from acquisition_output.wire import publication_receipt_to_wire
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from execution_coordination.adapters.postgres_durable import (
     PostgresDurableRunRepository,
 )
@@ -41,20 +47,16 @@ from execution_coordination.adapters.scrapy_container import (
     ExecutorConfig,
     SandboxLimits,
     ScrapyContainerExecutor,
+)
+from execution_coordination.domain import (
+    ExecutionReport,
+    ExecutionRequest,
     request_identities,
 )
-from execution_coordination.domain import ExecutionReport, ExecutionRequest
 from execution_coordination.durable_application import DurableExecutionCoordinator
 from execution_coordination.durable_domain import (
     DurableRunIntent,
     FailureDisposition,
-)
-from fixture_acquisition import (
-    FixtureImportError,
-    FixturePayloadContractValidator,
-    _strict_json,
-    import_verified_bundle,
-    verify_result_bundle,
 )
 from jsonschema import Draft202012Validator, FormatChecker
 from mozaic_bot_build import canonical_json
@@ -77,62 +79,17 @@ EXECUTION_REPORT_SCHEMA = (
 )
 
 
-class _BC05Publisher:
-    def __init__(self, app: AcquisitionOutputApplication, *, lose_ack: bool = False):
-        self._app = app
-        self._lose_ack = lose_ack
-
-    def publish_grant(self, grant):
-        receipt = self._app.publish_output_set(
-            grant.tenant_id,
-            grant.output_set_id,
-            grant.manifest_digest,
-            self._operation(grant.tenant_id, grant.operation_id),
-            publication_grant=grant.fields(),
-        )
-        if self._lose_ack:
-            self._lose_ack = False
-            raise TimeoutError("synthetic lost acknowledgment after BC05 commit")
-        return publication_receipt_to_wire(receipt)
-
-    def get_publication_receipt(self, tenant_id: str, output_set_id: str):
-        receipt = self._app.get_publication_receipt(tenant_id, output_set_id)
-        return publication_receipt_to_wire(receipt) if receipt is not None else None
-
-    @staticmethod
-    def _operation(tenant_id: str, operation_id: str):
-        from acquisition_output.domain import ScopedOperationIdentity
-
-        return ScopedOperationIdentity(tenant_id, operation_id)
-
-
-def _key_material() -> tuple[bytes, str, bytes]:
-    try:
-        seed = bytes.fromhex(os.environ["BC04_GRANT_SIGNING_KEY"])
-        key_id = os.environ["BC04_GRANT_KEY_ID"]
-    except (KeyError, ValueError) as error:
-        raise RuntimeError(
-            "local fixture grant key configuration is invalid"
-        ) from error
-    if len(seed) != 32 or not key_id:
-        raise RuntimeError("local fixture grant key configuration is invalid")
-    public = (
-        Ed25519PrivateKey.from_private_bytes(seed)
-        .public_key()
-        .public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    )
-    return seed, key_id, public
-
-
 def _make_app(store: MongoOutputStore, *, contract: PayloadContractRef):
     base_url = os.environ["ARTIFACT_CUSTODY_HTTP_URL"]
     token = os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"]
-    _seed, key_id, public = _key_material()
+    _seed, key_id, public = key_material()
     verifier = Ed25519PublicationGrantVerifier({key_id: public})
     return AcquisitionOutputApplication(
         store,
         store,
-        payload_contracts=FixturePayloadContractValidator(contract, PAYLOAD_SCHEMA),
+        payload_contracts=ExactJSONSchemaPayloadContractValidator(
+            contract, PAYLOAD_SCHEMA
+        ),
         custody=ArtifactCustodyHTTPAdapter(base_url, token),
         outbox=store,
         publication_grants=verifier,
@@ -242,8 +199,7 @@ def _new_execution_report(result_dir: Path, snapshot, binding) -> ExecutionRepor
 
 def _import_from_disk(tenant_id: str, run_id: str) -> tuple[str, str, object]:
     _check_local_fixture_paths()
-    dsn = os.environ["BC04_DATABASE_URL"]
-    repository = PostgresDurableRunRepository(dsn)
+    repository = PostgresDurableRunRepository(os.environ["BC04_DATABASE_URL"])
     snapshot = repository.get(tenant_id, run_id)
     if snapshot is None:
         raise RuntimeError("durable fixture CaptureRun does not exist")
@@ -255,16 +211,7 @@ def _import_from_disk(tenant_id: str, run_id: str) -> tuple[str, str, object]:
         raise RuntimeError("CaptureRun has no durable attempt")
     result_dir = RESULTS / run_id / snapshot.attempt_id
     report = _new_execution_report(result_dir, snapshot, binding)
-    bundle = verify_result_bundle(
-        result_dir,
-        report,
-        fixture_root=catalog.fixture_root(selected),
-        catalog_entry=selected,
-        expected_records_path=EXPECTED_RECORDS,
-        execution_report_schema_path=EXECUTION_REPORT_SCHEMA,
-    )
     contract = _contract()
-    source = SourceRevisionRef(binding.source_id, binding.source_revision)
     producer = ProducerIdentity(
         producer_id=binding.bot_id,
         producer_version="collector-fixture-v1",
@@ -275,41 +222,28 @@ def _import_from_disk(tenant_id: str, run_id: str) -> tuple[str, str, object]:
     )
     with MongoResources(MongoSettings.from_env()) as resources:
         store = MongoOutputStore(resources)
-        app = _make_app(store, contract=contract)
-        output_set_id, manifest_digest = import_verified_bundle(
-            app,
-            bundle=bundle,
-            tenant_id=tenant_id,
-            source=source,
-            producer=producer,
-            run_id=run_id,
-            attempt_id=snapshot.attempt_id,
-            fencing_generation=snapshot.generation,
-            observed_at=snapshot.created_at,
+        outputs = _make_app(store, contract=contract)
+        importer = TrustedAcquisitionApplication(
+            repository,
+            outputs,
+            ArtifactCustodyHTTPClient(
+                os.environ["ARTIFACT_CUSTODY_HTTP_URL"],
+                os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"],
+            ),
+        )
+        output_set_id, manifest_digest, bundle = importer.import_fixture_result(
+            tenant_id,
+            run_id,
+            result_dir=result_dir,
+            execution_report=report,
+            fixture_root=catalog.fixture_root(selected),
+            catalog_entry=selected,
+            build_root=catalog.build_root(selected),
+            execution_report_schema_path=EXECUTION_REPORT_SCHEMA,
             payload_contract=contract,
-            custody_base_url=os.environ["ARTIFACT_CUSTODY_HTTP_URL"],
-            custody_token=os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"],
+            producer=producer,
         )
     return output_set_id, manifest_digest, bundle
-
-
-def _artifact_request(tenant_id: str, artifact_id: str) -> bytes:
-    url = (
-        os.environ["ARTIFACT_CUSTODY_HTTP_URL"].rstrip("/")
-        + f"/draft/v1/artifacts/{artifact_id}/content"
-    )
-    request = Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {os.environ['ARTIFACT_CUSTODY_LOCAL_TOKEN']}",
-            "X-DM-Tenant-ID": tenant_id,
-        },
-    )
-    try:
-        with urlopen(request, timeout=30) as response:
-            return response.read(2_000_001)
-    except (HTTPError, URLError, TimeoutError, OSError) as error:
-        raise RuntimeError("BC06 could not stream the fixture artifact") from error
 
 
 def _verify_completed_run(
@@ -352,7 +286,7 @@ def _verify_completed_run(
                 "published outputs do not reference expected fixture bytes"
             )
         for artifact in artifact_refs.values():
-            content = _artifact_request(tenant_id, artifact.artifact_id)
+            content = artifact_request(tenant_id, artifact.artifact_id)
             if (
                 len(content) != artifact.size_bytes
                 or hashlib.sha256(content).hexdigest()
@@ -413,7 +347,7 @@ def _run_new_fixture() -> None:
         raise RuntimeError("explicit local fixture authorization profile is required")
     _check_local_fixture_paths()
     RESULTS.mkdir(parents=True, exist_ok=True, mode=0o700)
-    signing_seed, key_id, _public_key = _key_material()
+    signing_seed, key_id, _public_key = key_material()
     token = os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"]
     _check_local_fixture_paths()
     BUILD_SCRATCH.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -459,7 +393,7 @@ def _run_new_fixture() -> None:
                 app = _make_app(store, contract=contract)
                 coordinator = DurableExecutionCoordinator(
                     repository,
-                    _BC05Publisher(app),
+                    InProcessBC05Publisher(app),
                     Ed25519PublicationGrantSigner(signing_seed, key_id=key_id),
                     lease_seconds=120,
                 )
@@ -533,14 +467,31 @@ def _run_new_fixture() -> None:
                             )
                     raise
                 fixture_root = load_catalog(persistent_assembly).fixture_root(selected)
-                bundle = verify_result_bundle(
-                    Path(report.output_ref),
-                    report,
+                importer = TrustedAcquisitionApplication(
+                    repository,
+                    app,
+                    ArtifactCustodyHTTPClient(
+                        os.environ["ARTIFACT_CUSTODY_HTTP_URL"], token
+                    ),
+                    finalization=coordinator,
+                )
+                bundle = importer.verify_fixture_result(
+                    TENANT_ID,
+                    run_id,
+                    result_dir=Path(report.output_ref),
+                    execution_report=report,
                     fixture_root=fixture_root,
                     catalog_entry=selected,
-                    expected_records_path=EXPECTED_RECORDS,
+                    build_root=catalog.build_root(selected),
                     execution_report_schema_path=EXECUTION_REPORT_SCHEMA,
                 )
+                expected_records = [
+                    _strict_json(line, "fixture test oracle")
+                    for line in EXPECTED_RECORDS.read_bytes().splitlines()
+                    if line
+                ]
+                if list(bundle.records) != expected_records:
+                    raise RuntimeError("fixture output differs from independent oracle")
                 expected_output_set_id = (
                     "set-"
                     + hashlib.sha256(
@@ -559,12 +510,14 @@ def _run_new_fixture() -> None:
                     replace(report, attempt_id=str(uuid.uuid4())),
                 ):
                     try:
-                        verify_result_bundle(
-                            Path(report.output_ref),
-                            invalid_report,
+                        importer.verify_fixture_result(
+                            TENANT_ID,
+                            run_id,
+                            result_dir=Path(report.output_ref),
+                            execution_report=invalid_report,
                             fixture_root=fixture_root,
                             catalog_entry=selected,
-                            expected_records_path=EXPECTED_RECORDS,
+                            build_root=catalog.build_root(selected),
                             execution_report_schema_path=EXECUTION_REPORT_SCHEMA,
                         )
                     except FixtureImportError:
@@ -577,7 +530,6 @@ def _run_new_fixture() -> None:
                         raise RuntimeError(
                             "rejected worker result changed BC05 persistence"
                         )
-                source = SourceRevisionRef(binding.source_id, binding.source_revision)
                 producer = ProducerIdentity(
                     binding.bot_id,
                     "collector-fixture-v1",
@@ -586,33 +538,19 @@ def _run_new_fixture() -> None:
                     binding.build_id,
                     "sha256:" + binding.bot_build_manifest_digest,
                 )
-                output_set_id, manifest_digest = import_verified_bundle(
-                    app,
+                output_set_id, manifest_digest = importer.import_verified_result(
+                    TENANT_ID,
+                    run_id,
                     bundle=bundle,
-                    tenant_id=TENANT_ID,
-                    source=source,
                     producer=producer,
-                    run_id=run_id,
-                    attempt_id=lease.attempt_id,
-                    fencing_generation=lease.generation,
-                    observed_at=repository.get(TENANT_ID, run_id).created_at,
                     payload_contract=contract,
-                    custody_base_url=os.environ["ARTIFACT_CUSTODY_HTTP_URL"],
-                    custody_token=token,
                 )
-                replay_set_id, replay_manifest = import_verified_bundle(
-                    app,
+                replay_set_id, replay_manifest = importer.import_verified_result(
+                    TENANT_ID,
+                    run_id,
                     bundle=bundle,
-                    tenant_id=TENANT_ID,
-                    source=source,
                     producer=producer,
-                    run_id=run_id,
-                    attempt_id=lease.attempt_id,
-                    fencing_generation=lease.generation,
-                    observed_at=repository.get(TENANT_ID, run_id).created_at,
                     payload_contract=contract,
-                    custody_base_url=os.environ["ARTIFACT_CUSTODY_HTTP_URL"],
-                    custody_token=token,
                 )
                 if (replay_set_id, replay_manifest) != (output_set_id, manifest_digest):
                     raise RuntimeError(
@@ -620,17 +558,19 @@ def _run_new_fixture() -> None:
                     )
                 lost_ack = DurableExecutionCoordinator(
                     repository,
-                    _BC05Publisher(app, lose_ack=True),
+                    InProcessBC05Publisher(app, lose_ack=True),
                     Ed25519PublicationGrantSigner(signing_seed, key_id=key_id),
                     lease_seconds=120,
                 )
                 try:
-                    lost_ack.reserve_and_publish(
-                        lease,
-                        output_set_id,
-                        manifest_digest,
-                        "fixture-publish-" + run_id,
-                    )
+                    TrustedAcquisitionApplication(
+                        repository,
+                        app,
+                        ArtifactCustodyHTTPClient(
+                            os.environ["ARTIFACT_CUSTODY_HTTP_URL"], token
+                        ),
+                        finalization=lost_ack,
+                    ).finalize_output_set(lease, output_set_id, manifest_digest)
                 except TimeoutError:
                     pass
                 else:
