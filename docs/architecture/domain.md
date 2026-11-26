@@ -4,7 +4,7 @@
 
 | ID / contexto | Classificação | Estado próprio e fronteira |
 |---|---|---|
-| BC01 Source Catalog | supporting | Source e revisões de configuração; não faz descoberta autônoma |
+| BC01 Source Catalog | supporting | Source e revisões imutáveis de configuração/eligibility; não faz descoberta autônoma; primeiro módulo operacional via Acquisition Lifecycle |
 | BC02 Extension Catalog | generic/supporting | metadados e compatibilidade de extensões; não aprova releases de bot |
 | BC03 Pipeline Design | futuro supporting | definição de pipelines; não agenda tarefas internas de crawl |
 | BC04 Execution Coordination | supporting | CaptureRun, tentativas, conclusão e cancelamento; não possui a frontier |
@@ -14,11 +14,11 @@
 | BC08 Contract & Quality | supporting (contract-resolution inicial) | identidade e revisões imutáveis de contratos; qualidade de datasets segue futura; não valida sozinho evidência de Scout |
 | BC09 Dataset Publishing | futuro supporting | versões de datasets publicados |
 | BC10 Provenance & Audit | supporting transversal | registros de linhagem/auditoria; não substitui estado transacional de origem |
-| BC11 Policy & Access | generic/supporting | políticas e concessões; enforcement também ocorre em workers e rede |
+| BC11 Policy & Access | generic/supporting | revisões imutáveis de AcquisitionPolicy e eligibility; enforcement permanece no gateway/worker; lifecycle inicial composto sem deploy próprio |
 | BC12 Delivery | futuro supporting | distribuição ao consumidor; diferente de publicação de dataset |
 | BC13 Work Intake | supporting | Input e seu ciclo lógico de atendimento/reprocessamento |
 | BC14 Source Intelligence | core | ScoutSession, achados, evidências e propostas; não promove bots |
-| BC15 Collector Engineering | core | revisões de playbook, builds, aprovação e BotRelease imutável |
+| BC15 Collector Engineering | core | revisões de playbook, builds e BotRelease imutável; lifecycle inicial composto sem deploy próprio |
 | BC16 Crawl Frontier & Bot Fleet | supporting | tarefas internas, leases, budgets e disponibilidade de workers; não possui CaptureRun ou Input |
 
 BC05/BC16 são distinguíveis pela semântica de captura versus agendamento de tarefas; começar como módulos no mesmo deploy e fundir o limite se não houver linguagem ou ownership independente. BC02 descreve plugins; BC15 é dono do release. BC04 coordena execução; BC13 controla trabalho lógico. BC10 ingere fatos, não comanda estado alheio.

@@ -273,7 +273,7 @@ P0 correctness/security/ownership; P1 pre-source capability; P2 concrete operati
 | 1 BC15 runtime P1 | Move lifecycle to exact runtime; backend/identity/worker. No gateway/source UI/Playwright/arbitrary Python; preserve old profiles. | Exact files/hash; fixture network none; live gateway-only; mismatch/capability denied; cancel/timeout cleanup; fixture and currently supported live JSON/HTML/natural/planned pagination/redirect behavior preserved; no oracle. Catalog rollback. |
 | 2 Trusted importer P0/P1 | Focused ownership review of BC04/05/15/narrow composition, then move only boundary needed for the vertical. No service/oracle in prod/stream redesign. | Bad JSON/path/symlink/size/digest/stale attempt/forged evidence/schema rejected; replay stable; crash after custody/stage/seal/publish reconciles. Runtime result contract stays BC15; BC04/05/06 ownership stays intact. |
 | 3 Contract resolver P1 | Local immutable index binds compiler/build/intake/import. No online editing/bot registration/service. | ID/version/digest/compat vectors; unknown/changed/incompatible fail; offline deterministic; old builds pinned. |
-| 4 Source/Release P1 | BC01/11/15 modules/contracts + BC04 snapshot ops. No microservice/full engine/external source. | Signature/rollback/conflict/revoke/mismatch/capability tests; compile not approval; reviewer evidence; revoke new admission; key ops open. |
+| 4 Source/Release P1 | BC01/11/15 owner-named PostgreSQL state and operator composition + BC04 snapshot ops. No microservice/full engine/external source. M4 implementation is now local on `feat/source-release-lifecycle`; see the linked evidence. | Controlled approval/install/admission/publication/revoke flow passed locally; no remote M4 CI. Shared build distribution, production identity/key operations and broader persistence/failure matrix remain limitations. |
 | 5 Work Intake P1 | BC13 schema/Postgres/port to BC04. No broker/frontier/pipeline. | Same key+intent same Run; changed conflicts; tenant/contracts; crash recovery; retry same Run/new attempt; reprocess new lineage; duplicate completion. Submit/inspect/cancel/reprocess. |
 | 6 Raw Artifact/Composite P1 | IR/schema, fixture/live, gateway evidence, importer, BC06/05. No parser/multipart/direct bot credential. | Controlled file/binary digest/size, redirect/caps, unauthorized media/size, cleanup; composite one set/logical retrieval. Keep 100 MiB pending evidence. |
 | 7 Incremental transfer conditional | Streaming optimization follows observed resource behavior. Explicit safe memory/disk/response/aggregate bounds remain mandatory in earlier increments. No arbitrary SLO/multipart absent evidence. | Benchmark before redesign; if needed, verify RSS/temp caps, backpressure, incremental validation, no partial publish, restart quota and crash/cancel cleanup; old profile rollback. |
@@ -331,3 +331,24 @@ Local verification completed before final documentation validation:
 - Final `make docs-check naming-check architecture-check lint format-check` and `git diff --check` exited 0. No M1 remote CI exists because this branch is unpublished.
 
 This section is the local M1 implementation snapshot captured before delivery. M1 was subsequently reviewed and integrated through PR #23: reviewed head `5d04dca9ecee66729279d9eab715079d915384bb`, all seven remote checks passed, and squash-integrated main SHA `f9e53d325a8167b380d31a66d925c89ab05a4fa0`. No external source was implemented or accessed. Importer ownership/migration, contract/source/release lifecycle, Work Intake, raw-only artifact acquisition, measured streaming work and an integrated independent raw consumer remain later roadmap items.
+
+## M3/M4 delivery state — 2026-11-26
+
+M3 immutable payload contract resolution was reviewed at PR #25 head
+`3442371d47f9704c49450c5616a1ccb4fa9b87a9`, passed all seven required remote
+checks and integrated into `main` at `8c16167d92a1a40eefcfe711151881507e9e5911`.
+See the [M4 implementation assessment](source-release-lifecycle-2026-11-25.md)
+for M3 delivery evidence and the local M4 implementation.
+
+M4 adds `apps/acquisition-lifecycle` as an in-process operator composition.
+BC01, BC11 and BC15 owner-named schemas hold immutable revision/approval state;
+BC08 contract resolution remains repository-versioned; the existing BC04
+Ed25519/anti-rollback registry accepts signed generations. A complete controlled
+live JSON acquisition used this lifecycle for source, policy, Playbook, build,
+candidate, approval and authority, then exercised existing protected worker,
+gateway, importer, BC06 custody, BC05 publication and BC04 terminal result. A
+subsequent revocation snapshot preserved history and rejected new resolution of
+the release. M4 remains local and unpublished. The operator identity model is a
+local allowlist, build availability is a verified local path, and no production
+RBAC, multi-host artifact distribution, Source/Release service, Scout workflow,
+Work Intake or real-source acquisition is claimed.

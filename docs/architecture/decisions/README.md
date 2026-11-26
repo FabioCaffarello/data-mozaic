@@ -31,6 +31,8 @@ Todos os registros estão **Proposed**; não há decisões Accepted, Rejected ou
 | [025](025-authorized-live-acquisition-profile.md) | perfil live separado, contratos owner-bound e boundary de egress | Proposed |
 | [026](026-bc15-scrapy-runtime-framework.md) | runtime Scrapy versionado e lifecycle governado pelo BC15 | Proposed |
 | [027](027-trusted-acquisition-application.md) | composição confiável de resultado entre BC04, BC05, BC06, BC15 e gateway | Proposed |
+| [028](028-immutable-payload-contract-resolution.md) | resolução imutável de contratos de payload BC08 | Proposed |
+| [029](029-source-release-lifecycle-management.md) | lifecycle operacional de Source, Policy, BotBuild, BotRelease e authority snapshot | Proposed |
 
 Use o [template](template.md) para alterações que imponham restrições novas. Decisões menores e reversíveis podem permanecer nos documentos de arquitetura até existir evidência suficiente para ADR.
 7. [Recuperação durável de comandos Scout](007-scout-durable-recovery.md)

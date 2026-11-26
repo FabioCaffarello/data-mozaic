@@ -25,6 +25,7 @@ members = [
     "apps/execution-coordination",
     "apps/acquisition-output",
     "apps/acquisition-application",
+    "apps/acquisition-lifecycle",
     "libs/python/contract-resolution",
     "libs/python/bot-build",
     "libs/python/observability",
@@ -37,6 +38,7 @@ mozaic-scrapy-collector = { workspace = true }
 mozaic-execution-coordination = { workspace = true }
 mozaic-acquisition-output = { workspace = true }
 mozaic-trusted-acquisition-application = { workspace = true }
+mozaic-acquisition-lifecycle = { workspace = true }
 mozaic-contract-resolution = { workspace = true }
 mozaic-bot-build = { workspace = true }
 mozaic-observability = { workspace = true }
