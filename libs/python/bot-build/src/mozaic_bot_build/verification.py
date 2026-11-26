@@ -10,6 +10,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _MAX_MANIFEST_BYTES = 1_000_000
@@ -177,6 +178,7 @@ def verify_bot_build(
     supported_versions: Collection[str] = (
         "bot-build-manifest/v1",
         "bot-build-manifest/v2",
+        "bot-build-manifest/v3",
     ),
 ) -> VerifiedBotBuild:
     """Verify manifest identity and the exact immutable file set without importing code."""
@@ -217,7 +219,7 @@ def verify_bot_build(
         raise BotBuildVerificationError(
             "[BUILD_VERSION_UNSUPPORTED] manifest version is unsupported"
         )
-    if version == "bot-build-manifest/v2":
+    if version in {"bot-build-manifest/v2", "bot-build-manifest/v3"}:
         allowed_v2_keys = {
             "manifest_version",
             "playbook_id",
@@ -320,8 +322,43 @@ def verify_bot_build(
             )
         ):
             raise BotBuildVerificationError(
-                "[BUILD_MANIFEST_INVALID] v2 identities are incomplete"
+                f"[BUILD_MANIFEST_INVALID] {version.rsplit('/', 1)[-1]} identities are incomplete"
             )
+        if version == "bot-build-manifest/v3":
+            live_request = manifest.get("live_request")
+            input_query = (
+                live_request.get("input_query")
+                if isinstance(live_request, dict)
+                else None
+            )
+            try:
+                parsed_url = urlsplit(live_request.get("url", ""))
+                valid_url = (
+                    parsed_url.scheme == "https"
+                    and bool(parsed_url.netloc)
+                    and not parsed_url.username
+                    and not parsed_url.password
+                    and not parsed_url.query
+                    and not parsed_url.fragment
+                )
+            except ValueError:
+                valid_url = False
+            if (
+                compatibility.get("execution_mode") != "live-authorized"
+                or set(live_request or {}) != {"method", "url", "input_query"}
+                or live_request.get("method") != "GET"
+                or not valid_url
+                or not isinstance(input_query, dict)
+                or set(input_query) != {"parameter", "query_name"}
+                or any(
+                    not isinstance(value, str)
+                    or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", value)
+                    for value in input_query.values()
+                )
+            ):
+                raise BotBuildVerificationError(
+                    "[BUILD_MANIFEST_INVALID] v3 live input binding is invalid"
+                )
         for fixture in manifest["input_fixtures"]:
             if (
                 not isinstance(fixture, dict)

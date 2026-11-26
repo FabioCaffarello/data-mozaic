@@ -1,5 +1,5 @@
-.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector collector-live-admission-tests execution-coordination-tests execution-coordination-durable-setup execution-coordination-durable-migrate execution-coordination-durable-tests execution-coordination-finalization-tests execution-coordination-example execution-coordination-reconcile execution-coordination-recover-run authorized-live-json-acquisition authorized-live-html-acquisition authorized-live-pagination-acquisition authorized-live-pagination-planned-acquisition authorized-live-redirect-acquisition authorized-live-redirect-denial authorized-live-redirect-budget-exhaustion authorized-live-publication-ack-loss authorized-live-pagination-cancellation authorized-live-custody-interruption authorized-live-partial-stage-interruption acquisition-output-tests acquisition-application-tests acquisition-lifecycle-tests acquisition-lifecycle-migrate acquisition-lifecycle-acceptance acquisition-output-fixture-example acquisition-output-mongo-setup acquisition-output-mongo-check-config acquisition-output-mongo-up acquisition-output-mongo-status acquisition-output-mongo-connectivity acquisition-output-mongo-provision acquisition-output-mongo-tests acquisition-output-mongo-example acquisition-output-mongo-backup-restore acquisition-output-mongo-benchmark acquisition-output-mongo-benchmark-100k acquisition-output-mongo-down artifact-custody-setup artifact-custody-go-format-check artifact-custody-go-vet artifact-custody-go-test artifact-custody-go-race artifact-custody-go-build artifact-custody-go-vuln acquisition-gateway-go-format-check acquisition-gateway-go-vet acquisition-gateway-go-test acquisition-gateway-go-race acquisition-gateway-go-build acquisition-gateway-go-vuln acquisition-live-gateway-container-smoke artifact-custody-up artifact-custody-status artifact-custody-down artifact-custody-integration artifact-custody-db-bootstrap artifact-custody-object-provision artifact-custody-reconcile artifact-custody-recovery-tests artifact-custody-benchmark artifact-custody-backup-restore scrapy-collector-multibot-conformance execution-coordination-protected-e2e test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
-.PHONY: authorized-live-scenario
+.PHONY: help sync lock-check lint format-check docs-check migration-check naming-check architecture-check test-libraries test-scrapy-collector collector-live-admission-tests execution-coordination-tests execution-coordination-durable-setup execution-coordination-durable-migrate execution-coordination-durable-tests execution-coordination-finalization-tests execution-coordination-example execution-coordination-reconcile execution-coordination-recover-run authorized-live-json-acquisition authorized-live-html-acquisition authorized-live-pagination-acquisition authorized-live-pagination-planned-acquisition authorized-live-redirect-acquisition authorized-live-redirect-denial authorized-live-redirect-budget-exhaustion authorized-live-publication-ack-loss authorized-live-pagination-cancellation authorized-live-custody-interruption authorized-live-partial-stage-interruption acquisition-output-tests acquisition-application-tests acquisition-lifecycle-tests acquisition-lifecycle-migrate acquisition-lifecycle-acceptance work-intake-tests acquisition-output-fixture-example acquisition-output-mongo-setup acquisition-output-mongo-check-config acquisition-output-mongo-up acquisition-output-mongo-status acquisition-output-mongo-connectivity acquisition-output-mongo-provision acquisition-output-mongo-tests acquisition-output-mongo-example acquisition-output-mongo-backup-restore acquisition-output-mongo-benchmark acquisition-output-mongo-benchmark-100k acquisition-output-mongo-down artifact-custody-setup artifact-custody-go-format-check artifact-custody-go-vet artifact-custody-go-test artifact-custody-go-race artifact-custody-go-build artifact-custody-go-vuln acquisition-gateway-go-format-check acquisition-gateway-go-vet acquisition-gateway-go-test acquisition-gateway-go-race acquisition-gateway-go-build acquisition-gateway-go-vuln acquisition-live-gateway-container-smoke artifact-custody-up artifact-custody-status artifact-custody-down artifact-custody-integration artifact-custody-db-bootstrap artifact-custody-object-provision artifact-custody-reconcile artifact-custody-recovery-tests artifact-custody-benchmark artifact-custody-backup-restore scrapy-collector-multibot-conformance execution-coordination-protected-e2e test check hooks-install pre-commit ci db-up db-status db-migrate db-down test-integration test-recovery scout-relay scout-relay-once scout-sandbox-check scout-http-e2e scout-dns-adversarial-check scout-protected-replay-check scout-dev-setup scout-dev-status scout-dev-authorize-single-fixture scout-authoring-acceptance collector-playbook-examples collector-cross-backend-conformance
+.PHONY: authorized-live-scenario work-intake-setup work-intake-migrate work-intake-postgres-tests work-intake-acceptance
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 MONGO_COMPOSE_FILE := deployments/compose/mongodb.compose.yaml
 BC06_COMPOSE_FILE := deployments/compose/artifact-custody.compose.yaml
@@ -22,10 +22,10 @@ lock-check:
 	uv lock --check
 
 lint:
-	uv run --locked ruff check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination apps/acquisition-output apps/acquisition-application apps/acquisition-lifecycle libs/python/bot-build libs/python/observability libs/python/contract-resolution
+	uv run --locked ruff check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination apps/acquisition-output apps/acquisition-application apps/acquisition-lifecycle apps/work-intake libs/python/bot-build libs/python/observability libs/python/contract-resolution
 
 format-check:
-	uv run --locked ruff format --check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination apps/acquisition-output apps/acquisition-application apps/acquisition-lifecycle libs/python/bot-build libs/python/observability libs/python/contract-resolution
+	uv run --locked ruff format --check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination apps/acquisition-output apps/acquisition-application apps/acquisition-lifecycle apps/work-intake libs/python/bot-build libs/python/observability libs/python/contract-resolution
 
 docs-check:
 	uv run --locked python tooling/check_docs.py
@@ -166,6 +166,24 @@ acquisition-application-tests:
 acquisition-lifecycle-tests:
 	uv run --locked --package mozaic-acquisition-lifecycle python -m unittest discover -s apps/acquisition-lifecycle/tests -v
 
+work-intake-tests:
+	uv run --locked --package mozaic-work-intake python -m unittest discover -s apps/work-intake/tests -v
+
+work-intake-setup: execution-coordination-durable-setup
+	@set -a; . ./.env; set +a; uv run --locked --package mozaic-work-intake python tooling/work_intake_local_setup.py
+
+work-intake-migrate: work-intake-setup
+	@set -a; . ./.env.work-intake; set +a; uv run --locked --package mozaic-work-intake python tooling/work_intake_migrate.py
+
+work-intake-postgres-tests: work-intake-migrate
+	@set -a; . ./.env.work-intake; set +a; WORK_INTAKE_TEST_DATABASE_URL="$$WORK_INTAKE_DATABASE_URL" uv run --locked --package mozaic-work-intake python -m unittest discover -s apps/work-intake/integration_tests -v
+
+work-intake-acceptance: work-intake-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 MOZAIC_LIFECYCLE_ACCEPTANCE=1 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case work-intake
+
 acquisition-lifecycle-migrate: execution-coordination-durable-migrate
 	@set -a; . ./.env.execution-coordination; set +a; uv run --locked --all-packages acquisition-lifecycle migrate
 
@@ -300,7 +318,7 @@ execution-coordination-protected-e2e:
 test:
 	uv run --locked python -m unittest discover -s tests -v
 
-check: lock-check lint format-check docs-check migration-check naming-check architecture-check artifact-custody-go-format-check artifact-custody-go-vet artifact-custody-go-test acquisition-gateway-go-format-check acquisition-gateway-go-vet acquisition-gateway-go-test test-libraries test-scrapy-collector collector-live-admission-tests execution-coordination-tests acquisition-output-tests acquisition-application-tests acquisition-lifecycle-tests test
+check: lock-check lint format-check docs-check migration-check naming-check architecture-check artifact-custody-go-format-check artifact-custody-go-vet artifact-custody-go-test acquisition-gateway-go-format-check acquisition-gateway-go-vet acquisition-gateway-go-test test-libraries test-scrapy-collector collector-live-admission-tests execution-coordination-tests acquisition-output-tests acquisition-application-tests acquisition-lifecycle-tests work-intake-tests test
 
 hooks-install: sync
 	uv run --locked pre-commit install --hook-type pre-commit

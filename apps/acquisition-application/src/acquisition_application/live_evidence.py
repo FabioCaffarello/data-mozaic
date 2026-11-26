@@ -8,7 +8,7 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .plan_validation import verify_plan_results
@@ -157,7 +157,11 @@ def _fetch_trusted_evidence(
 
 
 def _plan_pagination_urls(
-    plan: dict[str, object], pages: list[VerifiedFixturePage], reported: object
+    plan: dict[str, object],
+    pages: list[VerifiedFixturePage],
+    reported: object,
+    *,
+    expected_initial_url: str | None = None,
 ) -> None:
     from collector_engineering import reference_runtime
 
@@ -166,13 +170,13 @@ def _plan_pagination_urls(
     pagination = plan.get("pagination")
     if not isinstance(fetch, dict) or not isinstance(fetch.get("inputs"), dict):
         raise FixtureImportError("compiled fetch plan is malformed")
-    expected = [fetch["inputs"].get("url")]
-    if not isinstance(expected[0], str):
+    expected_url = expected_initial_url or fetch["inputs"].get("url")
+    if not isinstance(expected_url, str):
         raise FixtureImportError("compiled fetch URL is invalid")
     if discover is None:
         if len(pages) != 1 or reported not in {None, "natural_end"}:
             raise FixtureImportError("non-paginated plan returned multiple pages")
-        if pages[0].url != expected[0]:
+        if pages[0].url != expected_url:
             raise FixtureImportError("live fetch differs from compiled plan URL")
         return
     if not isinstance(discover, dict) or not isinstance(discover.get("inputs"), dict):
@@ -235,6 +239,79 @@ def _plan_context(plan: dict[str, object]):
     return SimpleNamespace(source=source, budgets=budgets)
 
 
+def _authorized_parameterized_target(
+    plan: dict[str, object], parameters_json: str | None, parameters_digest: str | None
+) -> str | None:
+    """Derive the only parameterized target from BC04's immutable binding."""
+    fetch = plan.get("fetch")
+    if not isinstance(fetch, dict) or not isinstance(fetch.get("inputs"), dict):
+        raise FixtureImportError("compiled fetch plan is malformed")
+    inputs = fetch["inputs"]
+    query_binding = inputs.get("input_query")
+    if query_binding is None:
+        if parameters_json is not None or parameters_digest is not None:
+            raise FixtureImportError("BC04 parameters do not match the compiled plan")
+        return None
+    if (
+        not isinstance(query_binding, dict)
+        or set(query_binding) != {"parameter", "query_name"}
+        or not isinstance(query_binding.get("parameter"), str)
+        or not isinstance(query_binding.get("query_name"), str)
+        or not isinstance(parameters_json, str)
+        or not isinstance(parameters_digest, str)
+    ):
+        raise FixtureImportError("parameterized execution binding is incomplete")
+    encoded_parameters = parameters_json.encode("utf-8", errors="strict")
+    if (
+        len(encoded_parameters) > 64_000
+        or _digest(encoded_parameters) != parameters_digest
+    ):
+        raise FixtureImportError("BC04 parameter digest differs from its values")
+    try:
+        parameters = _strict_json(encoded_parameters, "BC04 input parameters")
+    except FixtureImportError as error:
+        raise FixtureImportError("BC04 parameter document is invalid") from error
+    parameter_name = query_binding["parameter"]
+    query_name = query_binding["query_name"]
+    value = parameters.get(parameter_name) if isinstance(parameters, dict) else None
+    if (
+        not isinstance(parameters, dict)
+        or set(parameters) != {parameter_name}
+        or isinstance(value, bool)
+        or not isinstance(value, (str, int))
+        or (
+            isinstance(value, str)
+            and (not value or len(value) > 128 or any(ord(c) < 0x20 for c in value))
+        )
+    ):
+        raise FixtureImportError("BC04 parameters differ from the compiled input")
+    raw_url = inputs.get("url")
+    if not isinstance(raw_url, str):
+        raise FixtureImportError("compiled input URL is invalid")
+    parsed = urlsplit(raw_url)
+    try:
+        original_query = parse_qsl(
+            parsed.query, keep_blank_values=True, strict_parsing=True
+        )
+    except ValueError as error:
+        raise FixtureImportError("compiled input query is ambiguous") from error
+    if (
+        parsed.fragment
+        or len(original_query) != 1
+        or original_query[0][0] != query_name
+    ):
+        raise FixtureImportError("compiled input query differs from its binding")
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode({query_name: value}),
+            "",
+        )
+    )
+
+
 def verify_live_result_bundle(
     result_dir: Path,
     *,
@@ -255,6 +332,8 @@ def verify_live_result_bundle(
     maximum_total_response_bytes: int,
     maximum_requests: int = 50,
     execution_deadline: datetime | None = None,
+    input_parameters_json: str | None = None,
+    input_parameters_digest: str | None = None,
 ) -> VerifiedResultBundle:
     """Validate worker declarations against current gateway evidence and plan."""
     from collector_engineering import reference_runtime
@@ -456,7 +535,15 @@ def verify_live_result_bundle(
         )
     if len(seen_refs) != len(raw_references):
         raise FixtureImportError("worker raw references contain unknown evidence")
-    _plan_pagination_urls(plan, trusted_pages, report.get("pagination_termination"))
+    parameterized_target = _authorized_parameterized_target(
+        plan, input_parameters_json, input_parameters_digest
+    )
+    _plan_pagination_urls(
+        plan,
+        trusted_pages,
+        report.get("pagination_termination"),
+        expected_initial_url=parameterized_target,
+    )
     verify_plan_results(
         plan=plan,
         pages=tuple(trusted_pages),

@@ -146,7 +146,7 @@ def validate_live_admission(
         raise PlaybookError("BotRelease is not approved")
     contract = release.get("payload_contract")
     if (
-        release.get("contract_version") != "bot-release/v2"
+        release.get("contract_version") not in {"bot-release/v2", "bot-release/v3"}
         or not isinstance(contract, dict)
         or set(contract) != {"contract_id", "version", "digest"}
         or not isinstance(contract.get("contract_id"), str)
@@ -157,6 +157,34 @@ def validate_live_admission(
         or not re.fullmatch(r"sha256:[0-9a-f]{64}", contract["digest"])
     ):
         raise PlaybookError("BotRelease payload contract binding is invalid")
+    if release.get("contract_version") == "bot-release/v3":
+        input_contract = release.get("input_contract")
+        input_request = release.get("input_request")
+        if (
+            not isinstance(input_contract, dict)
+            or set(input_contract) != {"contract_id", "version", "digest"}
+            or not isinstance(input_contract.get("contract_id"), str)
+            or not re.fullmatch(
+                r"[a-z0-9][a-z0-9._:-]{0,127}", input_contract["contract_id"]
+            )
+            or not isinstance(input_contract.get("version"), str)
+            or not re.fullmatch(
+                r"[a-z0-9][a-z0-9._:-]{0,63}", input_contract["version"]
+            )
+            or not isinstance(input_contract.get("digest"), str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", input_contract["digest"])
+        ):
+            raise PlaybookError("BotRelease input contract binding is invalid")
+        manifest_request = build_manifest.get("live_request")
+        if (
+            not isinstance(input_request, dict)
+            or set(input_request) != {"method", "url", "input_query"}
+            or input_request != manifest_request
+            or input_request.get("method") != "GET"
+            or not isinstance(input_request.get("input_query"), dict)
+            or set(input_request["input_query"]) != {"parameter", "query_name"}
+        ):
+            raise PlaybookError("BotRelease input request differs from BotBuild")
     for document, field, label in (
         (source_revision, "configuration_digest", "source revision"),
         (policy, "policy_digest", "acquisition policy"),

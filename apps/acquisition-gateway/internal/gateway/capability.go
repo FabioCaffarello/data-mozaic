@@ -19,30 +19,32 @@ const maxCapabilityLifetime = 2 * time.Minute
 var safeClaimValue = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/_+\-]{0,255}$`)
 
 type Capability struct {
-	ContractVersion     string `json:"contract_version"`
-	Issuer              string `json:"issuer"`
-	Recipient           string `json:"recipient"`
-	Algorithm           string `json:"algorithm"`
-	KeyID               string `json:"key_id"`
-	Audience            string `json:"audience"`
-	TenantID            string `json:"tenant_id"`
-	RunID               string `json:"run_id"`
-	AttemptID           string `json:"attempt_id"`
-	Generation          int64  `json:"generation"`
-	SourceID            string `json:"source_id"`
-	SourceRevisionID    string `json:"source_revision_id"`
-	PolicyID            string `json:"policy_id"`
-	PolicyVersion       string `json:"policy_version"`
-	PolicyDigest        string `json:"policy_digest"`
-	ReleaseID           string `json:"release_id"`
-	BuildID             string `json:"build_id"`
-	BuildManifestDigest string `json:"build_manifest_digest"`
-	RuntimeProfileID    string `json:"runtime_profile_id"`
-	IssuedAt            string `json:"issued_at"`
-	ExpiresAt           string `json:"expires_at"`
-	ExecutionDeadline   string `json:"execution_deadline"`
-	CapabilityID        string `json:"capability_id"`
-	Signature           string `json:"signature"`
+	ContractVersion             string `json:"contract_version"`
+	Issuer                      string `json:"issuer"`
+	Recipient                   string `json:"recipient"`
+	Algorithm                   string `json:"algorithm"`
+	KeyID                       string `json:"key_id"`
+	Audience                    string `json:"audience"`
+	TenantID                    string `json:"tenant_id"`
+	RunID                       string `json:"run_id"`
+	AttemptID                   string `json:"attempt_id"`
+	Generation                  int64  `json:"generation"`
+	SourceID                    string `json:"source_id"`
+	SourceRevisionID            string `json:"source_revision_id"`
+	PolicyID                    string `json:"policy_id"`
+	PolicyVersion               string `json:"policy_version"`
+	PolicyDigest                string `json:"policy_digest"`
+	ReleaseID                   string `json:"release_id"`
+	BuildID                     string `json:"build_id"`
+	BuildManifestDigest         string `json:"build_manifest_digest"`
+	RuntimeProfileID            string `json:"runtime_profile_id"`
+	InputParametersDigest       string `json:"input_parameters_digest,omitempty"`
+	ExpectedInitialTargetDigest string `json:"expected_initial_target_digest,omitempty"`
+	IssuedAt                    string `json:"issued_at"`
+	ExpiresAt                   string `json:"expires_at"`
+	ExecutionDeadline           string `json:"execution_deadline"`
+	CapabilityID                string `json:"capability_id"`
+	Signature                   string `json:"signature"`
 }
 
 func VerifyCapability(c Capability, keys map[string]ed25519.PublicKey, audience string, now, processStarted time.Time) error {
@@ -95,6 +97,12 @@ func VerifyCapability(c Capability, keys map[string]ed25519.PublicKey, audience 
 		return errors.New("capability_expired_or_stale")
 	}
 	if !digestValue(c.PolicyDigest) || !digestValue(c.BuildManifestDigest) {
+		return errors.New("capability_scope_invalid")
+	}
+	if c.InputParametersDigest != "" && !digestValue(c.InputParametersDigest) {
+		return errors.New("capability_scope_invalid")
+	}
+	if c.ExpectedInitialTargetDigest != "" && !digestValue(c.ExpectedInitialTargetDigest) {
 		return errors.New("capability_scope_invalid")
 	}
 	return nil

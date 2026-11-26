@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import rfc8785
 
@@ -103,6 +104,10 @@ class DurableExecutionCoordinator:
         build_id: str,
         build_manifest_digest: str,
         runtime_image_digest: str,
+        input_id: str | None = None,
+        submission_id: str | None = None,
+        input_parameters: Mapping[str, object] | None = None,
+        input_contract: Mapping[str, str] | None = None,
         max_attempts: int = 3,
     ) -> DurableRunSnapshot:
         """Resolve all live authorization from the trusted operator snapshot."""
@@ -119,6 +124,106 @@ class DurableExecutionCoordinator:
             build_manifest_digest=build_manifest_digest,
             runtime_image_digest=runtime_image_digest,
         )
+        expected_initial_target_digest = None
+        trusted_input_contract = resolved.release.get("input_contract")
+        if isinstance(trusted_input_contract, dict):
+            if (
+                not input_id
+                or not submission_id
+                or not isinstance(input_parameters, Mapping)
+                or not isinstance(input_contract, Mapping)
+                or dict(input_contract)
+                != {
+                    "contract_id": trusted_input_contract.get("contract_id"),
+                    "version": trusted_input_contract.get("version"),
+                    "digest": trusted_input_contract.get("digest"),
+                }
+            ):
+                raise CoordinationError(
+                    "BotRelease v3 requires an immutable Work Intake binding"
+                )
+            try:
+                input_parameters_json = rfc8785.dumps(dict(input_parameters)).decode(
+                    "utf-8"
+                )
+            except Exception as error:
+                raise CoordinationError(
+                    "input parameters are not canonical JSON"
+                ) from error
+            if len(input_parameters_json.encode("utf-8")) > 64_000:
+                raise CoordinationError("input parameters exceed the supported size")
+            input_parameters_digest = (
+                "sha256:"
+                + hashlib.sha256(input_parameters_json.encode("utf-8")).hexdigest()
+            )
+            input_request = resolved.release.get("input_request")
+            input_query = (
+                input_request.get("input_query")
+                if isinstance(input_request, Mapping)
+                else None
+            )
+            parameter_name = (
+                input_query.get("parameter")
+                if isinstance(input_query, Mapping)
+                else None
+            )
+            query_name = (
+                input_query.get("query_name")
+                if isinstance(input_query, Mapping)
+                else None
+            )
+            if (
+                not isinstance(input_request, Mapping)
+                or set(input_request) != {"method", "url", "input_query"}
+                or input_request.get("method") != "GET"
+                or not isinstance(parameter_name, str)
+                or not isinstance(query_name, str)
+                or set(input_parameters) != {parameter_name}
+                or isinstance(input_parameters[parameter_name], bool)
+                or not isinstance(input_parameters[parameter_name], (int, str))
+            ):
+                raise CoordinationError("BotRelease input request binding is invalid")
+            try:
+                base = urlsplit(str(input_request.get("url", "")))
+                if (
+                    base.scheme != "https"
+                    or not base.netloc
+                    or base.username is not None
+                    or base.password is not None
+                    or base.query
+                    or base.fragment
+                ):
+                    raise ValueError("unsafe base URL")
+                initial_url = urlunsplit(
+                    (
+                        base.scheme,
+                        base.netloc,
+                        base.path,
+                        urlencode({query_name: input_parameters[parameter_name]}),
+                        "",
+                    )
+                )
+            except (TypeError, ValueError) as error:
+                raise CoordinationError(
+                    "BotRelease input request URL is invalid"
+                ) from error
+            expected_initial_target_digest = (
+                "sha256:" + hashlib.sha256(initial_url.encode("utf-8")).hexdigest()
+            )
+        elif any(
+            value is not None
+            for value in (
+                input_id,
+                submission_id,
+                input_parameters,
+                input_contract,
+            )
+        ):
+            raise CoordinationError("BotRelease v2 cannot bind Work Intake parameters")
+        else:
+            input_parameters_json = None
+            input_parameters_digest = None
+            expected_initial_target_digest = None
         policy = resolved.policy
         binding = LiveExecutionBinding(
             source_id=source_id,
@@ -145,6 +250,26 @@ class DurableExecutionCoordinator:
                 resolved.release["payload_contract"]["version"]
             ),
             payload_contract_digest=str(resolved.release["payload_contract"]["digest"]),
+            input_contract_id=(
+                str(resolved.release["input_contract"]["contract_id"])
+                if isinstance(trusted_input_contract, dict)
+                else None
+            ),
+            input_contract_version=(
+                str(resolved.release["input_contract"]["version"])
+                if isinstance(trusted_input_contract, dict)
+                else None
+            ),
+            input_contract_digest=(
+                str(resolved.release["input_contract"]["digest"])
+                if isinstance(trusted_input_contract, dict)
+                else None
+            ),
+            input_id=input_id,
+            submission_id=submission_id,
+            input_parameters_json=input_parameters_json,
+            input_parameters_digest=input_parameters_digest,
+            expected_initial_target_digest=expected_initial_target_digest,
         )
         return self._repository.create(
             DurableRunIntent(
@@ -163,6 +288,12 @@ class DurableExecutionCoordinator:
         if snapshot is None:
             raise CoordinationError("CaptureRun does not exist")
         return snapshot
+
+    def resolve_admission(
+        self, tenant_id: str, idempotency_key: str
+    ) -> DurableRunSnapshot | None:
+        """Resolve an earlier idempotent admission after an ambiguous acknowledgment."""
+        return self._repository.get_by_idempotency(tenant_id, idempotency_key)
 
     def recover_expired_run(self, tenant_id: str, run_id: str) -> DurableRunSnapshot:
         """Apply BC04's normal expiry transition to one explicitly scoped run."""
@@ -223,6 +354,8 @@ class DurableExecutionCoordinator:
             build_id="sha256:" + binding.build_id,
             build_manifest_digest=binding.build_manifest_digest,
             runtime_profile_id=binding.runtime_profile_id,
+            input_parameters_digest=binding.input_parameters_digest,
+            expected_initial_target_digest=binding.expected_initial_target_digest,
             audience=audience,
             execution_deadline=min(snapshot.intent.deadline, lease.attempt_deadline),
             now=current,

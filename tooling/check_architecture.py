@@ -28,6 +28,7 @@ SOURCE_ROOTS = (
         ROOT / "apps/acquisition-lifecycle/src/acquisition_lifecycle",
         "acquisition_lifecycle",
     ),
+    (ROOT / "apps/work-intake/src/work_intake", "work_intake"),
     (
         ROOT / "libs/python/bot-build/src/mozaic_bot_build",
         "mozaic_bot_build",
@@ -161,6 +162,28 @@ ALLOWED = {
         "execution_coordination.adapters",
         "execution_coordination.durable_ports",
     },
+    "work_intake": {
+        "work_intake.domain",
+        "work_intake.ports",
+        "work_intake.application",
+        "work_intake.adapters",
+    },
+    "work_intake.domain": {"mozaic_contract_resolution"},
+    "work_intake.ports": {"work_intake.domain", "mozaic_contract_resolution"},
+    "work_intake.application": {
+        "work_intake.domain",
+        "work_intake.ports",
+        "mozaic_contract_resolution",
+    },
+    "work_intake.adapters": {
+        "work_intake.domain",
+        "mozaic_contract_resolution",
+        "acquisition_lifecycle",
+        "acquisition_lifecycle.application",
+        "acquisition_lifecycle.domain",
+        "execution_coordination.durable_application",
+        "execution_coordination.domain",
+    },
     "acquisition_application.adapters": {
         "acquisition_application.result_bundle",
         "acquisition_application.ports",
@@ -179,6 +202,15 @@ ALLOWED = {
     "execution_coordination.durable_domain": {"execution_coordination.domain"},
     "execution_coordination.durable_ports": {
         "execution_coordination.durable_domain",
+    },
+    # The explicit BC13 composition root is the only adapter module that wires
+    # infrastructure adapters into the WorkIntake application use case.
+    "work_intake.adapters.composition": {
+        "work_intake.application",
+        "work_intake.adapters",
+        "acquisition_lifecycle.application",
+        "execution_coordination.durable_application",
+        "mozaic_contract_resolution",
     },
     "execution_coordination.durable_application": {
         "execution_coordination.domain",
@@ -242,6 +274,10 @@ ALLOWED = {
         "mozaic_bot_build",
         "mozaic_contract_resolution",
         "scrapy_collector",
+        "work_intake",
+        "work_intake.adapters",
+        "work_intake.adapters.composition",
+        "work_intake.domain",
     },
 }
 INTERNAL_ROOTS = (
@@ -254,6 +290,7 @@ INTERNAL_ROOTS = (
     "collector_engineering",
     "acquisition_application",
     "acquisition_lifecycle",
+    "work_intake",
     "tooling",
 )
 SCOUT_DOMAIN_FORBIDDEN = {

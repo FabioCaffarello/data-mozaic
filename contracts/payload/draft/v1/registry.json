@@ -2,6 +2,20 @@
   "contract_version": "payload-contract-registry/v1",
   "revisions": [
     {
+      "contract_id": "controlled.input.limit",
+      "version": "1.0.0",
+      "digest": "sha256:ce76be721604553e02e0b7bb04dddd6081508ca97b6b7e1e03fc9571df9a23d3",
+      "schema_path": "controlled-input-limit.schema.json",
+      "dialect": "https://json-schema.org/draft/2020-12/schema"
+    },
+    {
+      "contract_id": "controlled-work-intake.record",
+      "version": "1.0.0",
+      "digest": "sha256:89a946e40874f93195325f2ea3ef16d13167a80f0335a41b412b63d6d262fbf8",
+      "schema_path": "controlled-work-intake-record.schema.json",
+      "dialect": "https://json-schema.org/draft/2020-12/schema"
+    },
+    {
       "contract_id": "controlled-live-html.record",
       "version": "1.0.0",
       "digest": "sha256:ba3fd2ff0d6fe046ba7ad5048adac530fe1c7c9f6fcb2adcd48860681b98b116",

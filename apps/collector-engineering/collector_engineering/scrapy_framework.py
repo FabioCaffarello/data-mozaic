@@ -8,15 +8,18 @@ Transport remains profile-specific in the fixture and gateway adapters.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from scrapy import Request, Spider, signals
 from scrapy.crawler import CrawlerProcess
@@ -288,13 +291,21 @@ class LivePlanSpider(Spider):
 
     name = "mozaic-generated-live-spider"
 
-    def __init__(self, plan: dict[str, Any], output_root: str, **kwargs):
+    def __init__(
+        self,
+        plan: dict[str, Any],
+        output_root: str,
+        input_parameters: dict[str, Any] | None = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.plan = plan
         self.output_root = Path(output_root).absolute()
         self.source = plan["source"]
         self.budgets = plan["budgets"]
         self.fetch = plan["fetch"]
+        self.input_parameters = input_parameters
+        self.start_url = _live_start_url(self.fetch, input_parameters)
         self.select = plan["select"]
         self.extract = plan["extract"]
         self.discover = plan.get("discover")
@@ -332,7 +343,7 @@ class LivePlanSpider(Spider):
         self.evidence: list[dict[str, Any]] = []
         self.documents: list[dict[str, Any]] = []
         self.failure: str | None = None
-        self.visited = {self.fetch["inputs"]["url"]}
+        self.visited = {self.start_url}
         self.runtime_context.pages_used = 0
         self.runtime_context.requests_used = 0
         self.runtime_context.bytes_used = 0
@@ -348,7 +359,7 @@ class LivePlanSpider(Spider):
     async def start(self):
         _verify_scrapy_tables(self, profile="live")
         yield Request(
-            self.fetch["inputs"]["url"],
+            self.start_url,
             callback=self.parse_page,
             errback=self._failed,
             cb_kwargs={"page_index": 0},
@@ -605,6 +616,127 @@ def _live_plan(plan: dict[str, Any]) -> None:
         raise RuntimeFailure("RUNTIME_PLAN_INVALID", "live plan shape/profile differs")
 
 
+def _live_start_url(fetch: dict[str, Any], parameters: dict[str, Any] | None) -> str:
+    inputs = fetch["inputs"]
+    binding = inputs.get("input_query")
+    if binding is None:
+        if parameters is not None:
+            raise RuntimeFailure(
+                "INPUT_PARAMETERS_UNEXPECTED", "build has no input query binding"
+            )
+        return inputs["url"]
+    if (
+        not isinstance(binding, dict)
+        or set(binding) != {"parameter", "query_name"}
+        or not isinstance(parameters, dict)
+        or set(parameters) != {binding.get("parameter")}
+    ):
+        raise RuntimeFailure("INPUT_PARAMETERS_INVALID", "input binding differs")
+    value = parameters[binding["parameter"]]
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise RuntimeFailure(
+            "INPUT_PARAMETER_TYPE_INVALID", "query input must be an integer or string"
+        )
+    if isinstance(value, str) and (
+        not value or len(value) > 128 or any(ord(char) < 0x20 for char in value)
+    ):
+        raise RuntimeFailure(
+            "INPUT_PARAMETER_VALUE_INVALID", "query input is outside its bounds"
+        )
+    parsed = urlsplit(inputs["url"])
+    try:
+        original_query = parse_qsl(
+            parsed.query, keep_blank_values=True, strict_parsing=True
+        )
+    except ValueError:
+        original_query = []
+    if len(original_query) != 1 or original_query[0][0] != binding["query_name"]:
+        raise RuntimeFailure("INPUT_QUERY_PLAN_INVALID", "compiled query differs")
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode({binding["query_name"]: value}),
+            "",
+        )
+    )
+
+
+def _read_live_input_parameters(
+    plan: dict[str, Any], input_path: str | None
+) -> dict[str, Any] | None:
+    binding = plan["fetch"]["inputs"].get("input_query")
+    if binding is None:
+        if input_path is not None:
+            raise RuntimeFailure(
+                "INPUT_PARAMETERS_UNEXPECTED", "build has no input query binding"
+            )
+        return None
+    if input_path is None:
+        raise RuntimeFailure(
+            "INPUT_PARAMETERS_MISSING", "input parameter file is required"
+        )
+    path = Path(input_path)
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & (
+            stat.S_IWGRP | stat.S_IWOTH
+        ):
+            raise OSError("unsafe input parameter file")
+        encoded = path.read_bytes()
+        if not encoded or len(encoded) > 64_000:
+            raise OSError("input parameter file exceeds the limit")
+        parameters = json.loads(
+            encoded.decode("utf-8", errors="strict"),
+            object_pairs_hook=_unique_json_object,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+        )
+        if not isinstance(parameters, dict):
+            raise TypeError("parameter root is not an object")
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise RuntimeFailure(
+            "INPUT_PARAMETERS_INVALID", "input parameter file is invalid"
+        ) from error
+    if set(parameters) != {binding["parameter"]}:
+        raise RuntimeFailure("INPUT_PARAMETERS_INVALID", "input binding differs")
+    capability_path = Path(os.environ.get("MOZAIC_EXECUTION_CAPABILITY_FILE", ""))
+    try:
+        capability_info = capability_path.lstat()
+        if not stat.S_ISREG(capability_info.st_mode) or capability_info.st_mode & (
+            stat.S_IWGRP | stat.S_IWOTH
+        ):
+            raise ValueError("unsafe capability file")
+        capability_bytes = capability_path.read_bytes()
+        if len(capability_bytes) > 4096:
+            raise ValueError("capability too large")
+        token = capability_bytes.decode("ascii").strip()
+        padding = "=" * (-len(token) % 4)
+        claims = json.loads(
+            base64.b64decode(
+                (token + padding).encode("ascii"), altchars=b"-_", validate=True
+            ),
+            object_pairs_hook=_unique_json_object,
+        )
+        digest = "sha256:" + hashlib.sha256(encoded).hexdigest()
+        if claims.get("input_parameters_digest") != digest:
+            raise ValueError("input digest differs from capability")
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeFailure(
+            "INPUT_PARAMETERS_UNAUTHORIZED", "input parameters differ from BC04"
+        ) from error
+    return parameters
+
+
+def _unique_json_object(items: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in items:
+        if key in value:
+            raise ValueError("duplicate JSON property")
+        value[key] = item
+    return value
+
+
 def run_live(
     plan: dict[str, Any], identity: dict[str, Any], argv: list[str] | None = None
 ) -> int:
@@ -615,8 +747,10 @@ def run_live(
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
+    parser.add_argument("--input-parameters-file")
     args = parser.parse_args(argv)
     output = _output_path(args.output)
+    parameters = _read_live_input_parameters(plan, args.input_parameters_file)
     settings = Settings()
     settings.setdict(scrapy_live_runtime.live_handler_settings(), priority="cmdline")
     if plan["pagination"] is not None:
@@ -624,7 +758,12 @@ def run_live(
         settings.set("RANDOMIZE_DOWNLOAD_DELAY", False, priority="cmdline")
     process = CrawlerProcess(settings=settings)
     crawler = process.create_crawler(LivePlanSpider)
-    process.crawl(crawler, plan=plan, output_root=args.output)
+    process.crawl(
+        crawler,
+        plan=plan,
+        output_root=args.output,
+        input_parameters=parameters,
+    )
     spider = None
     try:
         process.start(stop_after_crawl=True)

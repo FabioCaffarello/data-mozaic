@@ -86,9 +86,13 @@ def main() -> int:
 
 
 def _execute_build(build: Path, output: Path) -> None:
+    command = ["python", "-B", str(build / "bot.py"), "--output", str(output)]
+    input_parameters = os.environ.get("MOZAIC_INPUT_PARAMETERS_FILE")
+    if input_parameters:
+        command.extend(("--input-parameters-file", input_parameters))
     try:
         result = subprocess.run(
-            ["python", "-B", str(build / "bot.py"), "--output", str(output)],
+            command,
             check=False,
             capture_output=True,
             text=True,

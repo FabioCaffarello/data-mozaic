@@ -10,6 +10,7 @@ from typing import Protocol
 
 from acquisition_output.domain import PayloadContractRef
 from execution_coordination.durable_domain import DurableRunSnapshot
+from mozaic_contract_resolution import ContractReference
 
 
 class CurrentExecutionReader(Protocol):
@@ -42,6 +43,11 @@ class TrustedExecutionContext:
     execution_mode: str
     binding_digest: str
     payload_contract: PayloadContractRef | None = None
+    input_contract: ContractReference | None = None
+    input_id: str | None = None
+    submission_id: str | None = None
+    input_parameters_json: str | None = None
+    input_parameters_digest: str | None = None
     replay_output_set_id: str | None = None
     replay_manifest_digest: str | None = None
 
@@ -132,6 +138,7 @@ def load_current_execution(
                 and binding.payload_contract_digest is not None
                 else None
             ),
+            input_contract=None,
             replay_output_set_id=(
                 reservation.output_set_id if completed_replay else None
             ),
@@ -171,6 +178,21 @@ def load_current_execution(
                 and binding.payload_contract_digest is not None
                 else None
             ),
+            input_contract=(
+                ContractReference(
+                    binding.input_contract_id,
+                    binding.input_contract_version,
+                    binding.input_contract_digest,
+                )
+                if binding.input_contract_id is not None
+                and binding.input_contract_version is not None
+                and binding.input_contract_digest is not None
+                else None
+            ),
+            input_id=binding.input_id,
+            submission_id=binding.submission_id,
+            input_parameters_json=binding.input_parameters_json,
+            input_parameters_digest=binding.input_parameters_digest,
             replay_output_set_id=(
                 reservation.output_set_id if completed_replay else None
             ),

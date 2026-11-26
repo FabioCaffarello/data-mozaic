@@ -116,6 +116,37 @@ class TrustedLiveAuthorityTests(unittest.TestCase):
         )
         self.assertTrue(binding.snapshot_digest.startswith("sha256:"))
 
+    def test_v3_release_preserves_the_exact_input_contract_binding(self):
+        snapshot = json.loads(json.dumps(self.snapshot))
+        release = snapshot["releases"][0]
+        release["contract_version"] = "bot-release/v3"
+        release["input_contract"] = {
+            "contract_id": "controlled.input",
+            "version": "1.0.0",
+            "digest": "sha256:" + "e" * 64,
+        }
+        release["input_request"] = {
+            "method": "GET",
+            "url": "https://example.test/api/v1/items",
+            "input_query": {"parameter": "limit", "query_name": "limit"},
+        }
+        release["release_digest"] = self._document_digest(release, "release_digest")
+        snapshot.pop("snapshot_digest")
+        snapshot["snapshot_digest"] = self._document_digest(snapshot, "snapshot_digest")
+        binding = self._load(self._encoded(snapshot)).resolve(
+            source_id="controlled-http",
+            source_revision_id="controlled-v1",
+            policy_id="controlled-get",
+            policy_version="1.0.0",
+            release_id="build-release-1",
+            build_id="sha256:" + "a" * 64,
+            build_manifest_digest="sha256:" + "b" * 64,
+            runtime_image_digest="sha256:" + "c" * 64,
+        )
+        self.assertEqual(
+            binding.release["input_contract"]["digest"], "sha256:" + "e" * 64
+        )
+
     def test_historical_release_v1_is_not_admitted_as_contract_bound(self):
         historical = json.loads(json.dumps(self.snapshot))
         release = historical["releases"][0]

@@ -387,16 +387,27 @@ def verify_build(
     try:
         manifest_bytes = manifest_path.read_bytes()
         manifest = json.loads(manifest_bytes)
-        if (
-            isinstance(manifest, dict)
-            and manifest.get("manifest_version") == "bot-build-manifest/v2"
-        ):
+        if isinstance(manifest, dict) and manifest.get("manifest_version") in {
+            "bot-build-manifest/v2",
+            "bot-build-manifest/v3",
+        }:
+            manifest_version = manifest["manifest_version"]
             if (
                 manifest.get("backend_id") != expected_backend_id
                 or manifest.get("backend_version") != expected_backend_version
                 or manifest.get("compiler_version") != expected_compiler_version
-                or manifest.get("ir_version") != IR_VERSION
-                or manifest.get("playbook_version") != "capture-playbook-draft/v2"
+                or manifest.get("ir_version")
+                != (
+                    "collector-ir/v2"
+                    if manifest_version.endswith("/v3")
+                    else IR_VERSION
+                )
+                or manifest.get("playbook_version")
+                != (
+                    "capture-playbook-draft/v3"
+                    if manifest_version.endswith("/v3")
+                    else "capture-playbook-draft/v2"
+                )
             ):
                 raise PlaybookError(
                     "[BUILD_VERSION_UNSUPPORTED] incompatible build manifest/backend"
@@ -414,17 +425,32 @@ def verify_build(
         verified = verify_bot_build(
             directory,
             hashlib.sha256(manifest_bytes).hexdigest(),
-            supported_versions=("bot-build-manifest/v1", "bot-build-manifest/v2"),
+            supported_versions=(
+                "bot-build-manifest/v1",
+                "bot-build-manifest/v2",
+                "bot-build-manifest/v3",
+            ),
         )
     except (OSError, json.JSONDecodeError, BotBuildVerificationError) as error:
         raise PlaybookError(str(error)) from error
     manifest = verified.manifest
+    manifest_version = manifest.get("manifest_version")
     if (
         manifest.get("backend_id") != expected_backend_id
         or manifest.get("backend_version") != expected_backend_version
         or manifest.get("compiler_version") != expected_compiler_version
-        or manifest.get("ir_version") != IR_VERSION
-        or manifest.get("playbook_version") != "capture-playbook-draft/v2"
+        or manifest.get("ir_version")
+        != (
+            "collector-ir/v2"
+            if manifest_version == "bot-build-manifest/v3"
+            else IR_VERSION
+        )
+        or manifest.get("playbook_version")
+        != (
+            "capture-playbook-draft/v3"
+            if manifest_version == "bot-build-manifest/v3"
+            else "capture-playbook-draft/v2"
+        )
     ):
         raise PlaybookError(
             "[BUILD_VERSION_UNSUPPORTED] incompatible build manifest/backend"
@@ -434,7 +460,7 @@ def verify_build(
         raise PlaybookError(
             "[BUILD_PROFILE_UNSUPPORTED] backend capability profile differs"
         )
-    if manifest.get("manifest_version") == "bot-build-manifest/v2":
+    if manifest_version in {"bot-build-manifest/v2", "bot-build-manifest/v3"}:
         expected_profile_id = {
             "python-http-reference": "python-http-reference-v1",
             "scrapy-fixture": "scrapy-fixture-v1",
@@ -444,7 +470,7 @@ def verify_build(
             raise PlaybookError("[BUILD_PROFILE_UNSUPPORTED] profile identity differs")
     lock_digest = (
         manifest.get("dependency_identity", {}).get("lockfile_sha256")
-        if manifest.get("manifest_version") == "bot-build-manifest/v2"
+        if manifest_version in {"bot-build-manifest/v2", "bot-build-manifest/v3"}
         else manifest.get("dependency_lock_sha256")
     )
     lockfile = Path(__file__).resolve().parents[3] / "uv.lock"
@@ -470,7 +496,7 @@ def verify_build(
         raise PlaybookError(
             "[BUILD_TOOLCHAIN_UNSUPPORTED] build toolchain identity differs"
         )
-    if manifest.get("manifest_version") == "bot-build-manifest/v2":
+    if manifest_version in {"bot-build-manifest/v2", "bot-build-manifest/v3"}:
         compatibility = manifest["compatibility"]
         if (
             compatibility.get("python_minor")

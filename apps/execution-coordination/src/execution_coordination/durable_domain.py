@@ -7,12 +7,16 @@ reservation required when multiple coordinator processes share PostgreSQL.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
+
+import rfc8785
 
 from execution_coordination.domain import CoordinationError, ExecutionBinding
 
@@ -93,6 +97,14 @@ class LiveExecutionBinding:
     payload_contract_id: str | None = None
     payload_contract_version: str | None = None
     payload_contract_digest: str | None = None
+    input_contract_id: str | None = None
+    input_contract_version: str | None = None
+    input_contract_digest: str | None = None
+    input_id: str | None = None
+    submission_id: str | None = None
+    input_parameters_json: str | None = None
+    input_parameters_digest: str | None = None
+    expected_initial_target_digest: str | None = None
     execution_mode: str = "live-authorized"
 
     def __post_init__(self) -> None:
@@ -128,6 +140,65 @@ class LiveExecutionBinding:
             _identity(self.payload_contract_version or "", "payload contract version")
             if not _DIGEST.fullmatch(self.payload_contract_digest or ""):
                 raise CoordinationError("payload contract digest is invalid")
+        input_contract_values = (
+            self.input_contract_id,
+            self.input_contract_version,
+            self.input_contract_digest,
+        )
+        if any(value is not None for value in input_contract_values):
+            if any(
+                not isinstance(value, str) or not value
+                for value in input_contract_values
+            ):
+                raise CoordinationError("input contract binding is incomplete")
+            _identity(self.input_contract_id or "", "input contract identity")
+            _identity(self.input_contract_version or "", "input contract version")
+            if not _DIGEST.fullmatch(self.input_contract_digest or ""):
+                raise CoordinationError("input contract digest is invalid")
+        input_values = (
+            self.input_id,
+            self.submission_id,
+            self.input_parameters_json,
+            self.input_parameters_digest,
+        )
+        if any(value is not None for value in input_values):
+            if any(not isinstance(value, str) or not value for value in input_values):
+                raise CoordinationError("Work Intake execution binding is incomplete")
+            _identity(self.input_id or "", "logical Input identity")
+            _identity(self.submission_id or "", "Submission identity")
+            if not _DIGEST.fullmatch(self.input_parameters_digest or ""):
+                raise CoordinationError("input parameter digest is invalid")
+            try:
+                raw_parameters = (self.input_parameters_json or "").encode("utf-8")
+                parameters = json.loads(raw_parameters.decode("utf-8", errors="strict"))
+                canonical = rfc8785.dumps(parameters)
+            except Exception as error:
+                raise CoordinationError(
+                    "input parameter document is invalid"
+                ) from error
+            if (
+                len(raw_parameters) > 64_000
+                or canonical != raw_parameters
+                or "sha256:" + hashlib.sha256(raw_parameters).hexdigest()
+                != self.input_parameters_digest
+            ):
+                raise CoordinationError("input parameter bytes or digest differ")
+            if not all(self.input_contract_values):
+                raise CoordinationError("input parameters lack a contract binding")
+            if not _DIGEST.fullmatch(self.expected_initial_target_digest or ""):
+                raise CoordinationError(
+                    "input parameters lack an authorized initial target"
+                )
+        elif self.expected_initial_target_digest is not None:
+            raise CoordinationError("initial target requires Work Intake parameters")
+
+    @property
+    def input_contract_values(self) -> tuple[str | None, str | None, str | None]:
+        return (
+            self.input_contract_id,
+            self.input_contract_version,
+            self.input_contract_digest,
+        )
         if not re.fullmatch(r"[0-9a-f]{64}", self.build_id):
             raise CoordinationError("BotBuild identity is invalid")
         if self.execution_mode != "live-authorized":

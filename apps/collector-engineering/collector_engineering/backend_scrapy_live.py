@@ -10,12 +10,13 @@ import shutil
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from mozaic_bot_build import derive_bot_id
 
 from .backend_python_http import _platform_slug, _safe_output_path
 from .backend_python_http import verify_build as _verify_build
-from .playbook_v2 import IR_VERSION, TypedIR, canonical_json
+from .playbook_v2 import IR_VERSION, IR_VERSION_V2, TypedIR, canonical_json
 from .reference_runtime import RUNTIME_VERSION
 from .runtime_identity import SCRAPY_RUNTIME_MODULES, runtime_bundle_files
 from .scrapy_live_runtime import LIVE_RUNTIME_VERSION
@@ -62,6 +63,39 @@ def _supported_graph(
             "[LIVE_GRAPH_UNSUPPORTED] live v1 requires one GET, JSON or HTML selection, extraction and records output"
         )
     fetch = by_type["http.fetch"][0]
+    input_query = fetch["inputs"].get("input_query")
+    if input_query is not None:
+        if (
+            not isinstance(input_query, dict)
+            or set(input_query) != {"parameter", "query_name"}
+            or not all(
+                isinstance(value, str) and value for value in input_query.values()
+            )
+            or ir.document.get("ir_version") != IR_VERSION_V2
+        ):
+            raise PlaybookError(
+                "[LIVE_INPUT_QUERY_INVALID] input query binding is invalid"
+            )
+        try:
+            query_items = parse_qsl(
+                urlsplit(fetch["inputs"]["url"]).query,
+                keep_blank_values=True,
+                strict_parsing=True,
+            )
+        except ValueError:
+            query_items = []
+        if len(query_items) != 1 or query_items[0][0] != input_query["query_name"]:
+            raise PlaybookError(
+                "[LIVE_INPUT_QUERY_INVALID] URL must contain only the bound query key"
+            )
+        # M5 parameter binding is deliberately a one-response profile. A
+        # redirect or pagination link is another network target and cannot
+        # inherit the per-submission query binding safely.
+        if by_type.get("links.discover") or by_type.get("pagination.bounded"):
+            raise PlaybookError(
+                "[LIVE_INPUT_QUERY_PROFILE_UNSUPPORTED] parameterized live requests "
+                "must contain exactly one fetch and no continuation operations"
+            )
     select = (by_type.get("select.json_records") or by_type.get("select.html_records"))[
         0
     ]
@@ -160,7 +194,7 @@ def compile_build(
     playbook_sha256: str | None = None,
     target_platform: str | None = None,
 ) -> dict[str, Any]:
-    if ir.document.get("ir_version") != IR_VERSION:
+    if ir.document.get("ir_version") not in {IR_VERSION, IR_VERSION_V2}:
         raise PlaybookError(
             "[IR_VERSION_UNSUPPORTED] live backend requires collector-ir/v1"
         )
@@ -183,8 +217,24 @@ def compile_build(
         name: hashlib.sha256(data).hexdigest()
         for name, data in sorted(files_map.items())
     }
+    input_query = fetch["inputs"].get("input_query")
+    live_request = {"method": "GET", "url": fetch["inputs"]["url"]}
+    if input_query is not None:
+        parsed_url = urlsplit(fetch["inputs"]["url"])
+        base_url = urlunsplit(
+            (parsed_url.scheme, parsed_url.netloc, parsed_url.path, "", "")
+        )
+        live_request = {
+            "method": "GET",
+            "url": base_url,
+            "input_query": dict(input_query),
+        }
     manifest_core = {
-        "manifest_version": "bot-build-manifest/v2",
+        "manifest_version": (
+            "bot-build-manifest/v3"
+            if input_query is not None
+            else "bot-build-manifest/v2"
+        ),
         "playbook_id": ir.document["playbook_id"],
         "bot_id": derive_bot_id(
             ir.document["playbook_id"], ir.document["source"]["source_id"]
@@ -193,9 +243,13 @@ def compile_build(
             "source_id": ir.document["source"]["source_id"],
             "source_revision": ir.document["source"]["revision"],
         },
-        "playbook_version": "capture-playbook-draft/v2",
+        "playbook_version": (
+            "capture-playbook-draft/v3"
+            if ir.document["ir_version"] == IR_VERSION_V2
+            else "capture-playbook-draft/v2"
+        ),
         "playbook_sha256": playbook_sha256,
-        "ir_version": IR_VERSION,
+        "ir_version": ir.document["ir_version"],
         "ir_sha256": ir.sha256,
         "backend_id": BACKEND_ID,
         "backend_version": BACKEND_VERSION,
@@ -234,7 +288,7 @@ def compile_build(
         "dependency_lock_sha256": hashlib.sha256(lockfile.read_bytes()).hexdigest(),
         "generated_files": generated,
         "input_fixtures": [],
-        "live_request": {"method": "GET", "url": fetch["inputs"]["url"]},
+        "live_request": live_request,
     }
     manifest = {
         **manifest_core,

@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
@@ -23,8 +23,15 @@ SCHEMA = json.loads(
     .joinpath("schemas/CapturePlaybook.v2.schema.json")
     .read_text(encoding="utf-8")
 )
+SCHEMA_V3 = json.loads(
+    files("collector_engineering")
+    .joinpath("schemas/CapturePlaybook.v3.schema.json")
+    .read_text(encoding="utf-8")
+)
 DSL_VERSION = "capture-playbook-draft/v2"
+DSL_VERSION_V3 = "capture-playbook-draft/v3"
 IR_VERSION = "collector-ir/v1"
+IR_VERSION_V2 = "collector-ir/v2"
 OPERATOR_VERSIONS = {
     "http.fetch/v1",
     "links.discover/v1",
@@ -118,16 +125,20 @@ def load_playbook_v2(path: Path) -> ParsedPlaybook:
 def _schema_diagnostics(document: dict[str, Any]) -> list[Diagnostic]:
     if not isinstance(document, dict):
         return [Diagnostic("SCHEMA_INVALID", "$", "playbook root must be an object")]
-    if document.get("dsl_version") != DSL_VERSION:
+    schema = {
+        DSL_VERSION: SCHEMA,
+        DSL_VERSION_V3: SCHEMA_V3,
+    }.get(document.get("dsl_version"))
+    if schema is None:
         return [
             Diagnostic(
                 "DSL_VERSION_UNSUPPORTED",
                 "$.dsl_version",
-                "expected capture-playbook-draft/v2; v1 must use the v1 validator",
+                "supported versions are capture-playbook-draft/v2 and /v3",
             )
         ]
     result = []
-    validator = Draft202012Validator(SCHEMA, format_checker=FormatChecker())
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
     for error in validator.iter_errors(document):
         path = "$" + "".join(
             f"[{part}]" if isinstance(part, int) else f".{part}"
@@ -517,6 +528,38 @@ def validate_playbook_v2(
                         "fetch URL is outside the declared source scope",
                     )
                 )
+            if "input_query" in operation:
+                if document.get("dsl_version") != DSL_VERSION_V3:
+                    diagnostics.append(
+                        Diagnostic(
+                            "INPUT_QUERY_VERSION_UNSUPPORTED",
+                            f"{op_path}.input_query",
+                            "input query binding requires CapturePlaybook draft/v3",
+                        )
+                    )
+                binding = operation["input_query"]
+                query_name = binding.get("query_name")
+                try:
+                    query_pairs = parse_qsl(
+                        urlsplit(operation["url"]).query,
+                        keep_blank_values=True,
+                        strict_parsing=True,
+                    )
+                except ValueError:
+                    query_pairs = []
+                if (
+                    not isinstance(query_name, str)
+                    or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", query_name)
+                    or len(query_pairs) != 1
+                    or query_pairs[0][0] != query_name
+                ):
+                    diagnostics.append(
+                        Diagnostic(
+                            "INPUT_QUERY_URL_INVALID",
+                            f"{op_path}.url",
+                            "parameterized fetch URL must have exactly its bound query key",
+                        )
+                    )
             outputs[node_id] = {
                 "document": "HtmlDocument"
                 if operation["content_type"] == "text/html"
@@ -1136,6 +1179,7 @@ def build_typed_ir(
                             "array_path",
                             "fields",
                             "evidence_refs",
+                            "input_query",
                         }
                     },
                     "dependencies": dependencies,
@@ -1151,7 +1195,11 @@ def build_typed_ir(
     return TypedIR(
         deepcopy(
             {
-                "ir_version": IR_VERSION,
+                "ir_version": (
+                    IR_VERSION_V2
+                    if document.get("dsl_version") == DSL_VERSION_V3
+                    else IR_VERSION
+                ),
                 "playbook_id": document["playbook_id"],
                 "source": document["source"],
                 "evidence": sorted(

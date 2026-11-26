@@ -25,6 +25,8 @@
     "build_id": {"type": "string", "minLength": 1, "maxLength": 128},
     "build_manifest_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "runtime_profile_id": {"const": "scrapy-live-http-v1"},
+    "input_parameters_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "expected_initial_target_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "issued_at": {"type": "string", "format": "date-time"},
     "expires_at": {"type": "string", "format": "date-time"},
     "execution_deadline": {"type": "string", "format": "date-time"},

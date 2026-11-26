@@ -75,6 +75,8 @@ class ExecutionCapabilitySigner:
         build_id: str,
         build_manifest_digest: str,
         runtime_profile_id: str,
+        input_parameters_digest: str | None = None,
+        expected_initial_target_digest: str | None = None,
         audience: str,
         execution_deadline: datetime,
         now: datetime | None = None,
@@ -119,6 +121,16 @@ class ExecutionCapabilitySigner:
             "execution_deadline": execution_deadline.astimezone(UTC).isoformat(),
             "capability_id": "cap-" + secrets.token_urlsafe(24),
         }
+        if input_parameters_digest is not None:
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", input_parameters_digest):
+                raise CoordinationError("input parameter digest is invalid")
+            claims["input_parameters_digest"] = input_parameters_digest
+        if expected_initial_target_digest is not None:
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_initial_target_digest):
+                raise CoordinationError(
+                    "execution capability target binding is invalid"
+                )
+            claims["expected_initial_target_digest"] = expected_initial_target_digest
         for name, value in claims.items():
             if isinstance(value, str) and not _SAFE_CLAIM_VALUE.fullmatch(value):
                 raise CoordinationError(
@@ -163,8 +175,23 @@ def verify_execution_capability(
         "capability_id",
         "signature",
     }
-    if set(capability) != required:
+    optional = {"input_parameters_digest", "expected_initial_target_digest"}
+    if not frozenset(required) <= frozenset(capability) or not frozenset(
+        capability
+    ) <= frozenset(required | optional):
         raise CoordinationError("execution capability fields are invalid")
+    input_digest = capability.get("input_parameters_digest")
+    if input_digest is not None and (
+        not isinstance(input_digest, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", input_digest)
+    ):
+        raise CoordinationError("execution capability input binding is invalid")
+    target_digest = capability.get("expected_initial_target_digest")
+    if target_digest is not None and (
+        not isinstance(target_digest, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", target_digest)
+    ):
+        raise CoordinationError("execution capability target binding is invalid")
     unsigned = {key: value for key, value in capability.items() if key != "signature"}
     key_id = unsigned["key_id"]
     public_bytes = trusted_public_keys.get(key_id) if isinstance(key_id, str) else None

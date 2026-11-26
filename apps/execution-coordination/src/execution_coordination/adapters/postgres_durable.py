@@ -291,6 +291,22 @@ class PostgresDurableRunRepository:
         with self._connect() as conn:
             return self._snapshot(conn, tenant_id, run_id)
 
+    def get_by_idempotency(
+        self, tenant_id: str, idempotency_key: str
+    ) -> DurableRunSnapshot | None:
+        """Resolve the original Run for a stable admission operation identity."""
+        _validate_identity(tenant_id, "tenant_id")
+        _validate_identity(idempotency_key, "idempotency_key")
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT run_id FROM execution_coordination.capture_runs
+                   WHERE tenant_id=%s AND idempotency_key=%s""",
+                (tenant_id, idempotency_key),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._snapshot(conn, tenant_id, row["run_id"])
+
     def _snapshot(
         self, conn: psycopg.Connection, tenant_id: str, run_id: Any
     ) -> DurableRunSnapshot | None:
@@ -542,6 +558,19 @@ class PostgresDurableRunRepository:
                 ("build_manifest_digest", binding.get("build_manifest_digest")),
                 ("runtime_profile_id", binding.get("runtime_profile_id")),
             )
+            if binding.get("input_parameters_digest") is not None:
+                expected_claims = (
+                    *expected_claims,
+                    ("input_parameters_digest", binding.get("input_parameters_digest")),
+                )
+            if binding.get("expected_initial_target_digest") is not None:
+                expected_claims = (
+                    *expected_claims,
+                    (
+                        "expected_initial_target_digest",
+                        binding.get("expected_initial_target_digest"),
+                    ),
+                )
             if (
                 binding.get("execution_mode") != "live-authorized"
                 or run["state"] != DurableRunState.RUNNING.value
@@ -587,6 +616,23 @@ class PostgresDurableRunRepository:
                     "operation_id": operation_id,
                     "admitted_at": existing["admitted_at"],
                 }
+            expected_target = binding.get("expected_initial_target_digest")
+            if expected_target is not None:
+                previous_operations = conn.execute(
+                    """SELECT count(*) AS count
+                       FROM execution_coordination.acquisition_operation_admissions
+                       WHERE tenant_id=%s AND run_id=%s AND attempt_id=%s
+                         AND generation=%s""",
+                    (tenant_id, run_id, attempt_id, capability.get("generation")),
+                ).fetchone()["count"]
+                if previous_operations == 0 and target_digest != expected_target:
+                    raise CoordinationError(
+                        "first acquisition target differs from authorized input"
+                    )
+                if previous_operations > 0:
+                    raise CoordinationError(
+                        "parameterized single-response profile permits one operation"
+                    )
             admitted = conn.execute(
                 """INSERT INTO execution_coordination.acquisition_operation_admissions
                    (tenant_id,operation_id,run_id,attempt_id,generation,capability_id,target_digest)

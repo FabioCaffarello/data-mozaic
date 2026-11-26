@@ -15,6 +15,7 @@ import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import rfc8785
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -194,7 +195,10 @@ class TrustedLiveAuthority:
             raise CoordinationError("acquisition policy is not currently eligible")
         if release.get("status") != "approved":
             raise CoordinationError("BotRelease is not currently approved")
-        if release.get("contract_version") != "bot-release/v2":
+        if release.get("contract_version") not in {
+            "bot-release/v2",
+            "bot-release/v3",
+        }:
             raise CoordinationError("BotRelease contract version is unsupported")
         contract = release.get("payload_contract")
         if not isinstance(contract, dict) or set(contract) != {
@@ -203,6 +207,59 @@ class TrustedLiveAuthority:
             "digest",
         }:
             raise CoordinationError("BotRelease payload contract binding is invalid")
+        if release.get("contract_version") == "bot-release/v3":
+            input_contract = release.get("input_contract")
+            if not isinstance(input_contract, dict) or set(input_contract) != {
+                "contract_id",
+                "version",
+                "digest",
+            }:
+                raise CoordinationError("BotRelease input contract binding is invalid")
+            if (
+                not isinstance(input_contract.get("contract_id"), str)
+                or not _CONTRACT_ID.fullmatch(input_contract["contract_id"])
+                or not isinstance(input_contract.get("version"), str)
+                or not _CONTRACT_VERSION.fullmatch(input_contract["version"])
+                or not isinstance(input_contract.get("digest"), str)
+                or not _DIGEST.fullmatch(input_contract["digest"])
+            ):
+                raise CoordinationError("BotRelease input contract binding is invalid")
+            input_request = release.get("input_request")
+            input_query = (
+                input_request.get("input_query")
+                if isinstance(input_request, dict)
+                else None
+            )
+            try:
+                base_url = urlsplit(
+                    input_request.get("url", "")
+                    if isinstance(input_request, dict)
+                    else ""
+                )
+                valid_base = (
+                    base_url.scheme == "https"
+                    and bool(base_url.netloc)
+                    and not base_url.username
+                    and not base_url.password
+                    and not base_url.query
+                    and not base_url.fragment
+                )
+            except ValueError:
+                valid_base = False
+            if (
+                not isinstance(input_request, dict)
+                or set(input_request) != {"method", "url", "input_query"}
+                or input_request.get("method") != "GET"
+                or not valid_base
+                or not isinstance(input_query, dict)
+                or set(input_query) != {"parameter", "query_name"}
+                or any(
+                    not isinstance(value, str)
+                    or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", value)
+                    for value in input_query.values()
+                )
+            ):
+                raise CoordinationError("BotRelease input request binding is invalid")
         if (
             not isinstance(contract.get("contract_id"), str)
             or not isinstance(contract.get("version"), str)

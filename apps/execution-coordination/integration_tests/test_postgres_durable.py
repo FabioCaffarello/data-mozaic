@@ -591,7 +591,7 @@ class PostgresDurableIntegrationTests(unittest.TestCase):
         build_manifest_digest = "sha256:" + "4" * 64
         runtime_image_digest = "sha256:" + "5" * 64
         release: dict[str, object] = {
-            "contract_version": "bot-release/v2",
+            "contract_version": "bot-release/v3",
             "release_id": "controlled-authority-release",
             "status": "approved",
             "source_id": "controlled-authority-http",
@@ -607,6 +607,16 @@ class PostgresDurableIntegrationTests(unittest.TestCase):
                 "contract_id": "controlled.record",
                 "version": "1.0.0",
                 "digest": "sha256:" + "6" * 64,
+            },
+            "input_contract": {
+                "contract_id": "controlled.input",
+                "version": "1.0.0",
+                "digest": "sha256:" + "7" * 64,
+            },
+            "input_request": {
+                "method": "GET",
+                "url": "https://controlled-authority.test/api/items",
+                "input_query": {"parameter": "limit", "query_name": "limit"},
             },
         }
         release["release_digest"] = record_digest(release, "release_digest")
@@ -707,6 +717,26 @@ class PostgresDurableIntegrationTests(unittest.TestCase):
             build_id=build_id,
             build_manifest_digest=build_manifest_digest,
             runtime_image_digest=runtime_image_digest,
+            input_id="controlled-input-1",
+            submission_id="controlled-submission-1",
+            input_parameters={"limit": 3},
+            input_contract={
+                "contract_id": "controlled.input",
+                "version": "1.0.0",
+                "digest": "sha256:" + "7" * 64,
+            },
+        )
+        fresh_coordinator = DurableExecutionCoordinator(
+            PostgresDurableRunRepository(os.environ["BC04_DATABASE_URL"]),
+            publication=object(),
+            grant_signer=None,
+            live_authority=authority,
+        )
+        self.assertEqual(
+            run,
+            fresh_coordinator.resolve_admission(
+                run.intent.tenant_id, run.intent.idempotency_key
+            ),
         )
         self.assertEqual(run.intent.binding.authority_snapshot_generation, 4)
         self.assertEqual(run.intent.binding.payload_contract_id, "controlled.record")
@@ -721,6 +751,15 @@ class PostgresDurableIntegrationTests(unittest.TestCase):
         )
         capability = coordinator.issue_execution_capability(
             lease, audience="data-mozaic/acquisition-gateway"
+        )
+        expected_target_digest = (
+            "sha256:"
+            + hashlib.sha256(
+                b"https://controlled-authority.test/api/items?limit=3"
+            ).hexdigest()
+        )
+        self.assertEqual(
+            capability["expected_initial_target_digest"], expected_target_digest
         )
         verify_execution_capability(
             capability,
@@ -744,12 +783,24 @@ class PostgresDurableIntegrationTests(unittest.TestCase):
             renewed, audience="data-mozaic/acquisition-gateway"
         )
         self.assertNotEqual(capability["capability_id"], replacement["capability_id"])
+        with self.assertRaisesRegex(CoordinationError, "first acquisition target"):
+            coordinator.authorize_acquisition_operation(
+                replacement,
+                operation_id="gateway-op-wrong-target-" + uuid4().hex,
+                target_digest="sha256:" + "9" * 64,
+            )
         operation = coordinator.authorize_acquisition_operation(
             replacement,
             operation_id="gateway-op-" + uuid4().hex,
-            target_digest="sha256:" + "6" * 64,
+            target_digest=expected_target_digest,
         )
         self.assertTrue(operation["operation_id"].startswith("gateway-op-"))
+        with self.assertRaisesRegex(CoordinationError, "single-response profile"):
+            coordinator.authorize_acquisition_operation(
+                replacement,
+                operation_id="gateway-op-continuation-" + uuid4().hex,
+                target_digest="sha256:" + "a" * 64,
+            )
         with self.assertRaisesRegex(CoordinationError, "conflicts"):
             coordinator.authorize_acquisition_operation(
                 replacement,
