@@ -25,6 +25,10 @@ SOURCE_ROOTS = (
         "acquisition_application",
     ),
     (
+        ROOT / "apps/acquisition-lifecycle/src/acquisition_lifecycle",
+        "acquisition_lifecycle",
+    ),
+    (
         ROOT / "libs/python/bot-build/src/mozaic_bot_build",
         "mozaic_bot_build",
     ),
@@ -132,6 +136,31 @@ ALLOWED = {
         "mozaic_bot_build",
     },
     "acquisition_application.identities": {"acquisition_output.domain"},
+    "acquisition_lifecycle": {
+        "acquisition_lifecycle.application",
+        "acquisition_lifecycle.domain",
+        "acquisition_lifecycle.ports",
+        "acquisition_lifecycle.adapters",
+        "collector_engineering",
+        "execution_coordination.adapters",
+        "mozaic_bot_build",
+        "mozaic_contract_resolution",
+    },
+    "acquisition_lifecycle.domain": set(),
+    "acquisition_lifecycle.ports": {"acquisition_lifecycle.domain"},
+    "acquisition_lifecycle.application": {
+        "acquisition_lifecycle.domain",
+        "acquisition_lifecycle.ports",
+        "collector_engineering",
+        "mozaic_bot_build",
+        "mozaic_contract_resolution",
+    },
+    "acquisition_lifecycle.adapters": {
+        "acquisition_lifecycle.domain",
+        "acquisition_lifecycle.ports",
+        "execution_coordination.adapters",
+        "execution_coordination.durable_ports",
+    },
     "acquisition_application.adapters": {
         "acquisition_application.result_bundle",
         "acquisition_application.ports",
@@ -197,6 +226,9 @@ ALLOWED = {
         "acquisition_application",
         "acquisition_application.result_bundle",
         "acquisition_application.adapters",
+        "acquisition_lifecycle.adapters",
+        "acquisition_lifecycle.application",
+        "acquisition_lifecycle.domain",
         "acquisition_output.adapters.http_custody",
         "acquisition_output.adapters.publication_grant",
         "acquisition_output.wire",
@@ -221,6 +253,7 @@ INTERNAL_ROOTS = (
     "execution_coordination",
     "collector_engineering",
     "acquisition_application",
+    "acquisition_lifecycle",
     "tooling",
 )
 SCOUT_DOMAIN_FORBIDDEN = {

@@ -372,10 +372,34 @@ def _application(
 def _authority_snapshot(
     policy: dict[str, object],
     build: dict[str, object],
+    build_directory: Path,
+    playbook_path: Path,
     runtime_digest: str,
     release_id: str,
     generation: int,
 ) -> tuple[bytes, dict[str, bytes]]:
+    if os.environ.get("MOZAIC_LIFECYCLE_ACCEPTANCE") == "1":
+        from acquisition_lifecycle_acceptance_support import publish_controlled_release
+        from mozaic_contract_resolution import ContractReference
+
+        contract = _payload_contract(_contract_registry())
+        return publish_controlled_release(
+            root=ROOT,
+            source_id=SOURCE_ID,
+            revision_id=REVISION_ID,
+            source_path_prefixes=tuple(SOURCE_PATH_PREFIXES),
+            policy=policy,
+            payload_contract=ContractReference(
+                contract.contract_id, contract.version, contract.digest
+            ),
+            build_manifest=build,
+            build_directory=build_directory,
+            playbook_path=playbook_path,
+            runtime_digest=runtime_digest,
+            release_id=release_id,
+            expected_generation=generation,
+            authority_id=AUTHORITY_ID,
+        )
     now = datetime.now(UTC)
     contract = _payload_contract(_contract_registry())
     source = _publishable(
@@ -704,7 +728,13 @@ def main() -> int:
             raise RuntimeError("compiled BotBuild identity is invalid")
 
         snapshot_bytes, trusted_keys = _authority_snapshot(
-            policy, manifest, runtime_digest, release_id, next_generation
+            policy,
+            manifest,
+            build_dir,
+            ROOT / env["MOZAIC_LIVE_PLAYBOOK"],
+            runtime_digest,
+            release_id,
+            next_generation,
         )
         authority = TrustedLiveAuthority(
             snapshot_bytes,
@@ -1321,6 +1351,15 @@ def main() -> int:
                 api_server.shutdown()
                 api_server.server_close()
                 _run(compose + ["down", "--remove-orphans"], env=env, timeout=90)
+    if os.environ.get("MOZAIC_LIFECYCLE_ACCEPTANCE") == "1":
+        from acquisition_lifecycle_acceptance_support import (
+            revoke_and_verify_admission_denial,
+        )
+
+        print(
+            "M4_RELEASE_REVOCATION_ACCEPTED "
+            + json.dumps(revoke_and_verify_admission_denial(), sort_keys=True)
+        )
     return 0
 
 

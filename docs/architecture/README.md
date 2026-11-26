@@ -66,5 +66,8 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 57. [BC08 immutable payload contract installation](../../contracts/payload/draft/v1/README.md)
 58. [ADR 028 — immutable payload contract resolution](decisions/028-immutable-payload-contract-resolution.md)
 59. [M3 immutable contract resolution — local implementation assessment](assessments/immutable-contract-resolution-2026-11-25.md)
+60. [Acquisition Lifecycle application](../../apps/acquisition-lifecycle/README.md)
+61. [ADR 029 — operational Source and Release lifecycle](decisions/029-source-release-lifecycle-management.md)
+62. [M4 Source and Release lifecycle — implementation evidence](assessments/source-release-lifecycle-2026-11-25.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.
