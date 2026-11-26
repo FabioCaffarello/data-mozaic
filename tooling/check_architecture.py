@@ -32,6 +32,10 @@ SOURCE_ROOTS = (
         ROOT / "libs/python/observability/src/mozaic_observability",
         "mozaic_observability",
     ),
+    (
+        ROOT / "libs/python/contract-resolution/src/mozaic_contract_resolution",
+        "mozaic_contract_resolution",
+    ),
     (ROOT / "tooling", "tooling"),
 )
 
@@ -98,8 +102,12 @@ ALLOWED = {
         "execution_coordination.domain",
         "execution_coordination.durable_application",
         "mozaic_bot_build",
+        "mozaic_contract_resolution",
     },
-    "acquisition_application.context": {"execution_coordination.durable_domain"},
+    "acquisition_application.context": {
+        "execution_coordination.durable_domain",
+        "acquisition_output.domain",
+    },
     "acquisition_application.ports": {
         "acquisition_output.domain",
         "execution_coordination.durable_domain",
@@ -130,6 +138,7 @@ ALLOWED = {
         "acquisition_output.domain",
     },
     "mozaic_bot_build": set(),
+    "mozaic_contract_resolution": set(),
     "scrapy_collector": {"mozaic_bot_build"},
     "execution_coordination": {"execution_coordination.domain"},
     "execution_coordination.domain": set(),
@@ -199,6 +208,7 @@ ALLOWED = {
         "execution_coordination",
         "collector_engineering",
         "mozaic_bot_build",
+        "mozaic_contract_resolution",
         "scrapy_collector",
     },
 }

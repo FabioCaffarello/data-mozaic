@@ -1,0 +1,33 @@
+{
+  "contract_version": "payload-contract-registry/v1",
+  "revisions": [
+    {
+      "contract_id": "controlled-live-html.record",
+      "version": "1.0.0",
+      "digest": "sha256:ba3fd2ff0d6fe046ba7ad5048adac530fe1c7c9f6fcb2adcd48860681b98b116",
+      "schema_path": "controlled-live-html-record.schema.json",
+      "dialect": "https://json-schema.org/draft/2020-12/schema"
+    },
+    {
+      "contract_id": "controlled-live-json.record",
+      "version": "1.0.0",
+      "digest": "sha256:dd8976c347bf0daac2f84d424c29fdd8059bf11e810dbe0468162c6538bb4e6c",
+      "schema_path": "controlled-live-json-record.schema.json",
+      "dialect": "https://json-schema.org/draft/2020-12/schema"
+    },
+    {
+      "contract_id": "controlled-live-pagination.record",
+      "version": "1.0.0",
+      "digest": "sha256:21f237d06fe23739b9365dcb78a6c8b9fdf8e3da6309134a5eadb24a698ba6d5",
+      "schema_path": "controlled-live-pagination-record.schema.json",
+      "dialect": "https://json-schema.org/draft/2020-12/schema"
+    },
+    {
+      "contract_id": "synthetic.html-simple-catalog.record",
+      "version": "1.0.0",
+      "digest": "sha256:0ec5fd30c626bcadeb930aa729f121a6d479ce4b59ec39e6ad519f090fa1669f",
+      "schema_path": "synthetic-html-simple-record.schema.json",
+      "dialect": "https://json-schema.org/draft/2020-12/schema"
+    }
+  ]
+}

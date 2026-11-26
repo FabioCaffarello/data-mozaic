@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/examples/controlled-live-pagination-record/v1",
+  "title": "Controlled test paginated HTML record",
+  "description": "Payload contract for the isolated controlled HTTP pagination source only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "_provenance"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "name": {"type": "string", "minLength": 1},
+    "_provenance": {"type": "object"}
+  }
+}

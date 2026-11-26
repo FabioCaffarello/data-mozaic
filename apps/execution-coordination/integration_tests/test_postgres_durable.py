@@ -591,6 +591,7 @@ class PostgresDurableIntegrationTests(unittest.TestCase):
         build_manifest_digest = "sha256:" + "4" * 64
         runtime_image_digest = "sha256:" + "5" * 64
         release: dict[str, object] = {
+            "contract_version": "bot-release/v2",
             "release_id": "controlled-authority-release",
             "status": "approved",
             "source_id": "controlled-authority-http",
@@ -602,6 +603,11 @@ class PostgresDurableIntegrationTests(unittest.TestCase):
             "backend_id": "scrapy-live-http",
             "runtime_profile_id": "scrapy-live-http-v1",
             "runtime_image_digest": runtime_image_digest,
+            "payload_contract": {
+                "contract_id": "controlled.record",
+                "version": "1.0.0",
+                "digest": "sha256:" + "6" * 64,
+            },
         }
         release["release_digest"] = record_digest(release, "release_digest")
         snapshot: dict[str, object] = {
@@ -703,6 +709,10 @@ class PostgresDurableIntegrationTests(unittest.TestCase):
             runtime_image_digest=runtime_image_digest,
         )
         self.assertEqual(run.intent.binding.authority_snapshot_generation, 4)
+        self.assertEqual(run.intent.binding.payload_contract_id, "controlled.record")
+        self.assertEqual(
+            run.intent.binding.payload_contract_digest, "sha256:" + "6" * 64
+        )
         lease = coordinator.acquire_attempt(
             run.intent.tenant_id,
             run.intent.run_id,

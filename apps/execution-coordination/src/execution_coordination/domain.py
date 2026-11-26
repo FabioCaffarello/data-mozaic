@@ -51,6 +51,9 @@ class ExecutionBinding:
     local_image_id: str
     fixture_bundle_id: str
     fixture_bundle_digest: str
+    payload_contract_id: str | None = None
+    payload_contract_version: str | None = None
+    payload_contract_digest: str | None = None
     execution_mode: str = "fixture-only"
     max_duration_seconds: int = 30
     max_output_bytes: int = 16_777_216
@@ -73,6 +76,28 @@ class ExecutionBinding:
         )
         if any(not value for value in values):
             raise CoordinationError("execution binding identities must be non-empty")
+        contract_values = (
+            self.payload_contract_id,
+            self.payload_contract_version,
+            self.payload_contract_digest,
+        )
+        if any(value is not None for value in contract_values):
+            if any(
+                not isinstance(value, str) or not value for value in contract_values
+            ):
+                raise CoordinationError("payload contract binding is incomplete")
+            if not re.fullmatch(
+                r"[a-z0-9][a-z0-9._:-]{0,127}", self.payload_contract_id or ""
+            ):
+                raise CoordinationError("payload contract identity is invalid")
+            if not re.fullmatch(
+                r"[a-z0-9][a-z0-9._:-]{0,127}", self.payload_contract_version or ""
+            ):
+                raise CoordinationError("payload contract version is invalid")
+            if not re.fullmatch(
+                r"sha256:[0-9a-f]{64}", self.payload_contract_digest or ""
+            ):
+                raise CoordinationError("payload contract digest is invalid")
         for digest in (
             self.build_id,
             self.bot_build_manifest_digest,

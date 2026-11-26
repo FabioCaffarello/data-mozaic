@@ -5,10 +5,15 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
+from acquisition_application.application import (
+    FixtureImportError,
+    TrustedAcquisitionApplication,
+)
 from acquisition_application.context import (
     AcquisitionApplicationError,
     load_current_execution,
 )
+from acquisition_output.domain import PayloadContractRef
 from execution_coordination.domain import ExecutionBinding
 from execution_coordination.durable_domain import (
     DurableAttemptState,
@@ -48,6 +53,9 @@ class TrustedExecutionContextTests(unittest.TestCase):
             local_image_id="sha256:" + "1" * 64,
             fixture_bundle_id="fixture-v1",
             fixture_bundle_digest="2" * 64,
+            payload_contract_id="sample.record",
+            payload_contract_version="1.0.0",
+            payload_contract_digest="sha256:" + "3" * 64,
         )
         intent = DurableRunIntent(
             tenant_id=self.tenant_id,
@@ -84,6 +92,7 @@ class TrustedExecutionContextTests(unittest.TestCase):
         self.assertEqual("synthetic-source", context.source_id)
         self.assertEqual("fixture-only", context.execution_mode)
         self.assertEqual("sha256:" + "c" * 64, context.build_manifest_digest)
+        self.assertEqual("sample.record", context.payload_contract.contract_id)
 
     def test_expired_and_terminal_attempts_cannot_import(self):
         now = datetime.now(UTC)
@@ -100,6 +109,19 @@ class TrustedExecutionContextTests(unittest.TestCase):
             load_current_execution(_Reader(self.snapshot), "other-tenant", self.run_id)
         with self.assertRaises(AcquisitionApplicationError):
             load_current_execution(_Reader(self.snapshot), self.tenant_id, str(uuid4()))
+
+    def test_import_rejects_caller_contract_replacement_before_side_effects(self):
+        app = TrustedAcquisitionApplication(_Reader(self.snapshot), object(), object())
+        with self.assertRaisesRegex(FixtureImportError, "trusted execution binding"):
+            app.import_verified_result(
+                self.tenant_id,
+                self.run_id,
+                bundle=None,
+                payload_contract=PayloadContractRef(
+                    "sample.record", "1.0.0", "sha256:" + "4" * 64
+                ),
+                producer=None,
+            )
 
     def test_completed_replay_requires_exact_bc04_publication_receipt(self):
         reservation = SimpleNamespace(

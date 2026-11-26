@@ -90,6 +90,9 @@ class LiveExecutionBinding:
     max_requests: int
     max_total_response_bytes: int
     max_concurrency: int
+    payload_contract_id: str | None = None
+    payload_contract_version: str | None = None
+    payload_contract_digest: str | None = None
     execution_mode: str = "live-authorized"
 
     def __post_init__(self) -> None:
@@ -111,6 +114,20 @@ class LiveExecutionBinding:
         ):
             if not _DIGEST.fullmatch(value):
                 raise CoordinationError(f"{label} is invalid")
+        contract_values = (
+            self.payload_contract_id,
+            self.payload_contract_version,
+            self.payload_contract_digest,
+        )
+        if any(value is not None for value in contract_values):
+            if any(
+                not isinstance(value, str) or not value for value in contract_values
+            ):
+                raise CoordinationError("payload contract binding is incomplete")
+            _identity(self.payload_contract_id or "", "payload contract id")
+            _identity(self.payload_contract_version or "", "payload contract version")
+            if not _DIGEST.fullmatch(self.payload_contract_digest or ""):
+                raise CoordinationError("payload contract digest is invalid")
         if not re.fullmatch(r"[0-9a-f]{64}", self.build_id):
             raise CoordinationError("BotBuild identity is invalid")
         if self.execution_mode != "live-authorized":

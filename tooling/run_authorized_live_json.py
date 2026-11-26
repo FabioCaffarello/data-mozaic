@@ -63,6 +63,7 @@ from execution_coordination.adapters.trusted_live_authority import TrustedLiveAu
 from execution_coordination.durable_application import DurableExecutionCoordinator
 from execution_coordination.durable_domain import FailureDisposition
 from mozaic_bot_build import canonical_json, verify_bot_build
+from mozaic_contract_resolution import ImmutableContractRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "deployments/compose/acquisition-live.compose.yaml"
@@ -326,17 +327,28 @@ def _port() -> int:
         return int(listener.getsockname()[1])
 
 
-def _payload_contract() -> PayloadContractRef:
-    data = PAYLOAD_SCHEMA.read_bytes()
+def _contract_registry() -> ImmutableContractRegistry:
+    return ImmutableContractRegistry(ROOT / "contracts/payload/draft/v1")
+
+
+def _payload_contract(
+    registry: ImmutableContractRegistry,
+) -> PayloadContractRef:
+    contract_id = (
+        "controlled-live-html.record"
+        if CASE_KIND == "html"
+        else "controlled-live-pagination.record"
+        if CASE_KIND.startswith("pagination")
+        else "controlled-live-json.record"
+    )
+    installed = registry.installed_reference(contract_id, "1.0.0")
     return PayloadContractRef(
-        "controlled-live-" + CASE_KIND + ".record",
-        "1.0.0",
-        "sha256:" + hashlib.sha256(data).hexdigest(),
+        installed.contract_id, installed.version, installed.digest
     )
 
 
 def _application(
-    store: MongoOutputStore, contract: PayloadContractRef
+    store: MongoOutputStore, registry: ImmutableContractRegistry
 ) -> AcquisitionOutputApplication:
     seed, key_id, _ = key_material()
     public = (
@@ -347,9 +359,7 @@ def _application(
     return AcquisitionOutputApplication(
         store,
         store,
-        payload_contracts=ExactJSONSchemaPayloadContractValidator(
-            contract, PAYLOAD_SCHEMA
-        ),
+        payload_contracts=ExactJSONSchemaPayloadContractValidator(registry),
         custody=ArtifactCustodyHTTPAdapter(
             os.environ["ARTIFACT_CUSTODY_HTTP_URL"],
             os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"],
@@ -367,6 +377,7 @@ def _authority_snapshot(
     generation: int,
 ) -> tuple[bytes, dict[str, bytes]]:
     now = datetime.now(UTC)
+    contract = _payload_contract(_contract_registry())
     source = _publishable(
         {
             "contract_version": "source-revision/v1",
@@ -388,7 +399,7 @@ def _authority_snapshot(
     )
     release = _publishable(
         {
-            "contract_version": "bot-release/v1",
+            "contract_version": "bot-release/v2",
             "release_id": release_id,
             "status": "approved",
             "bot_id": build["bot_id"],
@@ -408,6 +419,11 @@ def _authority_snapshot(
             "approval_evidence_ref": "operator://controlled-live-"
             + CASE_KIND
             + "/approval",
+            "payload_contract": {
+                "contract_id": contract.contract_id,
+                "version": contract.version,
+                "digest": contract.digest,
+            },
         },
         "release_digest",
     )
@@ -698,10 +714,11 @@ def main() -> int:
         )
         cap_signer = ExecutionCapabilitySigner(cap_seed, key_id="gateway-test-key")
         grant_seed, grant_key_id, _ = key_material()
-        contract = _payload_contract()
+        registry = _contract_registry()
+        contract = _payload_contract(registry)
         with MongoResources(MongoSettings.from_env()) as resources:
             store = MongoOutputStore(resources)
-            app = _application(store, contract)
+            app = _application(store, registry)
             publisher = InProcessBC05Publisher(app, lose_ack=CASE_KIND == "ack-loss")
             coordinator = DurableExecutionCoordinator(
                 repo,
@@ -1279,6 +1296,11 @@ def main() -> int:
                             "build_manifest_digest": build_digest,
                             "runtime_image_digest": runtime_digest,
                             "release_id": release_id,
+                            "payload_contract": {
+                                "contract_id": contract.contract_id,
+                                "version": contract.version,
+                                "digest": contract.digest,
+                            },
                             "fetch_ids": evidence_ids,
                             "redirect_counts": [
                                 page.redirect_count for page in verified.pages

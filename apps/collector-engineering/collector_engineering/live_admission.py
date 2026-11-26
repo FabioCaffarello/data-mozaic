@@ -28,6 +28,9 @@ class LiveAdmission:
     release_id: str
     build_id: str
     build_manifest_digest: str
+    payload_contract_id: str
+    payload_contract_version: str
+    payload_contract_digest: str
 
 
 _BAD_PERCENT = re.compile(r"%(?![0-9a-fA-F]{2})")
@@ -141,6 +144,19 @@ def validate_live_admission(
         raise PlaybookError("acquisition policy is not eligible")
     if release.get("status") != "approved":
         raise PlaybookError("BotRelease is not approved")
+    contract = release.get("payload_contract")
+    if (
+        release.get("contract_version") != "bot-release/v2"
+        or not isinstance(contract, dict)
+        or set(contract) != {"contract_id", "version", "digest"}
+        or not isinstance(contract.get("contract_id"), str)
+        or not re.fullmatch(r"[a-z0-9][a-z0-9._:-]{0,127}", contract["contract_id"])
+        or not isinstance(contract.get("version"), str)
+        or not re.fullmatch(r"[a-z0-9][a-z0-9._:-]{0,63}", contract["version"])
+        or not isinstance(contract.get("digest"), str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", contract["digest"])
+    ):
+        raise PlaybookError("BotRelease payload contract binding is invalid")
     for document, field, label in (
         (source_revision, "configuration_digest", "source revision"),
         (policy, "policy_digest", "acquisition policy"),
@@ -268,4 +284,7 @@ def validate_live_admission(
         release_id=release["release_id"],
         build_id=release["build_id"],
         build_manifest_digest=expected_build_digest,
+        payload_contract_id=contract["contract_id"],
+        payload_contract_version=contract["version"],
+        payload_contract_digest=contract["digest"],
     )

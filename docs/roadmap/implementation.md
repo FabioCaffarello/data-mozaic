@@ -110,3 +110,9 @@ O branch `feat/execution-coordination-durable`, derivado do `main` que integrou 
 O gate local executou integração PostgreSQL e um fluxo sintético PostgreSQL/MongoDB/RustFS com injeção de ACK perdido após o commit MongoDB, clientes novos e reconciliação concorrente. Isso não é serviço de produção: o branch não está integrado, fixture-only permanece obrigatório, BC11 e endpoint autenticado de serviço estão ausentes, reservations pendentes não expiram/revogam automaticamente, e não há HA ou exactly-once. ADRs 022 e 024 seguem Proposed. A avaliação e os limites devem acompanhar a revisão do branch antes de qualquer integração.
 
 > Nota histórica: o parágrafo acima conserva o snapshot pré-integração. PR #19 agora está integrado em `main`; veja “BC04 durable integrado — PR #19” e o assessment de consolidação para a evidência final.
+
+## Aquisição raw — incrementos de maturidade
+
+PR #24 integrou o Trusted Acquisition Application; veja [M2 implementation assessment](../architecture/assessments/trusted-acquisition-application-2026-11-25.md). M3 está em implementação local na branch `feat/immutable-contract-resolution`: BC08 instala e resolve revisões imutáveis de payload; BotRelease v2 vincula o ref; BC04 persiste a binding. O incremento permanece não publicado até revisão humana; veja [M3 assessment](../architecture/assessments/immutable-contract-resolution-2026-11-25.md) e [ADR 028 Proposed](../architecture/decisions/028-immutable-payload-contract-resolution.md).
+
+M3 não conclui a aprovação operacional de fontes/releases. Não iniciar M4 antes da revisão e integração deste incremento. Nenhuma fonte externa faz parte desta sequência.

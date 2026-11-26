@@ -18,6 +18,10 @@ BC06 is currently L0 and remains local to `apps/artifact-custody`. Its S3 client
 
 Levels may be skipped only with explicit rationale and approval. Bounded-context domain models do not become libraries by crossing a language boundary; wire DTOs remain distinct from each consumer's private domain model. Driver integrations should stay in consumer adapters unless named consumers demonstrate a stable shared lifecycle.
 
+### BC08 contract resolution — M3
+
+`libs/python/contract-resolution/` is an L2 internal library owned by BC08. Its named consumer is `apps/acquisition-application`; the returned validator is supplied to BC05's existing payload-validation port, while BC04/BC15 bind the reference through their own contracts. The package owns exact installed revision lookup, byte digest verification, bounded Draft 2020-12 schema validation, and safe diagnostics. It excludes approval, eligibility, release/source state, persistence, remote retrieval, and business retries. It depends only on `jsonschema`; schema files and the immutable registry manifest are versioned under `contracts/payload/`. Independent tests are included in `make test-libraries`; acquisition application and controlled verticals are consumer conformance. API compatibility is internal `0.x`; changes require the package tests and trusted acquisition regression. It does not make generic strict-JSON or driver wrappers appropriate extractions.
+
 ## Audit snapshot
 
 At the audit, branch `feat/scout-s1` was at `7a731a1`. S0–S1.2b files remained staged and unstaged. The repository contained `apps/scout/scout/` as an internal BC14 module, `contracts/scout/v1/`, root tooling, migrations, tests, and a local Compose profile. It contained no `libs/` or `packages/` tree and no Go, Rust, or TypeScript workspace. This increment adds the first real shared package at `libs/python/observability/`, consumed by `apps/scout/scout/application.py`; it is internal and experimental, not a public API promise. Root uv remains `package = false` and now includes only real workspace members.

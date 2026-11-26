@@ -27,37 +27,37 @@ from acquisition_output.domain import (
 from acquisition_output.domain import (
     ExecutionBinding as OutputExecutionBinding,
 )
-from jsonschema import Draft202012Validator, FormatChecker
+from mozaic_contract_resolution import (
+    ContractReference,
+    ContractResolutionError,
+    ImmutableContractRegistry,
+)
 
 from .identities import stable_identifier as _stable_id
 from .ports import ArtifactCustodyPort, ExecutionFinalizationPort
 from .result_bundle import (
     FixtureImportError,
     VerifiedResultBundle,
-    _read_regular,
-    _strict_json,
 )
 
 
 class ExactJSONSchemaPayloadContractValidator:
-    def __init__(self, contract: PayloadContractRef, schema_path: Path) -> None:
-        schema_data = _read_regular(schema_path, maximum=64_000, label="payload schema")
-        if "sha256:" + hashlib.sha256(schema_data).hexdigest() != contract.digest:
-            raise FixtureImportError("payload contract bytes differ from its digest")
-        schema = _strict_json(schema_data, "payload schema")
-        Draft202012Validator.check_schema(schema)
-        self._contract = contract
-        self._validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    def __init__(self, registry: ImmutableContractRegistry) -> None:
+        self._registry = registry
 
     def validate(self, contract: PayloadContractRef, payload: dict[str, Any]) -> None:
-        if contract != self._contract:
-            raise FixtureImportError(
-                "payload contract differs from the resolved contract"
+        try:
+            resolved = self._registry.resolve(
+                ContractReference(
+                    contract.contract_id, contract.version, contract.digest
+                )
             )
-        self._validator.validate(payload)
+            resolved.validate(payload)
+        except ContractResolutionError as error:
+            raise FixtureImportError(str(error)) from error
 
 
-def import_verified_bundle(
+def _import_verified_bundle(
     application: AcquisitionOutputApplication,
     custody: ArtifactCustodyPort,
     *,
@@ -492,6 +492,13 @@ class TrustedAcquisitionApplication:
     ) -> tuple[str, str]:
         context = self._verification_context(tenant_id, run_id)
         if (
+            context.payload_contract is None
+            or payload_contract != context.payload_contract
+        ):
+            raise FixtureImportError(
+                "payload contract differs from the trusted execution binding"
+            )
+        if (
             producer.producer_id != bundle.trusted_bot_id
             or (context.bot_id is not None and producer.producer_id != context.bot_id)
             or producer.release_id != context.release_id
@@ -542,7 +549,7 @@ class TrustedAcquisitionApplication:
                     "completed replay differs from BC04 reservation and published BC05 set"
                 )
             return output_set_id, snapshot.manifest_digest
-        return import_verified_bundle(
+        return _import_verified_bundle(
             self._outputs,
             self._custody,
             bundle=bundle,

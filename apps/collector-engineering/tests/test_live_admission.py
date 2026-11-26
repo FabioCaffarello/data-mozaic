@@ -65,7 +65,7 @@ class LiveAdmissionTests(unittest.TestCase):
             },
         }
         self.release = {
-            "contract_version": "bot-release/v1",
+            "contract_version": "bot-release/v2",
             "release_id": "release-1",
             "status": "approved",
             "bot_id": "bot-1",
@@ -83,6 +83,11 @@ class LiveAdmissionTests(unittest.TestCase):
             "compiler_compatibility": "collector-ir/v1",
             "approved_at": "2026-11-25T12:00:00Z",
             "approval_evidence_ref": "test:approval",
+            "payload_contract": {
+                "contract_id": "sample.record",
+                "version": "1.0.0",
+                "digest": "sha256:" + "d" * 64,
+            },
             "release_digest": "",
         }
         self.release["release_digest"] = self._digest(self.release, "release_digest")
@@ -96,7 +101,7 @@ class LiveAdmissionTests(unittest.TestCase):
         documents = (
             ("source-revision/draft/v1/SourceRevision.schema.json", self.source),
             ("acquisition-policy/draft/v1/AcquisitionPolicy.schema.json", self.policy),
-            ("bot-release/draft/v1/BotRelease.schema.json", self.release),
+            ("bot-release/draft/v2/BotRelease.schema.json", self.release),
             (
                 "fetch-evidence/draft/v1/FetchEvidence.schema.json",
                 json.loads(

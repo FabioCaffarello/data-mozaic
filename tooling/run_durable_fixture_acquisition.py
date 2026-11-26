@@ -60,6 +60,7 @@ from execution_coordination.durable_domain import (
 )
 from jsonschema import Draft202012Validator, FormatChecker
 from mozaic_bot_build import canonical_json
+from mozaic_contract_resolution import ImmutableContractRegistry
 from run_execution_coordination_e2e import _binding, _build_image, _prepare_catalog
 from scrapy_collector.catalog.model import load_catalog
 
@@ -79,6 +80,10 @@ EXECUTION_REPORT_SCHEMA = (
 )
 
 
+def _contract_registry() -> ImmutableContractRegistry:
+    return ImmutableContractRegistry(ROOT / "contracts/payload/draft/v1")
+
+
 def _make_app(store: MongoOutputStore, *, contract: PayloadContractRef):
     base_url = os.environ["ARTIFACT_CUSTODY_HTTP_URL"]
     token = os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"]
@@ -87,9 +92,7 @@ def _make_app(store: MongoOutputStore, *, contract: PayloadContractRef):
     return AcquisitionOutputApplication(
         store,
         store,
-        payload_contracts=ExactJSONSchemaPayloadContractValidator(
-            contract, PAYLOAD_SCHEMA
-        ),
+        payload_contracts=ExactJSONSchemaPayloadContractValidator(_contract_registry()),
         custody=ArtifactCustodyHTTPAdapter(base_url, token),
         outbox=store,
         publication_grants=verifier,
@@ -97,13 +100,13 @@ def _make_app(store: MongoOutputStore, *, contract: PayloadContractRef):
 
 
 def _contract() -> PayloadContractRef:
-    data = PAYLOAD_SCHEMA.read_bytes()
-    schema = _strict_json(data, "fixture payload contract")
-    Draft202012Validator.check_schema(schema)
+    installed = _contract_registry().installed_reference(
+        "synthetic.html-simple-catalog.record", "1.0.0"
+    )
     return PayloadContractRef(
-        "synthetic.html-simple-catalog.record",
-        "1.0.0",
-        "sha256:" + hashlib.sha256(data).hexdigest(),
+        installed.contract_id,
+        installed.version,
+        installed.digest,
     )
 
 
@@ -370,12 +373,19 @@ def _run_new_fixture() -> None:
         tag: str | None = None
         try:
             tag, image_ref, image_id = _build_image(assembled, temp)
+            contract = _contract()
             binding = _binding(
                 assembled,
                 image_ref,
                 image_id,
                 {"bot_id": entry.bot_id, "build_id": entry.build_id},
                 60,
+            )
+            binding = replace(
+                binding,
+                payload_contract_id=contract.contract_id,
+                payload_contract_version=contract.version,
+                payload_contract_digest=contract.digest,
             )
             persistent_assembly = _persist_assembly(assembled)
             _selected_catalog, selected = _selected_entry(
@@ -387,7 +397,6 @@ def _run_new_fixture() -> None:
             request_id = "fixture-request-" + uuid.uuid4().hex
             run_deadline = datetime.now(UTC) + timedelta(minutes=3)
             repository = PostgresDurableRunRepository(os.environ["BC04_DATABASE_URL"])
-            contract = _contract()
             with MongoResources(MongoSettings.from_env()) as resources:
                 store = MongoOutputStore(resources)
                 app = _make_app(store, contract=contract)
@@ -588,6 +597,7 @@ def _run_new_fixture() -> None:
                 "Durable Scrapy fixture acquisition passed: "
                 f"run={run_id} output_set={output_set_id} outputs={len(bundle.records)} "
                 f"fixture_pages={len(bundle.pages)} manifest={manifest_digest} "
+                f"payload_contract={contract.contract_id}@{contract.version}#{contract.digest} "
                 "network=none replay=fresh-process publication=BC04-authorized"
             )
         finally:

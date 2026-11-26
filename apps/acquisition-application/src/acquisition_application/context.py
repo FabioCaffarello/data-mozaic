@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
+from acquisition_output.domain import PayloadContractRef
 from execution_coordination.durable_domain import DurableRunSnapshot
 
 
@@ -40,6 +41,7 @@ class TrustedExecutionContext:
     deadline: datetime
     execution_mode: str
     binding_digest: str
+    payload_contract: PayloadContractRef | None = None
     replay_output_set_id: str | None = None
     replay_manifest_digest: str | None = None
 
@@ -119,6 +121,17 @@ def load_current_execution(
             deadline=snapshot.intent.deadline,
             execution_mode=binding.execution_mode,
             binding_digest=binding_digest,
+            payload_contract=(
+                PayloadContractRef(
+                    binding.payload_contract_id,
+                    binding.payload_contract_version,
+                    binding.payload_contract_digest,
+                )
+                if binding.payload_contract_id is not None
+                and binding.payload_contract_version is not None
+                and binding.payload_contract_digest is not None
+                else None
+            ),
             replay_output_set_id=(
                 reservation.output_set_id if completed_replay else None
             ),
@@ -147,6 +160,17 @@ def load_current_execution(
             deadline=snapshot.intent.deadline,
             execution_mode=binding.execution_mode,
             binding_digest=binding_digest,
+            payload_contract=(
+                PayloadContractRef(
+                    binding.payload_contract_id,
+                    binding.payload_contract_version,
+                    binding.payload_contract_digest,
+                )
+                if binding.payload_contract_id is not None
+                and binding.payload_contract_version is not None
+                and binding.payload_contract_digest is not None
+                else None
+            ),
             replay_output_set_id=(
                 reservation.output_set_id if completed_replay else None
             ),

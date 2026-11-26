@@ -63,5 +63,8 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 54. [Trusted Acquisition Application — implementation boundary](../../apps/acquisition-application/README.md)
 55. [ADR 027 — Trusted Acquisition Application composition boundary](decisions/027-trusted-acquisition-application.md)
 56. [Trusted Acquisition Application — M2 implementation evidence](assessments/trusted-acquisition-application-2026-11-25.md)
+57. [BC08 immutable payload contract installation](../../contracts/payload/draft/v1/README.md)
+58. [ADR 028 — immutable payload contract resolution](decisions/028-immutable-payload-contract-resolution.md)
+59. [M3 immutable contract resolution — local implementation assessment](assessments/immutable-contract-resolution-2026-11-25.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.

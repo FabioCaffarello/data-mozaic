@@ -38,6 +38,7 @@ class TrustedLiveAuthorityTests(unittest.TestCase):
             self.policy, "policy_digest"
         )
         self.release = {
+            "contract_version": "bot-release/v2",
             "release_id": "build-release-1",
             "status": "approved",
             "source_id": "controlled-http",
@@ -49,6 +50,11 @@ class TrustedLiveAuthorityTests(unittest.TestCase):
             "backend_id": "scrapy-live-http",
             "runtime_profile_id": "scrapy-live-http-v1",
             "runtime_image_digest": "sha256:" + "c" * 64,
+            "payload_contract": {
+                "contract_id": "controlled.record",
+                "version": "1.0.0",
+                "digest": "sha256:" + "d" * 64,
+            },
         }
         self.release["release_digest"] = self._document_digest(
             self.release, "release_digest"
@@ -105,7 +111,32 @@ class TrustedLiveAuthorityTests(unittest.TestCase):
         )
         self.assertEqual(binding.snapshot_generation, 7)
         self.assertEqual(binding.release["release_id"], "build-release-1")
+        self.assertEqual(
+            binding.release["payload_contract"]["contract_id"], "controlled.record"
+        )
         self.assertTrue(binding.snapshot_digest.startswith("sha256:"))
+
+    def test_historical_release_v1_is_not_admitted_as_contract_bound(self):
+        historical = json.loads(json.dumps(self.snapshot))
+        release = historical["releases"][0]
+        release["contract_version"] = "bot-release/v1"
+        release.pop("payload_contract")
+        release["release_digest"] = self._document_digest(release, "release_digest")
+        historical.pop("snapshot_digest")
+        historical["snapshot_digest"] = self._document_digest(
+            historical, "snapshot_digest"
+        )
+        with self.assertRaisesRegex(CoordinationError, "contract version"):
+            self._load(self._encoded(historical)).resolve(
+                source_id="controlled-http",
+                source_revision_id="controlled-v1",
+                policy_id="controlled-get",
+                policy_version="1.0.0",
+                release_id="build-release-1",
+                build_id="sha256:" + "a" * 64,
+                build_manifest_digest="sha256:" + "b" * 64,
+                runtime_image_digest="sha256:" + "c" * 64,
+            )
 
     def test_unsigned_or_tampered_approval_flag_is_not_authorization(self):
         tampered = json.loads(self._encoded())
