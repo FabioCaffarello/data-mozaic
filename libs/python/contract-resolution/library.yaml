@@ -1,0 +1,20 @@
+name: mozaic-contract-resolution
+language: python
+owner: BC08 Contract and Quality
+responsibility: "Resolve exact installed payload contract revisions and validate bounded JSON Schema payloads"
+excludes:
+  - "Approval, eligibility, source or release lifecycle"
+  - "Persistence and mutable registration API"
+  - "Remote reference retrieval and semantic compatibility inference"
+visibility: internal
+stability: experimental
+consumers:
+  - "apps/acquisition-application"
+dependencies:
+  runtime:
+    - "jsonschema>=4.23,<5"
+  development: []
+api_version: "0.x"
+tests:
+  command: "make test-libraries"
+deprecation: "No external API promise; preserve exact resolver behavior for current integrated consumers"

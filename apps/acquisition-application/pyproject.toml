@@ -12,6 +12,7 @@ dependencies = [
     "mozaic-acquisition-output==0.1.0",
     "mozaic-bot-build==0.1.0",
     "mozaic-collector-engineering==0.3.0",
+    "mozaic-contract-resolution==0.1.0",
     "mozaic-execution-coordination==0.1.0",
 ]
 

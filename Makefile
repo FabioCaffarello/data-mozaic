@@ -22,10 +22,10 @@ lock-check:
 	uv lock --check
 
 lint:
-	uv run --locked ruff check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination apps/acquisition-output apps/acquisition-application libs/python/bot-build libs/python/observability
+	uv run --locked ruff check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination apps/acquisition-output apps/acquisition-application libs/python/bot-build libs/python/observability libs/python/contract-resolution
 
 format-check:
-	uv run --locked ruff format --check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination apps/acquisition-output apps/acquisition-application libs/python/bot-build libs/python/observability
+	uv run --locked ruff format --check tooling tests apps/scout apps/collector-engineering apps/workers/scrapy-collector apps/execution-coordination apps/acquisition-output apps/acquisition-application libs/python/bot-build libs/python/observability libs/python/contract-resolution
 
 docs-check:
 	uv run --locked python tooling/check_docs.py
@@ -42,6 +42,7 @@ architecture-check:
 test-libraries:
 	uv run --locked --package mozaic-observability python -m unittest discover -s libs/python/observability/tests -v
 	uv run --locked --package mozaic-bot-build python -m unittest discover -s libs/python/bot-build/tests -v
+	uv run --locked --package mozaic-contract-resolution python -m unittest discover -s libs/python/contract-resolution/tests -v
 
 test-scrapy-collector:
 	uv run --locked --package mozaic-scrapy-collector python -m unittest discover -s apps/workers/scrapy-collector/tests -v

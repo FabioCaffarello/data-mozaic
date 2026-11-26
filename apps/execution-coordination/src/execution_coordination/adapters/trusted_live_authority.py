@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +21,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from execution_coordination.domain import CoordinationError
 from execution_coordination.durable_domain import TrustedLiveBinding
 from execution_coordination.durable_ports import AuthoritySnapshotRegistryPort
+
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_CONTRACT_ID = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
+_CONTRACT_VERSION = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,63}$")
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -189,6 +194,24 @@ class TrustedLiveAuthority:
             raise CoordinationError("acquisition policy is not currently eligible")
         if release.get("status") != "approved":
             raise CoordinationError("BotRelease is not currently approved")
+        if release.get("contract_version") != "bot-release/v2":
+            raise CoordinationError("BotRelease contract version is unsupported")
+        contract = release.get("payload_contract")
+        if not isinstance(contract, dict) or set(contract) != {
+            "contract_id",
+            "version",
+            "digest",
+        }:
+            raise CoordinationError("BotRelease payload contract binding is invalid")
+        if (
+            not isinstance(contract.get("contract_id"), str)
+            or not isinstance(contract.get("version"), str)
+            or not isinstance(contract.get("digest"), str)
+            or not _CONTRACT_ID.fullmatch(contract["contract_id"])
+            or not _CONTRACT_VERSION.fullmatch(contract["version"])
+            or not _DIGEST.fullmatch(contract["digest"])
+        ):
+            raise CoordinationError("BotRelease payload contract binding is invalid")
         if (policy.get("source_id"), policy.get("source_revision_id")) != (
             source_id,
             source_revision_id,

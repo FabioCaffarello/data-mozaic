@@ -11,7 +11,7 @@
 | BC05 Acquisition | core | semântica de captura, CaptureReceipt, CaptureOutcome, CaptureOutput e OutputSet; execução pode coexistir com BC16 |
 | BC06 Artifact Custody | supporting | identidade, localização, integridade, classificação e retenção do artefato; não interpreta conteúdo |
 | BC07 Parsing & Normalization | futuro supporting | transformações derivadas, sem alterar raw |
-| BC08 Contract & Quality | futuro supporting | contratos de dataset e regras de qualidade; não valida sozinho evidência de Scout |
+| BC08 Contract & Quality | supporting (contract-resolution inicial) | identidade e revisões imutáveis de contratos; qualidade de datasets segue futura; não valida sozinho evidência de Scout |
 | BC09 Dataset Publishing | futuro supporting | versões de datasets publicados |
 | BC10 Provenance & Audit | supporting transversal | registros de linhagem/auditoria; não substitui estado transacional de origem |
 | BC11 Policy & Access | generic/supporting | políticas e concessões; enforcement também ocorre em workers e rede |
@@ -84,6 +84,11 @@ Em todos, comandos exigem autorização e chave idempotente; eventos são fatos 
 - `RegisterArtifact`, `ApplyRetention`; eventos `ArtifactStored`, `ArtifactRetired`; contrato RawArtifactRef. Depende armazenamento de objetos e BC11; possui metadados, classificação e retenção; objeto gravado mas não registrado é reconciliável. Segregação por tenant, criptografia e acesso auditado. Não altera payload ou interpreta dados. Alternativa adapter local inicial; testes de integridade, orfandade e autorização.
 
 O estado executável draft está em [`apps/artifact-custody`](../../apps/artifact-custody/README.md): serviço Go, schema PostgreSQL BC06, adapter S3 compatível e contrato HTTP draft com consumidor Python BC05. O perfil local usa policy `local`/`test`; isto não implementa BC11, retenção automática, HA nem o protocolo de finalização BC04↔BC05. Veja [evidência local](assessments/bc06-artifact-custody-local-2026-11-24.md). Os nomes de eventos acima são direção de domínio; o envelope de contrato draft atual tem tipo versionado `data-mozaic.artifact.custody-confirmed.v1`.
+
+### BC08 Contract & Quality — resolução inicial
+- BC08 possui a semântica técnica de `ContractReference` e revisão imutável para payloads raw: identidade + versão + digest SHA-256 dos bytes UTF-8 exatos do schema. A instalação local em [`contracts/payload/draft/v1`](../../contracts/payload/draft/v1/README.md) é versionada e revisada em código; não é registry CRUD nem serviço independente.
+- `libs/python/contract-resolution` resolve o registro instalado por referência exata e valida JSON Schema Draft 2020-12 autocontido com limites. O consumer atual é a composição de aquisição confiável; seu adapter fornece o port de validação de BC05. Schema inexistente, digest diferente, schema inválido, `$ref` e dialect não suportado falham fechado. Não há busca remota nem fallback de versão.
+- O contrato BotRelease v2 (owner BC15) vincula a referência aprovada; BC04 copia-a para a binding durável do run. A aquisição não decide aprovação ou elegibilidade. Revisões antigas não são reinterpretadas. Qualidade de dataset, compatibilidade semântica automática, dependências de schemas e workflow administrativo persistido continuam futuros.
 
 ## BC14 S1
 

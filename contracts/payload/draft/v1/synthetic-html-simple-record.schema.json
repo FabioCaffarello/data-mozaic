@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/examples/synthetic-html-simple-record/v1",
+  "title": "Synthetic HTML simple-catalog fixture record",
+  "description": "Illustrative local fixture payload contract. The example uses only synthetic HTML fixtures and is not source evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "price", "_provenance"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "title": {"type": "string", "minLength": 1, "maxLength": 512},
+    "price": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)?$"},
+    "_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "source_revision", "requested_url", "effective_url", "source_url", "evidence_ref", "raw_sha256", "operation_id", "page_index", "record_index"],
+      "properties": {
+        "source_id": {"const": "synthetic-html-catalog"},
+        "source_revision": {"type": "string", "minLength": 1},
+        "requested_url": {"type": "string", "format": "uri"},
+        "effective_url": {"type": "string", "format": "uri"},
+        "source_url": {"type": "string", "format": "uri"},
+        "evidence_ref": {"type": "string", "minLength": 1},
+        "raw_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "operation_id": {"type": "string", "minLength": 1},
+        "page_index": {"type": "integer", "minimum": 0},
+        "record_index": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

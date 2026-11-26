@@ -18,6 +18,7 @@
 | CrawlTask | contrato interno BC16/worker | run, operação, fingerprint versionado, lease/token e orçamento |
 | CaptureReceipt | fato/projeção BC05 | tentativa, request sanitizado, status, tempo, artifact refs e release |
 | RawArtifactRef | VO público BC06 | ID da observação, digest, tamanho, media type e política/acesso indireto |
+| PayloadContractRef | referência imutável / BC08, vinculada pelo release BC15 e execução BC04 | `contract_id`, `version`, digest `sha256:` dos bytes UTF-8 exatos; sem resolução `latest` |
 | CaptureOutcome | evento/projeção BC04 | run, status, causa classificada e referências a receipts |
 
 IDs opacos estáveis, únicos por namespace/tenant; formato exato pendente. Comando inclui idempotency key escopada ao emissor e operação, hash do payload e retenção declarada; mesma chave com conteúdo diferente é conflito. CloudEvents propõe `id`, `source`, `type`, `specversion`, `subject`, `time`, `dataschema`, correlation/causation IDs, versão de agregado e contexto de trace; par source+id identifica evento, e replay preserva identidade. Dados pessoais e segredos ficam fora de envelopes e logs. Trace context externo é não confiável; correlation não é autorização.

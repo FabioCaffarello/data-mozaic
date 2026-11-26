@@ -52,6 +52,8 @@ The application does not consume expected output values, fixture page sequences,
 
 `ExactJSONSchemaPayloadContractValidator` checks immutable schema bytes against the declared `PayloadContractRef` digest, validates the schema, and rejects a differing reference. The current controlled composition supplies the immutable contract document. BC04's current binding and the current BotBuild do not yet provide a general release-bound contract resolver. M3 must establish that resolution and compatibility policy; M2 does not claim a schema registry.
 
+This is the M2 implementation snapshot. The M3 local increment supersedes the resolver and release-binding status through the BC08 installed catalog, BotRelease v2 and BC04 binding documented in [the M3 assessment](immutable-contract-resolution-2026-11-25.md); it does not retroactively change M2 evidence.
+
 No general library or SDK was promoted. The bundle reader has one trusted application consumer; the worker is the producer of a BC15 result contract, not a compatible reader consumer. Strict JSON behavior has trust-boundary-specific size/error requirements. The BC06 upload use case has one consumer; BC05's verifier does not share the same lifecycle/API. Keep these L0 owner-local implementations and adapters under the existing L0–L4 governance. Revisit extraction only with a named compatible consumer, stable public API, conformance tests, versioning, and rollback plan.
 
 ## Consistency, replay and resource bounds

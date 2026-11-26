@@ -14,6 +14,7 @@ members = [
     "mozaic-acquisition-output",
     "mozaic-bot-build",
     "mozaic-collector-engineering",
+    "mozaic-contract-resolution",
     "mozaic-execution-coordination",
     "mozaic-observability",
     "mozaic-scout",
@@ -1263,6 +1264,17 @@ requires-dist = [
 ]
 
 [[package]]
+name = "mozaic-contract-resolution"
+version = "0.1.0"
+source = { editable = "libs/python/contract-resolution" }
+dependencies = [
+    { name = "jsonschema" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "jsonschema", specifier = ">=4.23,<5" }]
+
+[[package]]
 name = "mozaic-execution-coordination"
 version = "0.1.0"
 source = { editable = "apps/execution-coordination" }
@@ -1335,6 +1347,7 @@ dependencies = [
     { name = "mozaic-acquisition-output" },
     { name = "mozaic-bot-build" },
     { name = "mozaic-collector-engineering" },
+    { name = "mozaic-contract-resolution" },
     { name = "mozaic-execution-coordination" },
 ]
 
@@ -1344,6 +1357,7 @@ requires-dist = [
     { name = "mozaic-acquisition-output", editable = "apps/acquisition-output" },
     { name = "mozaic-bot-build", editable = "libs/python/bot-build" },
     { name = "mozaic-collector-engineering", editable = "apps/collector-engineering" },
+    { name = "mozaic-contract-resolution", editable = "libs/python/contract-resolution" },
     { name = "mozaic-execution-coordination", editable = "apps/execution-coordination" },
 ]
 

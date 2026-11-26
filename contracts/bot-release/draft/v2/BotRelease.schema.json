@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/bot-release/draft/v2/BotRelease.schema.json",
+  "title": "BotRelease",
+  "description": "Draft BC15 approval record bound to an exact immutable payload contract revision.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "const": "bot-release/v2"
+    },
+    "release_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "approved",
+        "revoked"
+      ]
+    },
+    "bot_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "build_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "build_manifest_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "backend_id": {
+      "const": "scrapy-live-http"
+    },
+    "backend_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "runtime_profile_id": {
+      "const": "scrapy-live-http-v1"
+    },
+    "runtime_image_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$"
+    },
+    "source_revision_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "policy_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "policy_version": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*\\.[0-9]+\\.[0-9]+$"
+    },
+    "compiler_compatibility": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "approved_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "approval_evidence_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "release_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "payload_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contract_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._:-]{0,63}$"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "contract_id",
+        "version",
+        "digest"
+      ]
+    }
+  },
+  "required": [
+    "contract_version",
+    "release_id",
+    "status",
+    "bot_id",
+    "build_id",
+    "build_manifest_digest",
+    "backend_id",
+    "backend_version",
+    "runtime_profile_id",
+    "runtime_image_digest",
+    "source_id",
+    "source_revision_id",
+    "policy_id",
+    "policy_version",
+    "compiler_compatibility",
+    "approved_at",
+    "approval_evidence_ref",
+    "release_digest",
+    "payload_contract"
+  ]
+}

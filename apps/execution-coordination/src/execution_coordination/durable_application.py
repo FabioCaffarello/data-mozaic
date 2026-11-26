@@ -138,6 +138,13 @@ class DurableExecutionCoordinator:
             max_requests=int(policy["max_requests"]),
             max_total_response_bytes=int(policy["max_total_response_bytes"]),
             max_concurrency=int(policy["max_concurrency"]),
+            payload_contract_id=str(
+                resolved.release["payload_contract"]["contract_id"]
+            ),
+            payload_contract_version=str(
+                resolved.release["payload_contract"]["version"]
+            ),
+            payload_contract_digest=str(resolved.release["payload_contract"]["digest"]),
         )
         return self._repository.create(
             DurableRunIntent(
