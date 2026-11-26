@@ -1,0 +1,18 @@
+{
+  "complete": true,
+  "source": {
+    "source_id": "controlled-http",
+    "revision": "controlled-raw-zip-v1"
+  },
+  "pages": [
+    {
+      "url": "https://api.fixture.test/v1/artifacts/zip",
+      "status": 200,
+      "content_type": "application/zip",
+      "evidence_ref": "controlled-raw-zip",
+      "body_file": "sample.zip",
+      "sha256": "6f623b341cc155d64e05bc5a6b7cf1f5db27e64063b3e5d073ccc123077297e2",
+      "size_bytes": 139
+    }
+  ]
+}

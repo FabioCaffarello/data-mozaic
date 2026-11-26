@@ -39,6 +39,7 @@ _POLICY_SCHEMA = (
 )
 _RELEASE_SCHEMA = _ROOT / "contracts/bot-release/draft/v2/BotRelease.schema.json"
 _RELEASE_SCHEMA_V3 = _ROOT / "contracts/bot-release/draft/v3/BotRelease.schema.json"
+_RELEASE_SCHEMA_V4 = _ROOT / "contracts/bot-release/draft/v4/BotRelease.schema.json"
 _RELEASE_ID = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 
 
@@ -226,8 +227,9 @@ class AcquisitionLifecycle:
         policy: PolicyRevisionRef,
         build_id: str,
         runtime_image_digest: str,
-        contract: ContractReference,
+        contract: ContractReference | None,
         input_contract: ContractReference | None = None,
+        output_contract: dict[str, Any] | None = None,
         playbook_digest: str,
         actor_id: str,
     ) -> dict[str, Any]:
@@ -274,10 +276,13 @@ class AcquisitionLifecycle:
             raise LifecycleError(
                 "registered Playbook is bound to another SourceRevision"
             )
-        try:
-            self._contracts.resolve(contract)
-        except Exception as error:
-            raise LifecycleError("payload contract is not exactly installed") from error
+        if contract is not None:
+            try:
+                self._contracts.resolve(contract)
+            except Exception as error:
+                raise LifecycleError(
+                    "payload contract is not exactly installed"
+                ) from error
         if input_contract is not None:
             try:
                 self._contracts.resolve(input_contract)
@@ -308,12 +313,22 @@ class AcquisitionLifecycle:
                 "runtime_image_digest": verified["runtime_image_digest"],
             },
             "bot_id": manifest["bot_id"],
-            "payload_contract": {
+        }
+        if contract is not None:
+            candidate["payload_contract"] = {
                 "contract_id": contract.contract_id,
                 "version": contract.version,
                 "digest": contract.digest,
-            },
-        }
+            }
+        if output_contract is not None:
+            if (
+                manifest.get("manifest_version") != "bot-build-manifest/v4"
+                or manifest.get("output_contract") != output_contract
+            ):
+                raise LifecycleError(
+                    "artifact output contract differs from verified BotBuild"
+                )
+            candidate["output_contract"] = output_contract
         if input_contract is not None:
             live_request = manifest.get("live_request")
             input_query = (
@@ -321,10 +336,10 @@ class AcquisitionLifecycle:
                 if isinstance(live_request, dict)
                 else None
             )
-            if not isinstance(input_query, dict) or set(input_query) != {
-                "parameter",
-                "query_name",
-            }:
+            if output_contract is None and (
+                not isinstance(input_query, dict)
+                or set(input_query) != {"parameter", "query_name"}
+            ):
                 raise LifecycleError(
                     "BotRelease input contract requires a parameterized BotBuild"
                 )
@@ -333,11 +348,15 @@ class AcquisitionLifecycle:
                 "version": input_contract.version,
                 "digest": input_contract.digest,
             }
-            candidate["input_request"] = {
-                "method": "GET",
-                "url": live_request["url"],
-                "input_query": input_query,
-            }
+            candidate["input_request"] = (
+                {"method": "GET", "url": live_request["url"]}
+                if output_contract is not None
+                else {
+                    "method": "GET",
+                    "url": live_request["url"],
+                    "input_query": input_query,
+                }
+            )
         approved = self._release_document(
             candidate, status="approved", actor_id=actor_id
         )
@@ -431,18 +450,19 @@ class AcquisitionLifecycle:
             raise LifecycleError(
                 "BotRelease BotBuild or runtime identity is unavailable"
             )
-        contract = document["payload_contract"]
-        try:
-            self._contracts.resolve(
-                ContractReference(
-                    contract["contract_id"], contract["version"], contract["digest"]
+        contract = document.get("payload_contract")
+        if document.get("contract_version") != "bot-release/v4":
+            try:
+                self._contracts.resolve(
+                    ContractReference(
+                        contract["contract_id"], contract["version"], contract["digest"]
+                    )
                 )
-            )
-        except Exception as error:
-            raise LifecycleError(
-                "BotRelease payload contract is unavailable"
-            ) from error
-        if document.get("contract_version") == "bot-release/v3":
+            except Exception as error:
+                raise LifecycleError(
+                    "BotRelease payload contract is unavailable"
+                ) from error
+        if document.get("contract_version") in {"bot-release/v3", "bot-release/v4"}:
             input_contract = document.get("input_contract")
             try:
                 if not isinstance(input_contract, dict):
@@ -451,6 +471,14 @@ class AcquisitionLifecycle:
                 expected_request = verified["manifest"].get("live_request")
                 if input_request != expected_request:
                     raise TypeError("input request differs from verified build")
+                if document.get("contract_version") == "bot-release/v4" and (
+                    document.get("output_contract")
+                    != verified["manifest"].get("output_contract")
+                    or contract is not None
+                ):
+                    raise TypeError(
+                        "raw artifact output contract differs from verified build"
+                    )
                 self._contracts.resolve(
                     ContractReference(
                         input_contract["contract_id"],
@@ -607,10 +635,14 @@ class AcquisitionLifecycle:
         source = candidate["source"]
         policy = candidate["policy"]
         build = candidate["build"]
-        payload = candidate["payload_contract"]
+        payload = candidate.get("payload_contract")
         document = {
             "contract_version": (
-                "bot-release/v3" if "input_contract" in candidate else "bot-release/v2"
+                "bot-release/v4"
+                if "output_contract" in candidate
+                else "bot-release/v3"
+                if "input_contract" in candidate
+                else "bot-release/v2"
             ),
             "release_id": candidate["release_id"],
             "status": status,
@@ -629,8 +661,11 @@ class AcquisitionLifecycle:
             "approved_at": datetime.now(UTC).isoformat(),
             "approval_evidence_ref": evidence_ref
             or f"operator://{actor_id}/release/{candidate['release_id']}",
-            "payload_contract": payload,
         }
+        if payload is not None:
+            document["payload_contract"] = payload
+        if "output_contract" in candidate:
+            document["output_contract"] = candidate["output_contract"]
         if "input_contract" in candidate:
             document["input_contract"] = candidate["input_contract"]
             document["input_request"] = candidate["input_request"]
@@ -638,11 +673,10 @@ class AcquisitionLifecycle:
 
     @staticmethod
     def _validate_release_schema(document: dict[str, Any]) -> None:
-        schema_path = (
-            _RELEASE_SCHEMA_V3
-            if document.get("contract_version") == "bot-release/v3"
-            else _RELEASE_SCHEMA
-        )
+        schema_path = {
+            "bot-release/v4": _RELEASE_SCHEMA_V4,
+            "bot-release/v3": _RELEASE_SCHEMA_V3,
+        }.get(document.get("contract_version"), _RELEASE_SCHEMA)
         schema = json.loads(schema_path.read_bytes())
         try:
             Draft202012Validator(schema, format_checker=FormatChecker()).validate(

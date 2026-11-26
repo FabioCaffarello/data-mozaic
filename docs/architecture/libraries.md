@@ -140,6 +140,8 @@ No `libs/python/collector-runtime` is justified yet: no consumer outside BC15 ex
 
 No general strict-JSON library is extracted: duplicate-key rejection is required at several trust boundaries but the currently compatible parser behavior and error model are owner-local. No BC06 SDK is extracted: only the trusted acquisition application needs this upload workflow, while BC05's separate custody verifier has different application semantics. The HTTP adapter uses the public BC06 intent/upload/verification contract and owns neither retry policy nor provider state. No generic integrity, bounded-I/O, or contract-validation wrapper is justified by this increment. Revisit extraction only when a second named consumer needs the same stable API and conformance vectors.
 
+M6 keeps raw-artifact evidence verification and custody transfer in the trusted acquisition application. The new artifact importer is its only consumer of the BC06 upload flow; BC05's custody verification remains a different contract and operation. A custody SDK, evidence SDK, generic bounded-I/O package, and media-type helper therefore remain unjustified L0/L1 candidates. Reconsider only when another named application has compatible transport, receipt, resource-lifecycle, and error semantics and can run independent consumer conformance tests.
+
 For each real library, include a small `library.yaml` next to its README. The first library includes actual ownership, consumers, exclusions and dependency/test policy; the manifest remains documentation until a validator needs machine-readable enforcement. Required fields:
 
 ```yaml

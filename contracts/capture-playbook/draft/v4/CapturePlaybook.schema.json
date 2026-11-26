@@ -1,0 +1,913 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/capture-playbook/draft/v4/CapturePlaybook.schema.json",
+  "title": "CapturePlaybookDraftV4",
+  "description": "Draft-only declarative BC15 playbook. It is not a production capture or release contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "dsl_version": {
+      "const": "capture-playbook-draft/v4"
+    },
+    "playbook_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "status": {
+      "const": "draft"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "proposal_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "findings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "http.fetch.fixture",
+          "html.css_select",
+          "json.path_restricted",
+          "links.discover.fixture",
+          "pagination.bounded.fixture",
+          "records.extract",
+          "output.records.jsonl",
+          "output.raw.reference",
+          "browser.rendered_dom",
+          "output.artifact.reference"
+        ]
+      }
+    },
+    "budgets": {
+      "$ref": "#/$defs/budgets"
+    },
+    "failure_policy": {
+      "$ref": "#/$defs/failure_policy"
+    },
+    "output_contract": {
+      "$ref": "#/$defs/artifact_output_contract"
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 64,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/fetch"
+          },
+          {
+            "$ref": "#/$defs/discover"
+          },
+          {
+            "$ref": "#/$defs/paginate"
+          },
+          {
+            "$ref": "#/$defs/browser_render"
+          },
+          {
+            "$ref": "#/$defs/select_html"
+          },
+          {
+            "$ref": "#/$defs/select_json"
+          },
+          {
+            "$ref": "#/$defs/select_rendered"
+          },
+          {
+            "$ref": "#/$defs/extract"
+          },
+          {
+            "$ref": "#/$defs/output_records"
+          },
+          {
+            "$ref": "#/$defs/output_raw"
+          },
+          {
+            "$ref": "#/$defs/output_artifact"
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "dsl_version",
+    "playbook_id",
+    "status",
+    "source",
+    "objective",
+    "proposal_ref",
+    "findings",
+    "evidence",
+    "capabilities",
+    "budgets",
+    "failure_policy",
+    "output_contract",
+    "operations"
+  ],
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "origin": {
+          "type": "string",
+          "format": "uri"
+        },
+        "path_prefixes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        }
+      },
+      "required": [
+        "source_id",
+        "revision",
+        "origin",
+        "path_prefixes"
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "finding_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "classification": {
+          "enum": [
+            "observed",
+            "hypothesized"
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "finding_id",
+        "classification",
+        "evidence_refs"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "evidence_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "evidence_ref",
+        "sha256"
+      ]
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_requests": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "max_pages": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "max_response_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "max_records": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "max_output_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20000000
+        }
+      },
+      "required": [
+        "max_requests",
+        "max_pages",
+        "max_response_bytes",
+        "max_records",
+        "max_output_bytes"
+      ]
+    },
+    "failure_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "missing_fixture": {
+          "const": "fail"
+        },
+        "invalid_record": {
+          "const": "fail"
+        },
+        "missing_required_field": {
+          "const": "fail"
+        },
+        "conversion_error": {
+          "const": "fail"
+        }
+      },
+      "required": [
+        "missing_fixture",
+        "invalid_record",
+        "missing_required_field",
+        "conversion_error"
+      ]
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+        },
+        "port": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+        }
+      },
+      "required": [
+        "operation",
+        "port"
+      ]
+    },
+    "base": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+        },
+        "op": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "op"
+      ]
+    },
+    "fetch": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "op": {
+              "const": "http.fetch/v1"
+            },
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "content_type": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*(;[ -~]{1,128})?$"
+            },
+            "evidence_refs": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              }
+            },
+            "input_query": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "parameter": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$"
+                },
+                "query_name": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+                }
+              },
+              "required": [
+                "parameter",
+                "query_name"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "url",
+            "content_type",
+            "evidence_refs"
+          ]
+        }
+      ]
+    },
+    "discover": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "op": {
+              "const": "links.discover/v1"
+            },
+            "document": {
+              "$ref": "#/$defs/binding"
+            },
+            "selector": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "attribute": {
+              "const": "href"
+            },
+            "max_links": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "evidence_refs": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "document",
+            "selector",
+            "attribute",
+            "max_links",
+            "evidence_refs"
+          ]
+        }
+      ]
+    },
+    "paginate": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "op": {
+              "const": "pagination.bounded/v1"
+            },
+            "links": {
+              "$ref": "#/$defs/binding"
+            },
+            "max_pages": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "stop_when_no_links": {
+              "const": true
+            },
+            "completion_mode": {
+              "enum": [
+                "natural_end",
+                "bounded_window"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "links",
+            "max_pages",
+            "stop_when_no_links"
+          ]
+        }
+      ]
+    },
+    "browser_render": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "op": {
+              "const": "browser.render_dom/v1"
+            },
+            "document": {
+              "$ref": "#/$defs/binding"
+            },
+            "wait_policy": {
+              "enum": [
+                "dom_content_loaded",
+                "network_idle"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "document",
+            "wait_policy"
+          ]
+        }
+      ]
+    },
+    "select_html": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "op": {
+              "const": "select.html_records/v1"
+            },
+            "documents": {
+              "$ref": "#/$defs/binding"
+            },
+            "selector": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "cardinality": {
+              "enum": [
+                "one",
+                "optional_one",
+                "many"
+              ]
+            },
+            "max_matches": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "evidence_refs": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "documents",
+            "selector",
+            "cardinality",
+            "max_matches",
+            "evidence_refs"
+          ]
+        }
+      ]
+    },
+    "select_json": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "op": {
+              "const": "select.json_records/v1"
+            },
+            "document": {
+              "$ref": "#/$defs/binding"
+            },
+            "array_path": {
+              "type": "string",
+              "pattern": "^/",
+              "maxLength": 256
+            },
+            "max_matches": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "evidence_refs": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "document",
+            "array_path",
+            "max_matches",
+            "evidence_refs"
+          ]
+        }
+      ]
+    },
+    "select_rendered": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "op": {
+              "const": "select.rendered_dom_records/v1"
+            },
+            "document": {
+              "$ref": "#/$defs/binding"
+            },
+            "selector": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "cardinality": {
+              "enum": [
+                "one",
+                "optional_one",
+                "many"
+              ]
+            },
+            "max_matches": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "evidence_refs": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "document",
+            "selector",
+            "cardinality",
+            "max_matches",
+            "evidence_refs"
+          ]
+        }
+      ]
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "enum": [
+            "text",
+            "attribute",
+            "json_value"
+          ]
+        },
+        "attribute": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "type": {
+          "enum": [
+            "string",
+            "integer",
+            "decimal",
+            "boolean"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "normalize": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "trim",
+              "collapse_whitespace"
+            ]
+          }
+        }
+      },
+      "required": [
+        "source",
+        "type",
+        "required",
+        "normalize"
+      ]
+    },
+    "extract": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "op": {
+              "const": "extract.fields/v1"
+            },
+            "records": {
+              "$ref": "#/$defs/binding"
+            },
+            "fields": {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 64,
+              "additionalProperties": {
+                "$ref": "#/$defs/field"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "records",
+            "fields"
+          ]
+        }
+      ]
+    },
+    "output_records": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "op": {
+              "const": "output.records/v1"
+            },
+            "records": {
+              "$ref": "#/$defs/binding"
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "records"
+          ]
+        }
+      ]
+    },
+    "output_raw": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "op": {
+              "const": "output.raw/v1"
+            },
+            "documents": {
+              "$ref": "#/$defs/binding"
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "documents"
+          ]
+        }
+      ]
+    },
+    "output_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "record_type": {
+          "const": "object"
+        },
+        "fields": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 64,
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "string",
+                  "integer",
+                  "decimal",
+                  "boolean"
+                ]
+              },
+              "required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type",
+              "required"
+            ]
+          }
+        }
+      },
+      "required": [
+        "record_type",
+        "fields"
+      ]
+    },
+    "output_artifact": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "op": {
+              "const": "output.artifact/v1"
+            },
+            "document": {
+              "$ref": "#/$defs/binding"
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "document"
+          ]
+        }
+      ]
+    },
+    "artifact_output_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "artifact"
+        },
+        "media_types": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$"
+          }
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        }
+      },
+      "required": [
+        "mode",
+        "media_types",
+        "max_bytes"
+      ]
+    }
+  }
+}

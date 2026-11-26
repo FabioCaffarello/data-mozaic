@@ -104,6 +104,27 @@ func TestRecoveryAfterObjectCommitBeforeInventoryConfirmation(t *testing.T) {
 	if err != nil || receipt.ReceiptID == "" {
 		t.Fatalf("recovered receipt: receipt=%+v err=%v", receipt, err)
 	}
+	pendingEvents, err := db.ListPendingEvents(ctx, intent.TenantID, 100)
+	if err != nil {
+		t.Fatalf("list tenant-scoped pending events: %v", err)
+	}
+	foundCustodyEvent := false
+	for _, event := range pendingEvents {
+		if event.EventID == "custody-confirmed-"+receipt.ReceiptID &&
+			event.TenantID == intent.TenantID && event.AggregateID == intent.ArtifactID {
+			foundCustodyEvent = true
+		}
+	}
+	if !foundCustodyEvent {
+		t.Fatalf("durable custody event missing for operation %s", intent.OperationID)
+	}
+	otherTenantEvents, err := db.ListPendingEvents(ctx, "other-"+suffix, 100)
+	if err != nil {
+		t.Fatalf("list other tenant pending events: %v", err)
+	}
+	if len(otherTenantEvents) != 0 {
+		t.Fatalf("pending event query crossed tenant boundary: got %d events", len(otherTenantEvents))
+	}
 	var recoveredState string
 	var recoveredAt *time.Time
 	if err = db.db.QueryRowContext(ctx, `SELECT reconciliation_state,last_reconciled_at FROM artifact_custody.artifact_inventory WHERE tenant_id=$1 AND operation_id=$2`, intent.TenantID, intent.OperationID).Scan(&recoveredState, &recoveredAt); err != nil {

@@ -1,0 +1,18 @@
+{
+  "complete": true,
+  "source": {
+    "source_id": "controlled-http",
+    "revision": "controlled-raw-pdf-v1"
+  },
+  "pages": [
+    {
+      "url": "https://api.fixture.test/v1/artifacts/pdf",
+      "status": 200,
+      "content_type": "application/pdf",
+      "evidence_ref": "controlled-raw-pdf",
+      "body_file": "sample.pdf",
+      "sha256": "aeb3142125f4707795376346666c7e94b9704fa1344e5bd30e9423e475c7c396",
+      "size_bytes": 45
+    }
+  ]
+}

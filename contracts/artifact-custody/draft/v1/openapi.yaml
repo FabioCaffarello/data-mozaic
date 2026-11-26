@@ -110,7 +110,7 @@ paths:
           name: limit
           schema: {type: integer, minimum: 1, maximum: 100}
       responses:
-        '200': {description: Bounded pending BC06 events; no delivery guarantee}
+        '200': {description: Bounded pending BC06 events scoped to the authenticated tenant; no delivery guarantee}
 components:
   securitySchemes:
     LocalBearer: {type: http, scheme: bearer}

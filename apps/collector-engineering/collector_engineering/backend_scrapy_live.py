@@ -45,6 +45,23 @@ def _supported_graph(
     by_type: dict[str, list[dict[str, Any]]] = {}
     for node in nodes:
         by_type.setdefault(node["operator_type"], []).append(node)
+    if ir.document.get("ir_version") == "collector-ir/v3":
+        fetches = by_type.get("http.fetch", [])
+        sinks = by_type.get("output.artifact", [])
+        if (
+            len(fetches) != 1
+            or len(sinks) != 1
+            or len(nodes) != 2
+            or by_type.get("output.records")
+            or by_type.get("output.raw")
+            or sinks[0]["inputs"].get("document", {}).get("operation")
+            != fetches[0]["operation_id"]
+            or sinks[0]["inputs"].get("document", {}).get("port") != "document"
+        ):
+            raise PlaybookError(
+                "[LIVE_ARTIFACT_GRAPH_UNSUPPORTED] raw v4 requires one fetch and one directly bound artifact output"
+            )
+        return fetches[0], None, None, None, None
     if (
         len(by_type.get("http.fetch", [])) != 1
         or len(by_type.get("select.json_records", []))
@@ -159,6 +176,14 @@ def _supported_graph(
 def generate_bot(ir: TypedIR, runtime_identity: dict[str, Any]) -> bytes:
     """Generate a small executable entrypoint and immutable live plan."""
     fetch, select, extract, discover, pagination = _supported_graph(ir)
+    artifact_output = next(
+        (
+            node
+            for node in ir.document["nodes"]
+            if node["operator_type"] == "output.artifact"
+        ),
+        None,
+    )
     plan = {
         "profile": "scrapy-live-http-v1",
         "source": ir.document["source"],
@@ -168,6 +193,8 @@ def generate_bot(ir: TypedIR, runtime_identity: dict[str, Any]) -> bytes:
         "extract": extract,
         "discover": discover,
         "pagination": pagination,
+        "artifact_output": artifact_output,
+        "output_contract": ir.document["output_contract"] if artifact_output else None,
     }
     lines = [
         '"""Generated BC15 live entrypoint; all source HTTP remains gateway delegated."""',
@@ -194,7 +221,11 @@ def compile_build(
     playbook_sha256: str | None = None,
     target_platform: str | None = None,
 ) -> dict[str, Any]:
-    if ir.document.get("ir_version") not in {IR_VERSION, IR_VERSION_V2}:
+    if ir.document.get("ir_version") not in {
+        IR_VERSION,
+        IR_VERSION_V2,
+        "collector-ir/v3",
+    }:
         raise PlaybookError(
             "[IR_VERSION_UNSUPPORTED] live backend requires collector-ir/v1"
         )
@@ -231,7 +262,9 @@ def compile_build(
         }
     manifest_core = {
         "manifest_version": (
-            "bot-build-manifest/v3"
+            "bot-build-manifest/v4"
+            if ir.document["ir_version"] == "collector-ir/v3"
+            else "bot-build-manifest/v3"
             if input_query is not None
             else "bot-build-manifest/v2"
         ),
@@ -244,7 +277,9 @@ def compile_build(
             "source_revision": ir.document["source"]["revision"],
         },
         "playbook_version": (
-            "capture-playbook-draft/v3"
+            "capture-playbook-draft/v4"
+            if ir.document["ir_version"] == "collector-ir/v3"
+            else "capture-playbook-draft/v3"
             if ir.document["ir_version"] == IR_VERSION_V2
             else "capture-playbook-draft/v2"
         ),
@@ -289,6 +324,11 @@ def compile_build(
         "generated_files": generated,
         "input_fixtures": [],
         "live_request": live_request,
+        **(
+            {"output_contract": ir.document["output_contract"]}
+            if ir.document["ir_version"] == "collector-ir/v3"
+            else {}
+        ),
     }
     manifest = {
         **manifest_core,

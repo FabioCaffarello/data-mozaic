@@ -105,6 +105,9 @@ class LiveExecutionBinding:
     input_parameters_json: str | None = None
     input_parameters_digest: str | None = None
     expected_initial_target_digest: str | None = None
+    output_modality: str = "record"
+    artifact_media_types: tuple[str, ...] = ()
+    max_artifact_bytes: int | None = None
     execution_mode: str = "live-authorized"
 
     def __post_init__(self) -> None:
@@ -118,6 +121,32 @@ class LiveExecutionBinding:
             (self.authority_id, "authority_id"),
         ):
             _identity(value, label)
+        object.__setattr__(
+            self, "artifact_media_types", tuple(self.artifact_media_types)
+        )
+        if self.output_modality not in {"record", "artifact"}:
+            raise CoordinationError("output modality is unsupported")
+        if self.output_modality == "artifact":
+            if (
+                not self.artifact_media_types
+                or len(self.artifact_media_types) > 16
+                or len(set(self.artifact_media_types)) != len(self.artifact_media_types)
+                or any(
+                    not isinstance(value, str)
+                    or re.fullmatch(
+                        r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*",
+                        value,
+                    )
+                    is None
+                    for value in self.artifact_media_types
+                )
+                or isinstance(self.max_artifact_bytes, bool)
+                or not isinstance(self.max_artifact_bytes, int)
+                or not 1 <= self.max_artifact_bytes <= 2_000_000
+            ):
+                raise CoordinationError("artifact output binding is invalid")
+        elif self.artifact_media_types or self.max_artifact_bytes is not None:
+            raise CoordinationError("record output cannot carry artifact constraints")
         for value, label in (
             (self.policy_digest, "policy digest"),
             (self.build_manifest_digest, "BotBuild manifest digest"),

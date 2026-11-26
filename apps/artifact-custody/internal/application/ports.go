@@ -49,7 +49,7 @@ type CustodyStore interface {
 	VerifyArtifact(context.Context, string, string, string, int64, domain.SourceRef) (domain.CustodyReceipt, error)
 	ReadArtifact(context.Context, string, string) (domain.ArtifactMetadata, error)
 	ClaimReconciliation(context.Context, int, time.Duration) ([]UploadClaim, error)
-	ListPendingEvents(context.Context, int) ([]OutboxEvent, error)
+	ListPendingEvents(context.Context, string, int) ([]OutboxEvent, error)
 }
 
 type ObjectStorage interface {

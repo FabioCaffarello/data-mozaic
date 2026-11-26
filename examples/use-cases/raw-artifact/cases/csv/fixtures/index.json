@@ -1,0 +1,18 @@
+{
+  "complete": true,
+  "source": {
+    "source_id": "controlled-http",
+    "revision": "controlled-raw-csv-v1"
+  },
+  "pages": [
+    {
+      "url": "https://api.fixture.test/v1/artifacts/csv",
+      "status": 200,
+      "content_type": "text/csv",
+      "evidence_ref": "controlled-raw-csv",
+      "body_file": "sample.csv",
+      "sha256": "68e6b7d7275c4e49f6ac7b87c0c97d049dfc0ae75c63ad629db6416b2760e480",
+      "size_bytes": 24
+    }
+  ]
+}

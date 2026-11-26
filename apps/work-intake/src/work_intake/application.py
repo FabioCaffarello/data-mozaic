@@ -252,7 +252,7 @@ def _release_matches_submission(release: Any, submission: Submission) -> bool:
     return (
         release.get("release_id") == submission.intent.release_id
         and release.get("status") == "approved"
-        and release.get("contract_version") == "bot-release/v3"
+        and release.get("contract_version") in {"bot-release/v3", "bot-release/v4"}
         and release.get("source_id") == submission.intent.source_id
         and release.get("source_revision_id") == submission.intent.source_revision_id
         and isinstance(contract, dict)

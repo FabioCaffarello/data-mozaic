@@ -323,11 +323,14 @@ func (s *Store) ClaimReconciliation(ctx context.Context, limit int, lease time.D
 	}
 	return claims, nil
 }
-func (s *Store) ListPendingEvents(ctx context.Context, limit int) ([]application.OutboxEvent, error) {
+func (s *Store) ListPendingEvents(ctx context.Context, tenantID string, limit int) ([]application.OutboxEvent, error) {
+	if tenantID == "" {
+		return nil, errors.New("pending event tenant is required")
+	}
 	if limit < 1 || limit > 100 {
 		return nil, errors.New("pending event limit must be 1..100")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT event FROM artifact_custody.custody_outbox WHERE state='pending' ORDER BY occurred_at,event_id LIMIT $1`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT event FROM artifact_custody.custody_outbox WHERE tenant_id=$1 AND state='pending' ORDER BY occurred_at,event_id LIMIT $2`, tenantID, limit)
 	if err != nil {
 		return nil, err
 	}

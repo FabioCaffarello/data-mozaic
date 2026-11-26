@@ -308,6 +308,7 @@ class LivePlanSpider(Spider):
         self.start_url = _live_start_url(self.fetch, input_parameters)
         self.select = plan["select"]
         self.extract = plan["extract"]
+        self.artifact_output = plan.get("artifact_output")
         self.discover = plan.get("discover")
         self.pagination = plan.get("pagination")
         self.max_pages = (
@@ -364,7 +365,9 @@ class LivePlanSpider(Spider):
             errback=self._failed,
             cb_kwargs={"page_index": 0},
             headers={
-                "Accept": "text/html"
+                "Accept": self.fetch["inputs"]["content_type"]
+                if self.artifact_output is not None
+                else "text/html"
                 if self.select["operator_type"] == "select.html_records"
                 else "application/json"
             },
@@ -398,7 +401,9 @@ class LivePlanSpider(Spider):
             .lower()
         )
         allowed_media = (
-            {"text/html"}
+            {self.fetch["inputs"]["content_type"].split(";", 1)[0].lower()}
+            if self.artifact_output is not None
+            else {"text/html"}
             if self.select["operator_type"] == "select.html_records"
             else {"application/json", "application/*+json"}
         )
@@ -421,37 +426,41 @@ class LivePlanSpider(Spider):
         document = {
             "url": response.url,
             "requested_url": response.request.url,
-            "body": response.body,
             "sha256": digest,
             "evidence_ref": evidence_ref,
             "content_type": media_type,
             "status": response.status,
             "page_index": page_index,
         }
+        if self.artifact_output is None:
+            document["body"] = response.body
         self.documents.append(document)
-        if self.select["operator_type"] == "select.html_records":
-            selected = reference_runtime.select_html_records(
-                self.runtime_context,
-                document,
-                selector=self.select["inputs"]["selector"],
-                cardinality=self.select["inputs"]["cardinality"],
-                max_matches=self.select["inputs"]["max_matches"],
-                evidence_refs=[evidence_ref],
-            )
+        if self.artifact_output is not None:
+            extracted = ()
         else:
-            selected = reference_runtime.select_json_records(
+            if self.select["operator_type"] == "select.html_records":
+                selected = reference_runtime.select_html_records(
+                    self.runtime_context,
+                    document,
+                    selector=self.select["inputs"]["selector"],
+                    cardinality=self.select["inputs"]["cardinality"],
+                    max_matches=self.select["inputs"]["max_matches"],
+                    evidence_refs=[evidence_ref],
+                )
+            else:
+                selected = reference_runtime.select_json_records(
+                    self.runtime_context,
+                    document,
+                    array_path=self.select["inputs"]["array_path"],
+                    max_matches=self.select["inputs"]["max_matches"],
+                    evidence_refs=[evidence_ref],
+                )
+            extracted = reference_runtime.extract_fields(
                 self.runtime_context,
-                document,
-                array_path=self.select["inputs"]["array_path"],
-                max_matches=self.select["inputs"]["max_matches"],
-                evidence_refs=[evidence_ref],
+                selected,
+                fields=self.extract["inputs"]["fields"],
+                operation_id=self.extract["operation_id"],
             )
-        extracted = reference_runtime.extract_fields(
-            self.runtime_context,
-            selected,
-            fields=self.extract["inputs"]["fields"],
-            operation_id=self.extract["operation_id"],
-        )
         if len(self.records) + len(extracted) > self.budgets["max_records"]:
             raise RuntimeFailure(
                 "PLAYBOOK_RECORD_BUDGET_EXCEEDED", "record budget exceeded"
@@ -611,16 +620,43 @@ def _live_plan(plan: dict[str, Any]) -> None:
         "extract",
         "discover",
         "pagination",
+        "artifact_output",
+        "output_contract",
     }
-    if set(plan) != required or plan.get("profile") != "scrapy-live-http-v1":
+    if (
+        frozenset(plan)
+        not in {
+            frozenset(required),
+            frozenset(required - {"artifact_output"}),
+            frozenset(required - {"output_contract"}),
+            frozenset(required - {"artifact_output", "output_contract"}),
+        }
+        or plan.get("profile") != "scrapy-live-http-v1"
+    ):
         raise RuntimeFailure("RUNTIME_PLAN_INVALID", "live plan shape/profile differs")
+    if plan.get("artifact_output") is not None and (
+        plan["select"] is not None
+        or plan["extract"] is not None
+        or plan["discover"] is not None
+        or plan["pagination"] is not None
+    ):
+        raise RuntimeFailure(
+            "RUNTIME_PLAN_INVALID",
+            "artifact plan contains record or continuation operations",
+        )
+    if plan.get("artifact_output") is not None and not isinstance(
+        plan.get("output_contract"), dict
+    ):
+        raise RuntimeFailure(
+            "RUNTIME_PLAN_INVALID", "artifact plan has no release-bound contract"
+        )
 
 
 def _live_start_url(fetch: dict[str, Any], parameters: dict[str, Any] | None) -> str:
     inputs = fetch["inputs"]
     binding = inputs.get("input_query")
     if binding is None:
-        if parameters is not None:
+        if parameters is not None and parameters != {}:
             raise RuntimeFailure(
                 "INPUT_PARAMETERS_UNEXPECTED", "build has no input query binding"
             )
@@ -668,10 +704,63 @@ def _read_live_input_parameters(
 ) -> dict[str, Any] | None:
     binding = plan["fetch"]["inputs"].get("input_query")
     if binding is None:
-        if input_path is not None:
+        if plan.get("artifact_output") is None and input_path is not None:
             raise RuntimeFailure(
                 "INPUT_PARAMETERS_UNEXPECTED", "build has no input query binding"
             )
+        if plan.get("artifact_output") is not None and input_path is not None:
+            try:
+                path = Path(input_path)
+                info = path.lstat()
+                encoded = path.read_bytes()
+                parameters = json.loads(
+                    encoded.decode("utf-8", errors="strict"),
+                    object_pairs_hook=_unique_json_object,
+                    parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+                )
+                capability_path = Path(
+                    os.environ.get("MOZAIC_EXECUTION_CAPABILITY_FILE", "")
+                )
+                capability_info = capability_path.lstat()
+                capability_raw = capability_path.read_bytes()
+                if (
+                    not stat.S_ISREG(capability_info.st_mode)
+                    or capability_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                    or len(capability_raw) > 4096
+                ):
+                    raise ValueError("unsafe capability file")
+                token = capability_raw.decode("ascii").strip()
+                padding = "=" * (-len(token) % 4)
+                claims = json.loads(
+                    base64.b64decode(
+                        (token + padding).encode("ascii"), altchars=b"-_", validate=True
+                    ),
+                    object_pairs_hook=_unique_json_object,
+                )
+                expected_target = (
+                    "sha256:"
+                    + hashlib.sha256(
+                        plan["fetch"]["inputs"]["url"].encode()
+                    ).hexdigest()
+                )
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                    or not encoded
+                    or len(encoded) > 64_000
+                    or parameters != {}
+                    or claims.get("input_parameters_digest")
+                    != "sha256:" + hashlib.sha256(encoded).hexdigest()
+                    or claims.get("expected_initial_target_digest") != expected_target
+                    or urlsplit(plan["fetch"]["inputs"]["url"]).query
+                ):
+                    raise ValueError("parameterless artifact binding differs")
+            except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+                raise RuntimeFailure(
+                    "INPUT_PARAMETERS_UNAUTHORIZED",
+                    "parameterless input binding is invalid",
+                ) from error
+            return {}
         return None
     if input_path is None:
         raise RuntimeFailure(
@@ -785,6 +874,8 @@ def run_live(
             )
             return 1
         report = reference_runtime.write_records(spider.runtime_context, spider.records)
+        if spider.artifact_output is not None:
+            report["output_mode"] = "artifact"
         if spider.pagination is not None:
             report["pagination_termination"] = getattr(
                 spider, "pagination_termination", None

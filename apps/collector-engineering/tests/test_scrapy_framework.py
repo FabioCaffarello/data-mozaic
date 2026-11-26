@@ -86,6 +86,53 @@ class ScrapyFrameworkLifecycleTests(unittest.TestCase):
                 ):
                     scrapy_framework._read_live_input_parameters(plan, str(parameters))
 
+    def test_parameterless_artifact_input_must_match_empty_bc04_binding(self):
+        target = "https://controlled.invalid/files/report.pdf"
+        plan = {
+            "artifact_output": {"operator_type": "output.artifact"},
+            "fetch": {"inputs": {"url": target}},
+        }
+        with tempfile.TemporaryDirectory(prefix="dm-empty-artifact-input-") as folder:
+            root = Path(folder)
+            parameters = root / "parameters.json"
+            capability = root / "capability"
+            body = b"{}"
+            parameters.write_bytes(body)
+            parameters.chmod(0o400)
+            capability.write_text(
+                base64.urlsafe_b64encode(
+                    json.dumps(
+                        {
+                            "input_parameters_digest": "sha256:"
+                            + hashlib.sha256(body).hexdigest(),
+                            "expected_initial_target_digest": "sha256:"
+                            + hashlib.sha256(target.encode()).hexdigest(),
+                        }
+                    ).encode()
+                )
+                .decode()
+                .rstrip("=")
+            )
+            capability.chmod(0o400)
+            with patch.dict(
+                os.environ, {"MOZAIC_EXECUTION_CAPABILITY_FILE": str(capability)}
+            ):
+                self.assertEqual(
+                    {},
+                    scrapy_framework._read_live_input_parameters(plan, str(parameters)),
+                )
+                self.assertEqual(
+                    target, scrapy_framework._live_start_url(plan["fetch"], {})
+                )
+                parameters.chmod(0o400)
+                parameters.chmod(0o600)
+                parameters.write_bytes(b'{"limit":1}')
+                parameters.chmod(0o400)
+                with self.assertRaisesRegex(
+                    reference_runtime.RuntimeFailure, "INPUT_PARAMETERS_UNAUTHORIZED"
+                ):
+                    scrapy_framework._read_live_input_parameters(plan, str(parameters))
+
     def _assert_initialization_roots_are_removed(self, create_spider) -> None:
         original_mkdtemp = tempfile.mkdtemp
         created: list[Path] = []

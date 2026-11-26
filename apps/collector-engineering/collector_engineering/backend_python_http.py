@@ -390,6 +390,7 @@ def verify_build(
         if isinstance(manifest, dict) and manifest.get("manifest_version") in {
             "bot-build-manifest/v2",
             "bot-build-manifest/v3",
+            "bot-build-manifest/v4",
         }:
             manifest_version = manifest["manifest_version"]
             if (
@@ -398,13 +399,17 @@ def verify_build(
                 or manifest.get("compiler_version") != expected_compiler_version
                 or manifest.get("ir_version")
                 != (
-                    "collector-ir/v2"
+                    "collector-ir/v3"
+                    if manifest_version.endswith("/v4")
+                    else "collector-ir/v2"
                     if manifest_version.endswith("/v3")
                     else IR_VERSION
                 )
                 or manifest.get("playbook_version")
                 != (
-                    "capture-playbook-draft/v3"
+                    "capture-playbook-draft/v4"
+                    if manifest_version.endswith("/v4")
+                    else "capture-playbook-draft/v3"
                     if manifest_version.endswith("/v3")
                     else "capture-playbook-draft/v2"
                 )
@@ -429,6 +434,7 @@ def verify_build(
                 "bot-build-manifest/v1",
                 "bot-build-manifest/v2",
                 "bot-build-manifest/v3",
+                "bot-build-manifest/v4",
             ),
         )
     except (OSError, json.JSONDecodeError, BotBuildVerificationError) as error:
@@ -441,13 +447,17 @@ def verify_build(
         or manifest.get("compiler_version") != expected_compiler_version
         or manifest.get("ir_version")
         != (
-            "collector-ir/v2"
+            "collector-ir/v3"
+            if manifest_version == "bot-build-manifest/v4"
+            else "collector-ir/v2"
             if manifest_version == "bot-build-manifest/v3"
             else IR_VERSION
         )
         or manifest.get("playbook_version")
         != (
-            "capture-playbook-draft/v3"
+            "capture-playbook-draft/v4"
+            if manifest_version == "bot-build-manifest/v4"
+            else "capture-playbook-draft/v3"
             if manifest_version == "bot-build-manifest/v3"
             else "capture-playbook-draft/v2"
         )
@@ -460,7 +470,11 @@ def verify_build(
         raise PlaybookError(
             "[BUILD_PROFILE_UNSUPPORTED] backend capability profile differs"
         )
-    if manifest_version in {"bot-build-manifest/v2", "bot-build-manifest/v3"}:
+    if manifest_version in {
+        "bot-build-manifest/v2",
+        "bot-build-manifest/v3",
+        "bot-build-manifest/v4",
+    }:
         expected_profile_id = {
             "python-http-reference": "python-http-reference-v1",
             "scrapy-fixture": "scrapy-fixture-v1",
@@ -470,7 +484,8 @@ def verify_build(
             raise PlaybookError("[BUILD_PROFILE_UNSUPPORTED] profile identity differs")
     lock_digest = (
         manifest.get("dependency_identity", {}).get("lockfile_sha256")
-        if manifest_version in {"bot-build-manifest/v2", "bot-build-manifest/v3"}
+        if manifest_version
+        in {"bot-build-manifest/v2", "bot-build-manifest/v3", "bot-build-manifest/v4"}
         else manifest.get("dependency_lock_sha256")
     )
     lockfile = Path(__file__).resolve().parents[3] / "uv.lock"
@@ -496,7 +511,11 @@ def verify_build(
         raise PlaybookError(
             "[BUILD_TOOLCHAIN_UNSUPPORTED] build toolchain identity differs"
         )
-    if manifest_version in {"bot-build-manifest/v2", "bot-build-manifest/v3"}:
+    if manifest_version in {
+        "bot-build-manifest/v2",
+        "bot-build-manifest/v3",
+        "bot-build-manifest/v4",
+    }:
         compatibility = manifest["compatibility"]
         if (
             compatibility.get("python_minor")

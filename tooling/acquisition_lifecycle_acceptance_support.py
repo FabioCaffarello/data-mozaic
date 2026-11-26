@@ -49,12 +49,13 @@ def publish_controlled_release(
     revision_id: str,
     source_path_prefixes: tuple[str, ...],
     policy: dict[str, Any],
-    payload_contract: ContractReference,
+    payload_contract: ContractReference | None,
     build_manifest: dict[str, Any],
     build_directory: Path,
     playbook_path: Path,
     runtime_digest: str,
     input_contract: ContractReference | None = None,
+    output_contract: dict[str, Any] | None = None,
     release_id: str,
     expected_generation: int,
     authority_id: str,
@@ -130,9 +131,10 @@ def publish_controlled_release(
     if registered_build["manifest"]["build_id"] != build_manifest["build_id"]:
         raise RuntimeError("registered build identity differs from worker image build")
 
-    ImmutableContractRegistry(root / "contracts/payload/draft/v1").resolve(
-        payload_contract
-    )
+    if payload_contract is not None:
+        ImmutableContractRegistry(root / "contracts/payload/draft/v1").resolve(
+            payload_contract
+        )
     application.create_release_candidate(
         release_id=release_id,
         source=source_ref,
@@ -141,6 +143,7 @@ def publish_controlled_release(
         runtime_image_digest=registered_build["runtime_image_digest"],
         contract=payload_contract,
         input_contract=input_contract,
+        output_contract=output_contract,
         playbook_digest=playbook_digest,
         actor_id="controlled-test-operator",
     )

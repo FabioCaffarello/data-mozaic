@@ -13,6 +13,7 @@ from acquisition_output.application import AcquisitionOutputApplication
 from acquisition_output.domain import (
     ArtifactDescription,
     ArtifactItem,
+    ArtifactOutput,
     ArtifactRef,
     CompositeOutput,
     OutputIdentity,
@@ -396,6 +397,9 @@ class TrustedAcquisitionApplication:
             execution_deadline=context.deadline,
             input_parameters_json=context.input_parameters_json,
             input_parameters_digest=context.input_parameters_digest,
+            output_modality=context.output_modality,
+            artifact_media_types=context.artifact_media_types,
+            max_artifact_bytes=context.max_artifact_bytes,
         )
 
     def import_fixture_result(
@@ -475,6 +479,38 @@ class TrustedAcquisitionApplication:
             retention_policy_ref=retention_policy_ref,
             artifact_title=artifact_title,
             artifact_role=artifact_role,
+        )
+        return result[0], result[1], bundle
+
+    def import_live_artifact_result(
+        self,
+        tenant_id: str,
+        run_id: str,
+        *,
+        result_dir: Path,
+        gateway_evidence_url: str,
+        gateway_evidence_token: str,
+        build_root: Path,
+        max_response_bytes: int,
+        producer: ProducerIdentity,
+        retention_policy_ref: str,
+    ) -> tuple[str, str, VerifiedResultBundle]:
+        """Verify the raw-only worker bundle, then custody and stage its bytes."""
+        bundle = self.verify_live_result(
+            tenant_id,
+            run_id,
+            result_dir=result_dir,
+            gateway_evidence_url=gateway_evidence_url,
+            gateway_evidence_token=gateway_evidence_token,
+            build_root=build_root,
+            max_response_bytes=max_response_bytes,
+        )
+        result = self.import_verified_artifact_result(
+            tenant_id,
+            run_id,
+            bundle=bundle,
+            producer=producer,
+            retention_policy_ref=retention_policy_ref,
         )
         return result[0], result[1], bundle
 
@@ -568,3 +604,151 @@ class TrustedAcquisitionApplication:
             artifact_title=artifact_title,
             artifact_role=artifact_role,
         )
+
+    def import_verified_artifact_result(
+        self,
+        tenant_id: str,
+        run_id: str,
+        *,
+        bundle: VerifiedResultBundle,
+        producer: ProducerIdentity,
+        retention_policy_ref: str,
+    ) -> tuple[str, str]:
+        """Custody and stage one evidence-verified raw artifact without records."""
+        context = self._verification_context(tenant_id, run_id)
+        if (
+            context.output_modality != "artifact"
+            or not bundle.artifact_only
+            or bundle.records
+            or len(bundle.pages) != 1
+            or context.max_artifact_bytes is None
+        ):
+            raise FixtureImportError(
+                "artifact result differs from the BC04 output binding"
+            )
+        page = bundle.pages[0]
+        if (
+            page.body_representation != "decoded-http-entity"
+            or page.media_type not in context.artifact_media_types
+            or len(page.body) > context.max_artifact_bytes
+            or page.digest != "sha256:" + hashlib.sha256(page.body).hexdigest()
+        ):
+            raise FixtureImportError(
+                "artifact bytes differ from the trusted output constraints"
+            )
+        if (
+            producer.producer_id != bundle.trusted_bot_id
+            or (context.bot_id is not None and producer.producer_id != context.bot_id)
+            or producer.release_id != context.release_id
+            or producer.release_digest != context.build_manifest_digest
+        ):
+            raise FixtureImportError(
+                "artifact producer differs from the trusted BotBuild binding"
+            )
+        output_set_id = _stable_id(
+            "set-",
+            {
+                "tenant": tenant_id,
+                "run": run_id,
+                "attempt": context.attempt_id,
+                "fetch": page.evidence_ref,
+            },
+        )
+        if context.replay_output_set_id is not None:
+            snapshot = self._outputs.inspect_output_set(tenant_id, output_set_id)
+            if (
+                context.replay_output_set_id != output_set_id
+                or context.replay_manifest_digest is None
+                or snapshot is None
+                or snapshot.state.value != "published"
+                or snapshot.manifest_digest != context.replay_manifest_digest
+                or snapshot.member_count != 1
+                or snapshot.artifact_reference_count != 1
+            ):
+                raise FixtureImportError(
+                    "completed artifact replay differs from its published OutputSet"
+                )
+            return output_set_id, snapshot.manifest_digest
+        source = SourceRevisionRef(context.source_id, context.source_revision_id)
+        artifact_id = _stable_id(
+            "artifact-",
+            {
+                "tenant": tenant_id,
+                "run": run_id,
+                "attempt": context.attempt_id,
+                "fetch": page.evidence_ref,
+                "digest": page.digest,
+            },
+        )
+        artifact = ArtifactRef(
+            artifact_id, page.digest, len(page.body), page.media_type
+        )
+        self._custody.store_verified_entity(
+            artifact=artifact,
+            operation_id=_stable_id(
+                "op-", {"purpose": "raw-artifact-custody", "artifact": artifact_id}
+            ),
+            tenant_id=tenant_id,
+            source=source,
+            body=page.body,
+            representation=page.body_representation,
+            retention_policy_ref=retention_policy_ref,
+            evidence_ref=page.evidence_ref,
+        )
+        binding = OutputSetBinding(
+            tenant_id,
+            source,
+            producer,
+            OutputExecutionBinding(run_id, context.attempt_id, context.generation),
+        )
+        self._outputs.create_output_set(
+            OutputSetSpec(output_set_id, binding, expected_output_count=1),
+            ScopedOperationIdentity(
+                tenant_id,
+                _stable_id("op-", {"purpose": "create-set", "set": output_set_id}),
+            ),
+        )
+        observation_id = _stable_id(
+            "obs-",
+            {"run": run_id, "attempt": context.attempt_id, "fetch": page.evidence_ref},
+        )
+        output_id = derive_output_id(
+            tenant_id=tenant_id,
+            source=source,
+            producer=producer,
+            output_key="raw-artifact:" + page.evidence_ref,
+            observation_id=observation_id,
+        )
+        self._outputs.stage_output(
+            ArtifactOutput(
+                identity=OutputIdentity(
+                    output_id, observation_id, page.acquired_at or context.created_at
+                ),
+                operation=ScopedOperationIdentity(
+                    tenant_id,
+                    _stable_id(
+                        "op-", {"purpose": "stage-artifact", "output": output_id}
+                    ),
+                ),
+                output_set_id=output_set_id,
+                binding=binding,
+                artifacts=(
+                    ArtifactItem(
+                        artifact,
+                        ArtifactDescription(
+                            title=f"Acquired {page.media_type} artifact",
+                            role="raw-acquired-artifact",
+                        ),
+                    ),
+                ),
+            )
+        )
+        sealed = self._outputs.seal_output_set(
+            tenant_id,
+            output_set_id,
+            ScopedOperationIdentity(
+                tenant_id,
+                _stable_id("op-", {"purpose": "seal-set", "set": output_set_id}),
+            ),
+        )
+        return output_set_id, sealed.manifest_digest

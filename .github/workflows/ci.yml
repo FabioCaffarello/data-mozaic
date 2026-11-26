@@ -138,6 +138,10 @@ jobs:
         run: make acquisition-lifecycle-acceptance
       - name: Execute durable three-input BC13 parameterized acquisition
         run: make work-intake-acceptance
+      - name: Execute controlled raw artifact acquisition through BC13, BC04, gateway, BC06, and BC05
+        run: make raw-artifact-acquisition-acceptance
+      - name: Reject and reconcile raw-only v4 controlled faults through BC13, BC04, gateway, BC06, and BC05
+        run: make raw-artifact-negative-acceptance
       - name: Execute authorized controlled live Scrapy HTML through BC04/BC05/BC06
         run: make authorized-live-html-acquisition
       - name: Execute authorized controlled live paginated Scrapy through BC04/BC05/BC06

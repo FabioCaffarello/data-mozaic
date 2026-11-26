@@ -1,0 +1,18 @@
+{
+  "complete": true,
+  "source": {
+    "source_id": "controlled-http",
+    "revision": "controlled-raw-binary-v1"
+  },
+  "pages": [
+    {
+      "url": "https://api.fixture.test/v1/artifacts/binary",
+      "status": 200,
+      "content_type": "application/octet-stream",
+      "evidence_ref": "controlled-raw-binary",
+      "body_file": "sample.bin",
+      "sha256": "d94abc6521988e6a67249655e76aeb221e709e221add57f4358a4fc750c91a85",
+      "size_bytes": 19
+    }
+  ]
+}

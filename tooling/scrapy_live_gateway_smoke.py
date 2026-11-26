@@ -116,19 +116,26 @@ def _execute_build(build: Path, output: Path) -> None:
         .read_text(encoding="utf-8")
         .splitlines()
     ]
+    artifact_only = (
+        json.loads((build / "manifest.json").read_text())
+        .get("output_contract", {})
+        .get("mode")
+        == "artifact"
+    )
     if not evidence:
         raise SystemExit("compiled live BotBuild must produce gateway fetch evidence")
     if (
         report.get("requests") != len(evidence)
         or report.get("pages") != len(evidence)
         or report.get("records") != len(records)
-        or not records
+        or (records if artifact_only else not records)
+        or (artifact_only and report.get("output_mode") != "artifact")
     ):
         raise SystemExit(
             f"compiled live BotBuild report did not match the controlled acquisition: {report}"
         )
     fetch_urls = {item.get("source_url") for item in evidence}
-    if any(
+    if not artifact_only and any(
         item.get("_provenance", {}).get("source_url") not in fetch_urls
         for item in records
     ):

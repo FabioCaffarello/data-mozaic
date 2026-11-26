@@ -1,0 +1,73 @@
+{
+  "dsl_version": "capture-playbook-draft/v4",
+  "playbook_id": "controlled-raw-zip",
+  "status": "draft",
+  "source": {
+    "source_id": "controlled-http",
+    "revision": "controlled-raw-zip-v1",
+    "origin": "https://api.fixture.test",
+    "path_prefixes": [
+      "/v1/artifacts/zip"
+    ]
+  },
+  "objective": "Acquire the complete controlled ZIP HTTP entity as a raw artifact without parsing.",
+  "proposal_ref": "controlled-raw-zip-v1",
+  "findings": [
+    {
+      "finding_id": "controlled-raw-zip",
+      "classification": "observed",
+      "evidence_refs": [
+        "controlled-raw-zip"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_ref": "controlled-raw-zip",
+      "sha256": "6f623b341cc155d64e05bc5a6b7cf1f5db27e64063b3e5d073ccc123077297e2"
+    }
+  ],
+  "capabilities": [
+    "http.fetch.fixture",
+    "output.artifact.reference"
+  ],
+  "budgets": {
+    "max_requests": 1,
+    "max_pages": 1,
+    "max_response_bytes": 2000000,
+    "max_records": 1,
+    "max_output_bytes": 1000000
+  },
+  "failure_policy": {
+    "missing_fixture": "fail",
+    "invalid_record": "fail",
+    "missing_required_field": "fail",
+    "conversion_error": "fail"
+  },
+  "output_contract": {
+    "media_types": [
+      "application/zip"
+    ],
+    "max_bytes": 2000000,
+    "mode": "artifact"
+  },
+  "operations": [
+    {
+      "id": "response",
+      "op": "http.fetch/v1",
+      "url": "https://api.fixture.test/v1/artifacts/zip",
+      "content_type": "application/zip",
+      "evidence_refs": [
+        "controlled-raw-zip"
+      ]
+    },
+    {
+      "id": "artifact",
+      "op": "output.artifact/v1",
+      "document": {
+        "operation": "response",
+        "port": "document"
+      }
+    }
+  ]
+}
