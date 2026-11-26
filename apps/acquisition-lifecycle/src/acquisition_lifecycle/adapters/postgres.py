@@ -135,7 +135,7 @@ class PostgresLifecycleStore:
                 (source_id, document["owner"]),
             )
             source = connection.execute(
-                "SELECT owner FROM source_management.sources WHERE source_id=%s FOR UPDATE",
+                "SELECT owner FROM source_management.sources WHERE source_id=%s",
                 (source_id,),
             ).fetchone()
             if source is None or source["owner"] != document["owner"]:
@@ -148,7 +148,7 @@ class PostgresLifecycleStore:
             )
             existing = connection.execute(
                 """SELECT revision_digest FROM source_management.source_revisions
-                WHERE source_id=%s AND revision_id=%s FOR UPDATE""",
+                WHERE source_id=%s AND revision_id=%s""",
                 (source_id, revision_id),
             ).fetchone()
             if existing is None or existing["revision_digest"] != digest:
@@ -257,7 +257,7 @@ class PostgresLifecycleStore:
             )
             existing = connection.execute(
                 """SELECT policy_digest FROM acquisition_policy.policy_revisions
-                WHERE policy_id=%s AND policy_version=%s FOR UPDATE""",
+                WHERE policy_id=%s AND policy_version=%s""",
                 (document["policy_id"], document["policy_version"]),
             ).fetchone()
             if existing is None or existing["policy_digest"] != digest:
@@ -367,7 +367,7 @@ class PostgresLifecycleStore:
             )
             existing = connection.execute(
                 """SELECT source_id,source_revision_id,content FROM collector_engineering.playbook_revisions
-                WHERE playbook_id=%s AND playbook_digest=%s FOR UPDATE""",
+                WHERE playbook_id=%s AND playbook_digest=%s""",
                 (playbook_id, digest),
             ).fetchone()
             if (
@@ -418,7 +418,7 @@ class PostgresLifecycleStore:
             )
             existing = connection.execute(
                 """SELECT manifest_digest,artifact_path,manifest FROM collector_engineering.bot_builds
-                WHERE build_id=%s FOR UPDATE""",
+                WHERE build_id=%s""",
                 (build_id,),
             ).fetchone()
             if (
@@ -438,7 +438,7 @@ class PostgresLifecycleStore:
             )
             binding = connection.execute(
                 """SELECT 1 FROM collector_engineering.verified_bot_builds
-                WHERE build_id=%s AND runtime_image_digest=%s FOR UPDATE""",
+                WHERE build_id=%s AND runtime_image_digest=%s""",
                 (build_id, runtime_digest),
             ).fetchone()
             if binding is None:
