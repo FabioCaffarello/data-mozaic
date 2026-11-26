@@ -170,6 +170,66 @@ class LiveAdmissionTests(unittest.TestCase):
                 requested_urls=("https://example.test/api/v1/reports?top=10",),
             )
 
+    def test_v4_release_binds_parameterless_artifact_contract_to_verified_build(self):
+        request = {
+            "method": "GET",
+            "url": "https://example.test/api/v1/reports/current.pdf",
+        }
+        output_contract = {
+            "mode": "artifact",
+            "media_types": ["application/pdf"],
+            "max_bytes": 1_000_000,
+        }
+        manifest = {
+            **self.manifest,
+            "manifest_version": "bot-build-manifest/v4",
+            "playbook_version": "capture-playbook-draft/v4",
+            "ir_version": "collector-ir/v3",
+            "live_request": request,
+            "output_contract": output_contract,
+        }
+        release = {
+            **{
+                key: value
+                for key, value in self.release.items()
+                if key != "payload_contract"
+            },
+            "contract_version": "bot-release/v4",
+            "input_contract": {
+                "contract_id": "controlled.empty-input",
+                "version": "1.0.0",
+                "digest": "sha256:" + "e" * 64,
+            },
+            "input_request": request,
+            "output_contract": output_contract,
+        }
+        release["build_manifest_digest"] = (
+            "sha256:" + hashlib.sha256(canonical_json(manifest)).hexdigest()
+        )
+        release["release_digest"] = self._digest(release, "release_digest")
+        schema = json.loads(
+            (CONTRACTS / "bot-release/draft/v4/BotRelease.schema.json").read_text()
+        )
+        Draft202012Validator(schema, format_checker=FormatChecker()).validate(release)
+        admitted = validate_live_admission(
+            source_revision=self.source,
+            policy=self.policy,
+            release=release,
+            build_manifest=manifest,
+            requested_urls=(request["url"],),
+        )
+        self.assertIsNone(admitted.payload_contract_id)
+        release["output_contract"]["max_bytes"] = 2_000_000
+        release["release_digest"] = self._digest(release, "release_digest")
+        with self.assertRaisesRegex(PlaybookError, "BotBuild manifest"):
+            validate_live_admission(
+                source_revision=self.source,
+                policy=self.policy,
+                release=release,
+                build_manifest=manifest,
+                requested_urls=(request["url"],),
+            )
+
     def test_revoked_or_mismatched_documents_fail_closed(self):
         cases = (
             ({**self.source, "status": "revoked"}, self.policy, self.release),

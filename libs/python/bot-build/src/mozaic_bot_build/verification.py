@@ -179,6 +179,7 @@ def verify_bot_build(
         "bot-build-manifest/v1",
         "bot-build-manifest/v2",
         "bot-build-manifest/v3",
+        "bot-build-manifest/v4",
     ),
 ) -> VerifiedBotBuild:
     """Verify manifest identity and the exact immutable file set without importing code."""
@@ -219,7 +220,11 @@ def verify_bot_build(
         raise BotBuildVerificationError(
             "[BUILD_VERSION_UNSUPPORTED] manifest version is unsupported"
         )
-    if version in {"bot-build-manifest/v2", "bot-build-manifest/v3"}:
+    if version in {
+        "bot-build-manifest/v2",
+        "bot-build-manifest/v3",
+        "bot-build-manifest/v4",
+    }:
         allowed_v2_keys = {
             "manifest_version",
             "playbook_id",
@@ -242,6 +247,7 @@ def verify_bot_build(
             "generated_files",
             "input_fixtures",
             "live_request",
+            "output_contract",
             "build_id",
         }
         playbook_id = manifest.get("playbook_id")
@@ -250,7 +256,9 @@ def verify_bot_build(
         compatibility = manifest.get("compatibility")
         toolchain = manifest.get("toolchain")
         playbook_digest = manifest.get("playbook_sha256")
-        required_v2_keys = allowed_v2_keys - {"live_request"}
+        required_v2_keys = allowed_v2_keys - {"live_request", "output_contract"}
+        if version == "bot-build-manifest/v4":
+            required_v2_keys = allowed_v2_keys - {"live_request"}
         if (
             not set(manifest) <= allowed_v2_keys
             or not required_v2_keys <= set(manifest)
@@ -324,6 +332,10 @@ def verify_bot_build(
             raise BotBuildVerificationError(
                 f"[BUILD_MANIFEST_INVALID] {version.rsplit('/', 1)[-1]} identities are incomplete"
             )
+        if version != "bot-build-manifest/v4" and "output_contract" in manifest:
+            raise BotBuildVerificationError(
+                "[BUILD_MANIFEST_INVALID] output contract is only valid in v4"
+            )
         if version == "bot-build-manifest/v3":
             live_request = manifest.get("live_request")
             input_query = (
@@ -358,6 +370,31 @@ def verify_bot_build(
             ):
                 raise BotBuildVerificationError(
                     "[BUILD_MANIFEST_INVALID] v3 live input binding is invalid"
+                )
+        if version == "bot-build-manifest/v4":
+            live_request = manifest.get("live_request")
+            try:
+                parsed_url = urlsplit(live_request.get("url", ""))
+                valid_url = (
+                    parsed_url.scheme == "https"
+                    and bool(parsed_url.netloc)
+                    and not parsed_url.username
+                    and not parsed_url.password
+                    and not parsed_url.query
+                    and not parsed_url.fragment
+                )
+            except (AttributeError, ValueError):
+                valid_url = False
+            if (
+                compatibility.get("execution_mode") != "live-authorized"
+                or manifest.get("playbook_version") != "capture-playbook-draft/v4"
+                or manifest.get("ir_version") != "collector-ir/v3"
+                or set(live_request or {}) != {"method", "url"}
+                or live_request.get("method") != "GET"
+                or not valid_url
+            ):
+                raise BotBuildVerificationError(
+                    "[BUILD_MANIFEST_INVALID] v4 raw artifact binding is invalid"
                 )
         for fixture in manifest["input_fixtures"]:
             if (

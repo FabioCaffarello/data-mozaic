@@ -22,7 +22,7 @@ from scrapy.responsetypes import responsetypes
 
 from .reference_runtime import RuntimeFailure
 
-LIVE_RUNTIME_VERSION = "scrapy-live-http-runtime/1.1.0"
+LIVE_RUNTIME_VERSION = "scrapy-live-http-runtime/1.2.0"
 MAX_GATEWAY_BODY = 8192
 MAX_RESPONSE_BYTES = 2_000_000
 ALLOWED_RESPONSE_HEADERS = {

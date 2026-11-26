@@ -120,3 +120,7 @@ M3 não concluiu sozinho a aprovação operacional de fontes/releases. PR #25 in
 ## M5 — Work Intake e aquisição parametrizada
 
 M5 inclui composição reutilizável de BC13 com os adapters existentes de BC04 e M4, migração PostgreSQL owner-scoped, submissões idempotentes, claims recuperáveis e binding v3 de um parâmetro query escalar. A aceitação controlada executa três Inputs distintos com o mesmo BotBuild e BotRelease por worker, gateway, BC06 e BC05, além de exercitar reconciliação de ACK perdido e falha pós-admission sem publicação. ADR 030 permanece Proposed. A matriz W1–W18, limites e evidência executada estão no [assessment M5](../architecture/assessments/work-intake-2026-11-26.md).
+
+## M6 — aquisição de artefato raw-only
+
+O incremento local adiciona Playbook/BotBuild/BotRelease v4 para um GET sem parâmetros, redirects ou continuação, com `ArtifactOutput` real, evidence autorizada pelo gateway, custody BC06 e publicação BC05 finalizada por BC04. A aceitação controlada cobre PDF, CSV, ZIP, binário não-textual e JSON preservado como bytes originais, com leitura independente do artefato. ADR 031 permanece Proposed. Veja [evidência M6](../architecture/assessments/raw-artifact-acquisition-2026-11-26.md). M6 não está publicado; o gate CI está preparado no branch. Limites acima de 2 MB e streaming end-to-end ficam para decisão baseada em medições no M7.

@@ -50,6 +50,7 @@ services:
       dockerfile: Dockerfile.controlled-source
     environment:
       CONTROLLED_SOURCE_MALFORMED: "${CONTROLLED_SOURCE_MALFORMED:-0}"
+      CONTROLLED_SOURCE_RAW_FAULT: "${CONTROLLED_SOURCE_RAW_FAULT:-}"
     networks:
       controlled-source:
         ipv4_address: 172.30.249.10

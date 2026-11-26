@@ -23,7 +23,8 @@ class BC04LiveRunAdmission:
         intent = submission.intent
         if (
             release.get("release_id") != intent.release_id
-            or release.get("contract_version") != "bot-release/v3"
+            or release.get("contract_version")
+            not in {"bot-release/v3", "bot-release/v4"}
             or release.get("source_id") != intent.source_id
             or release.get("source_revision_id") != intent.source_revision_id
             or release.get("input_contract")

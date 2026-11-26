@@ -236,6 +236,48 @@ class AcquisitionLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(LifecycleError, "structurally invalid"):
             self.app._validate_release_schema(release)
 
+    def test_release_v4_binds_artifact_output_and_parameterless_input(self) -> None:
+        candidate = {
+            "release_id": "release-raw-artifact",
+            "source": {"source_id": "controlled-source", "revision_id": "revision-1"},
+            "policy": {"policy_id": "controlled-policy", "policy_version": "1.0.0"},
+            "build": {
+                "build_id": "a" * 64,
+                "manifest_digest": "sha256:" + "b" * 64,
+                "runtime_image_digest": "sha256:" + "c" * 64,
+            },
+            "bot_id": "bot-test",
+            "input_contract": {
+                "contract_id": "controlled.empty-input",
+                "version": "1.0.0",
+                "digest": "sha256:" + "e" * 64,
+            },
+            "input_request": {
+                "method": "GET",
+                "url": "https://example.test/files/report.pdf",
+            },
+            "output_contract": {
+                "mode": "artifact",
+                "media_types": ["application/pdf"],
+                "max_bytes": 1_000_000,
+            },
+        }
+        release = self.app._release_document(
+            candidate,
+            status="approved",
+            actor_id="operator-test",
+            evidence_ref="test:approval",
+        )
+        self.assertEqual("bot-release/v4", release["contract_version"])
+        self.assertNotIn("payload_contract", release)
+        self.app._validate_release_schema(release)
+        release["output_contract"]["max_bytes"] = 100_000_000
+        release["release_digest"] = canonical_digest(
+            {key: value for key, value in release.items() if key != "release_digest"}
+        )
+        with self.assertRaisesRegex(LifecycleError, "structurally invalid"):
+            self.app._validate_release_schema(release)
+
 
 if __name__ == "__main__":
     unittest.main()

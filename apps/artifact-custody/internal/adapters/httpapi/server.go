@@ -190,7 +190,7 @@ func (s *Server) pendingEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	events, err := s.service.PendingEvents(r.Context(), limit)
+	events, err := s.service.PendingEvents(r.Context(), r.Context().Value(tenantKey{}).(string), limit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "limit must be between 1 and 100")
 		return

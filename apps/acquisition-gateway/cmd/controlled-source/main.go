@@ -4,6 +4,7 @@ package main
 
 import (
 	"crypto/tls"
+	"embed"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,6 +12,11 @@ import (
 	"strings"
 	"time"
 )
+
+// The controlled artifacts are local acceptance fixtures, not production data.
+//
+//go:embed artifacts/*
+var artifactFixtures embed.FS
 
 func main() {
 	if len(os.Args) == 3 && os.Args[1] == "-healthcheck" {
@@ -138,6 +144,58 @@ func main() {
 			_ = connection.Close()
 		}
 	})
+	for _, artifact := range []struct {
+		path      string
+		filename  string
+		mediaType string
+	}{
+		{"/v1/artifacts/pdf", "sample.pdf", "application/pdf"},
+		{"/v1/artifacts/csv", "sample.csv", "text/csv"},
+		{"/v1/artifacts/zip", "sample.zip", "application/zip"},
+		{"/v1/artifacts/binary", "sample.bin", "application/octet-stream"},
+		{"/v1/artifacts/json", "sample.json", "application/json"},
+	} {
+		fixture := artifact
+		mux.HandleFunc(fixture.path, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method denied", http.StatusMethodNotAllowed)
+				return
+			}
+			body, err := artifactFixtures.ReadFile("artifacts/" + fixture.filename)
+			if err != nil {
+				http.Error(w, "fixture unavailable", http.StatusInternalServerError)
+				return
+			}
+			switch os.Getenv("CONTROLLED_SOURCE_RAW_FAULT") {
+			case "oversized":
+				body = make([]byte, 100_001)
+			case "interrupted":
+				w.Header().Set("Content-Type", fixture.mediaType)
+				w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(body[:len(body)/2])
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+				if hijacker, ok := w.(http.Hijacker); ok {
+					connection, _, hijackErr := hijacker.Hijack()
+					if hijackErr == nil {
+						_ = connection.Close()
+					}
+				}
+				return
+			case "media-type":
+				w.Header().Set("Content-Type", "text/plain")
+			case "content-encoding":
+				w.Header().Set("Content-Type", fixture.mediaType)
+				w.Header().Set("Content-Encoding", "gzip")
+			default:
+				w.Header().Set("Content-Type", fixture.mediaType)
+			}
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			_, _ = w.Write(body)
+		})
+	}
 	mux.HandleFunc("/v1/status/", func(w http.ResponseWriter, r *http.Request) {
 		status, err := strconv.Atoi(r.URL.Path[len("/v1/status/"):])
 		if err != nil {

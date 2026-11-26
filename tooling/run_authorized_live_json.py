@@ -95,6 +95,37 @@ FAILURE_CASES = {
     "interrupted-body",
     "pagination-incomplete",
 }
+RAW_ARTIFACT_CASES = {"raw-pdf", "raw-csv", "raw-zip", "raw-binary", "raw-json"}
+RAW_ARTIFACT_MEDIA = {
+    "raw-pdf": "application/pdf",
+    "raw-csv": "text/csv",
+    "raw-zip": "application/zip",
+    "raw-binary": "application/octet-stream",
+    "raw-json": "application/json",
+}
+RAW_ARTIFACT_PATHS = {
+    case: "/v1/artifacts/" + case.removeprefix("raw-") for case in RAW_ARTIFACT_CASES
+}
+RAW_ARTIFACT_FILES = {
+    "raw-pdf": "sample.pdf",
+    "raw-csv": "sample.csv",
+    "raw-zip": "sample.zip",
+    "raw-binary": "sample.bin",
+    "raw-json": "sample.json",
+}
+RAW_ARTIFACT_FAULTS = {
+    "oversized",
+    "interrupted",
+    "media-type",
+    "content-encoding",
+    "ack-loss",
+}
+RAW_ARTIFACT_FAULT_DIAGNOSTICS = {
+    "oversized": ("response_too_large",),
+    "interrupted": ("response_interrupted",),
+    "media-type": ("GATEWAY_EVIDENCE_INVALID",),
+    "content-encoding": ("content_encoding_denied",),
+}
 FAILURE_DIAGNOSTICS = {
     "oversized": ("response_too_large", "GATEWAY_RESPONSE_TOO_LARGE"),
     "slow": (
@@ -167,19 +198,30 @@ def _configure_case(case: str) -> None:
         "custody-interruption",
         "partial-stage-interruption",
         "work-intake",
+        *sorted(RAW_ARTIFACT_CASES),
+        *RAW_ARTIFACT_CASES,
         *FAILURE_CASES,
     }:
         raise ValueError("controlled case must be json, html or pagination variant")
     CASE_KIND = case
     REVISION_ID = (
-        "controlled-work-intake-v1" if case == "work-intake" else "controlled-v1"
+        "controlled-work-intake-v1"
+        if case == "work-intake"
+        else "controlled-raw-" + case.removeprefix("raw-") + "-v1"
+        if case in RAW_ARTIFACT_CASES
+        else "controlled-v1"
     )
     TENANT = (
         "tenant-work-intake-m5"
         if case == "work-intake"
         else "tenant-controlled-live-" + case
     )
-    POLICY_ID = "controlled-live-" + case + "-get"
+    POLICY_ID = (
+        "controlled-live-"
+        + case
+        + "-get"
+        + ("-" + REVISION_ID if case in RAW_ARTIFACT_CASES else "")
+    )
     use_case_name = (
         "controlled-live-json"
         if case
@@ -193,6 +235,7 @@ def _configure_case(case: str) -> None:
             "invalid-output",
             "interrupted-body",
             "work-intake",
+            *sorted(RAW_ARTIFACT_CASES),
             *FAILURE_CASES - {"pagination-incomplete"},
         }
         else "controlled-live-pagination-planned"
@@ -205,7 +248,11 @@ def _configure_case(case: str) -> None:
         if case in {"redirect", "redirect-denied", "redirect-budget"}
         else "controlled-live-" + case
     )
-    use_case = ROOT / "examples/use-cases" / use_case_name
+    use_case = (
+        ROOT / "examples/use-cases/raw-artifact/cases" / case.removeprefix("raw-")
+        if case in RAW_ARTIFACT_CASES
+        else ROOT / "examples/use-cases" / use_case_name
+    )
     PAYLOAD_SCHEMA = use_case / "output-contract.schema.json"
     EXPECTED = use_case / "expected-records.jsonl"
     PLAYBOOK = (
@@ -218,13 +265,19 @@ def _configure_case(case: str) -> None:
         if case == "work-intake"
         else use_case / "fixtures"
     )
-    MEDIA_TYPE = (
-        "text/html"
-        if case in {"html", "pagination", "pagination-planned", "pagination-incomplete"}
-        else "application/json"
+    MEDIA_TYPE = RAW_ARTIFACT_MEDIA.get(
+        case,
+        (
+            "text/html"
+            if case
+            in {"html", "pagination", "pagination-planned", "pagination-incomplete"}
+            else "application/json"
+        ),
     )
     SOURCE_PATHS = (
-        ("/v1/window/1", "/v1/window/2")
+        (RAW_ARTIFACT_PATHS[case],)
+        if case in RAW_ARTIFACT_CASES
+        else ("/v1/window/1", "/v1/window/2")
         if case in {"pagination-planned", "pagination-incomplete"}
         else ("/v1/redirect-chain/0",)
         if case == "redirect-budget"
@@ -248,7 +301,9 @@ def _configure_case(case: str) -> None:
     )
     SOURCE_PATH = SOURCE_PATHS[0]
     SOURCE_PATH_PREFIXES = (
-        ("/v1/window/",)
+        SOURCE_PATHS
+        if case in RAW_ARTIFACT_CASES
+        else ("/v1/window/",)
         if case == "pagination-planned"
         else ("/v1/redirect-chain",)
         if case == "redirect-budget"
@@ -398,12 +453,17 @@ def _authority_snapshot(
     release_id: str,
     generation: int,
     input_contract: ContractReference | None = None,
+    output_contract: dict[str, object] | None = None,
 ) -> tuple[bytes, dict[str, bytes]]:
     if os.environ.get("MOZAIC_LIFECYCLE_ACCEPTANCE") == "1":
         from acquisition_lifecycle_acceptance_support import publish_controlled_release
         from mozaic_contract_resolution import ContractReference
 
-        contract = _payload_contract(_contract_registry())
+        contract = (
+            None
+            if CASE_KIND in RAW_ARTIFACT_CASES
+            else _payload_contract(_contract_registry())
+        )
         return publish_controlled_release(
             root=ROOT,
             source_id=SOURCE_ID,
@@ -412,18 +472,25 @@ def _authority_snapshot(
             policy=policy,
             payload_contract=ContractReference(
                 contract.contract_id, contract.version, contract.digest
-            ),
+            )
+            if contract is not None
+            else None,
             build_manifest=build,
             build_directory=build_directory,
             playbook_path=playbook_path,
             runtime_digest=runtime_digest,
             input_contract=input_contract,
+            output_contract=output_contract,
             release_id=release_id,
             expected_generation=generation,
             authority_id=AUTHORITY_ID,
         )
     now = datetime.now(UTC)
-    contract = _payload_contract(_contract_registry())
+    contract = (
+        None
+        if CASE_KIND in RAW_ARTIFACT_CASES
+        else _payload_contract(_contract_registry())
+    )
     source = _publishable(
         {
             "contract_version": "source-revision/v1",
@@ -445,7 +512,9 @@ def _authority_snapshot(
     )
     release = _publishable(
         {
-            "contract_version": "bot-release/v2",
+            "contract_version": "bot-release/v4"
+            if CASE_KIND in RAW_ARTIFACT_CASES
+            else "bot-release/v2",
             "release_id": release_id,
             "status": "approved",
             "bot_id": build["bot_id"],
@@ -465,11 +534,32 @@ def _authority_snapshot(
             "approval_evidence_ref": "operator://controlled-live-"
             + CASE_KIND
             + "/approval",
-            "payload_contract": {
-                "contract_id": contract.contract_id,
-                "version": contract.version,
-                "digest": contract.digest,
-            },
+            **(
+                {"output_contract": output_contract}
+                if CASE_KIND in RAW_ARTIFACT_CASES
+                else {
+                    "payload_contract": {
+                        "contract_id": contract.contract_id,
+                        "version": contract.version,
+                        "digest": contract.digest,
+                    }
+                }
+            ),
+            **(
+                {
+                    "input_contract": {
+                        "contract_id": input_contract.contract_id,
+                        "version": input_contract.version,
+                        "digest": input_contract.digest,
+                    },
+                    "input_request": {
+                        "url": "https://api.fixture.test" + SOURCE_PATH,
+                        "method": "GET",
+                    },
+                }
+                if CASE_KIND in RAW_ARTIFACT_CASES and input_contract is not None
+                else {}
+            ),
         },
         "release_digest",
     )
@@ -610,6 +700,7 @@ def _verify_outputs(
 
 
 def main() -> int:
+    global TENANT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--case",
@@ -633,10 +724,15 @@ def main() -> int:
             "interrupted-body",
             "pagination-incomplete",
             "work-intake",
+            *sorted(RAW_ARTIFACT_CASES),
         ),
         default="json",
     )
+    parser.add_argument("--raw-fault", choices=sorted(RAW_ARTIFACT_FAULTS))
     args = parser.parse_args()
+    raw_fault = args.raw_fault
+    if raw_fault is not None and args.case not in RAW_ARTIFACT_CASES:
+        parser.error("--raw-fault requires a raw-only v4 --case")
     _configure_case(args.case)
     required = (
         "BC04_DATABASE_URL",
@@ -657,10 +753,18 @@ def main() -> int:
         "controlled-live-request-" + uuid.uuid4().hex,
     )
     release_id = "controlled-live-release-" + uuid.uuid4().hex[:12]
+    if CASE_KIND in RAW_ARTIFACT_CASES:
+        TENANT = (
+            "tenant-m6-" + CASE_KIND.removeprefix("raw-") + "-" + uuid.uuid4().hex[:8]
+        )
     operation_token = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
     evidence_token = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
     api_port, gateway_port = _port(), _port()
-    project = "data-mozaic-authorized-live-" + CASE_KIND
+    project = (
+        "data-mozaic-authorized-live-"
+        + CASE_KIND
+        + ("-" + raw_fault if raw_fault else "")
+    )
 
     with tempfile.TemporaryDirectory(prefix="dm-authorized-live-json-") as temporary:
         root = Path(temporary)
@@ -783,7 +887,9 @@ def main() -> int:
 
         registry = _contract_registry()
         input_contract = (
-            registry.installed_reference("controlled.input.limit", "1.0.0")
+            registry.installed_reference("controlled.input.empty", "1.0.0")
+            if CASE_KIND in RAW_ARTIFACT_CASES
+            else registry.installed_reference("controlled.input.limit", "1.0.0")
             if CASE_KIND == "work-intake"
             else None
         )
@@ -802,6 +908,11 @@ def main() -> int:
             )
             if input_contract is not None
             else None,
+            output_contract=(
+                manifest.get("output_contract")
+                if CASE_KIND in RAW_ARTIFACT_CASES
+                else None
+            ),
         )
         authority = TrustedLiveAuthority(
             snapshot_bytes,
@@ -811,11 +922,14 @@ def main() -> int:
         )
         cap_signer = ExecutionCapabilitySigner(cap_seed, key_id="gateway-test-key")
         grant_seed, grant_key_id, _ = key_material()
-        contract = _payload_contract(registry)
+        contract = (
+            None if CASE_KIND in RAW_ARTIFACT_CASES else _payload_contract(registry)
+        )
         with MongoResources(MongoSettings.from_env()) as resources:
             store = MongoOutputStore(resources)
             app = _application(store, registry)
-            publisher = InProcessBC05Publisher(app, lose_ack=CASE_KIND == "ack-loss")
+            publication_ack_loss = CASE_KIND == "ack-loss" or raw_fault == "ack-loss"
+            publisher = InProcessBC05Publisher(app, lose_ack=publication_ack_loss)
             coordinator = DurableExecutionCoordinator(
                 repo,
                 publisher,
@@ -1058,6 +1172,80 @@ def main() -> int:
                     raise RuntimeError(
                         "BC13 cancellation inspection did not reflect BC04 terminal state"
                     )
+            elif CASE_KIND in RAW_ARTIFACT_CASES:
+                from acquisition_lifecycle_acceptance_support import active_lifecycle
+                from work_intake.adapters.composition import compose_work_intake
+                from work_intake.domain import LogicalInput
+
+                empty_input_ref = ContractReference(
+                    input_contract.contract_id,
+                    input_contract.version,
+                    input_contract.digest,
+                )
+                operations = compose_work_intake(
+                    database_url=os.environ["WORK_INTAKE_DATABASE_URL"],
+                    migrations_root=ROOT / "migrations",
+                    contract_root=ROOT / "contracts/payload/draft/v1",
+                    lifecycle=active_lifecycle(),
+                    coordinator=coordinator,
+                )
+                accepted = operations.submit(
+                    logical_input=LogicalInput(
+                        TENANT,
+                        "raw-" + CASE_KIND.removeprefix("raw-"),
+                        SOURCE_ID,
+                        REVISION_ID,
+                        empty_input_ref,
+                    ),
+                    idempotency_scope="controlled-m6-raw-acceptance",
+                    idempotency_key=CASE_KIND + "-" + release_id,
+                    release_id=release_id,
+                    parameters={},
+                )
+                accepted_submissions = [accepted]
+                reacquisition = None
+                if CASE_KIND == "raw-json":
+                    reacquisition = operations.submit(
+                        logical_input=LogicalInput(
+                            TENANT,
+                            "raw-json",
+                            SOURCE_ID,
+                            REVISION_ID,
+                            empty_input_ref,
+                        ),
+                        idempotency_scope="controlled-m6-raw-acceptance",
+                        idempotency_key="raw-json-intentional-reacquisition-"
+                        + release_id,
+                        release_id=release_id,
+                        parameters={},
+                    )
+                    accepted_submissions.append(reacquisition)
+                dispatched = operations.dispatch_pending(
+                    worker_id="controlled-m6-raw-dispatcher",
+                    limit=len(accepted_submissions),
+                    tenant_id=TENANT,
+                )
+                if len(dispatched) != len(accepted_submissions):
+                    raise RuntimeError("raw artifact work was not admitted by BC04")
+                accepted_submissions = [
+                    operations.inspect(TENANT, item.intent.submission_id)
+                    for item in accepted_submissions
+                ]
+                for item in accepted_submissions:
+                    if item.run_id is None:
+                        raise RuntimeError(
+                            "raw artifact submission was not admitted: "
+                            f"state={item.state.value}; "
+                            f"diagnostic={item.diagnostic_code}"
+                        )
+                if reacquisition is not None and (
+                    accepted_submissions[0].intent.submission_id
+                    == accepted_submissions[1].intent.submission_id
+                    or accepted_submissions[0].run_id == accepted_submissions[1].run_id
+                ):
+                    raise RuntimeError(
+                        "intentional raw reacquisition collapsed submission or CaptureRun identity"
+                    )
             else:
                 coordinator.admit_live_run(
                     tenant_id=TENANT,
@@ -1095,7 +1283,11 @@ def main() -> int:
                     parameter_document = json.loads(
                         intake_submission.intent.parameters_json.decode("utf-8")
                     )
-                    parameter_value = parameter_document["limit"]
+                    parameter_value = (
+                        None
+                        if CASE_KIND in RAW_ARTIFACT_CASES
+                        else parameter_document["limit"]
+                    )
                     parameter_file = root / (
                         "parameters-" + intake_submission.intent.submission_id + ".json"
                     )
@@ -1107,22 +1299,23 @@ def main() -> int:
                     result_parent = results / intake_submission.intent.submission_id
                     result_parent.mkdir(mode=0o777)
                     result_parent.chmod(0o777)
-                    expected_records_path = root / (
-                        "expected-" + str(parameter_value) + ".jsonl"
-                    )
-                    expected_records_path.write_text(
-                        json.dumps(
-                            {
-                                "enabled": True,
-                                "id": f"parameter-{parameter_value}",
-                                "quantity": parameter_value,
-                                "unit_price": f"{parameter_value}.25",
-                            },
-                            separators=(",", ":"),
+                    if CASE_KIND == "work-intake":
+                        expected_records_path = root / (
+                            "expected-" + str(parameter_value) + ".jsonl"
                         )
-                        + "\n",
-                        encoding="utf-8",
-                    )
+                        expected_records_path.write_text(
+                            json.dumps(
+                                {
+                                    "enabled": True,
+                                    "id": f"parameter-{parameter_value}",
+                                    "quantity": parameter_value,
+                                    "unit_price": f"{parameter_value}.25",
+                                },
+                                separators=(",", ":"),
+                            )
+                            + "\n",
+                            encoding="utf-8",
+                        )
                     env = base_env | {
                         "MOZAIC_LIVE_RESULT_PARENT": str(result_parent),
                         "MOZAIC_LIVE_INPUT_PARAMETERS_FILE": str(parameter_file),
@@ -1216,7 +1409,8 @@ def main() -> int:
                                     if intake_submission is not None
                                     and intake_submission.intent.input_id == "input-D"
                                     else "0"
-                                )
+                                ),
+                                "CONTROLLED_SOURCE_RAW_FAULT": raw_fault or "",
                             }
                         ),
                         timeout=300,
@@ -1255,6 +1449,7 @@ def main() -> int:
                                 "gateway-restart",
                                 *FAILURE_CASES,
                             }
+                            or raw_fault in RAW_ARTIFACT_FAULT_DIAGNOSTICS
                             or (
                                 intake_submission is not None
                                 and intake_submission.intent.input_id == "input-D"
@@ -1277,6 +1472,19 @@ def main() -> int:
                                     f"expected worker diagnostic: {CASE_KIND}; "
                                     f"observed={diagnostic!r}"
                                 ) from error
+                        elif raw_fault in RAW_ARTIFACT_FAULT_DIAGNOSTICS:
+                            diagnostic = _worker_failure_diagnostic(error)
+                            expected_diagnostics = RAW_ARTIFACT_FAULT_DIAGNOSTICS[
+                                raw_fault
+                            ]
+                            if diagnostic is None or not any(
+                                marker.casefold() in diagnostic.casefold()
+                                for marker in expected_diagnostics
+                            ):
+                                raise RuntimeError(
+                                    "raw v4 fault failed without its expected diagnostic: "
+                                    f"{raw_fault}; observed={diagnostic!r}"
+                                ) from error
                         elif expected_m5_failure:
                             diagnostic = _worker_failure_diagnostic(error)
                             if diagnostic is None or not any(
@@ -1296,6 +1504,7 @@ def main() -> int:
                                 and "current_attempt" in str(error)
                             )
                             or CASE_KIND in FAILURE_CASES
+                            or raw_fault in RAW_ARTIFACT_FAULT_DIAGNOSTICS
                             or expected_m5_failure
                             or CASE_KIND == "gateway-restart"
                         )
@@ -1360,6 +1569,21 @@ def main() -> int:
                             raise RuntimeError(
                                 "denied redirect did not fail BC04 without publication"
                             ) from error
+                        if raw_fault in RAW_ARTIFACT_FAULT_DIAGNOSTICS:
+                            raw_submission = operations.inspect(
+                                TENANT, accepted_submissions[0].intent.submission_id
+                            )
+                            authoritative = operations.inspect_execution(
+                                TENANT, accepted_submissions[0].intent.submission_id
+                            )
+                            if (
+                                raw_submission.run_id != run_id
+                                or authoritative.state.value != "failed"
+                                or authoritative.publication_receipt is not None
+                            ):
+                                raise RuntimeError(
+                                    "raw v4 failure is not reflected in authoritative BC13/BC04 state"
+                                ) from error
                         if expected_m5_failure:
                             failed_submission = operations.inspect(
                                 TENANT, intake_submission.intent.submission_id
@@ -1402,9 +1626,21 @@ def main() -> int:
                                     "attempt_id": lease.attempt_id,
                                     "state": failed.state.value,
                                     "publication_receipt": failed.publication_receipt,
+                                    "raw_fault": raw_fault,
+                                    "submission_id": (
+                                        accepted_submissions[0].intent.submission_id
+                                        if raw_fault
+                                        else None
+                                    ),
+                                    "authoritative_bc13_state": (
+                                        authoritative.state.value
+                                        if raw_fault in RAW_ARTIFACT_FAULT_DIAGNOSTICS
+                                        else None
+                                    ),
                                     "diagnostic": (
                                         diagnostic
                                         if CASE_KIND in FAILURE_CASES
+                                        or raw_fault in RAW_ARTIFACT_FAULT_DIAGNOSTICS
                                         else "current_attempt_revoked"
                                         if CASE_KIND == "pagination-cancel"
                                         else CASE_KIND.replace("-", "_")
@@ -1417,6 +1653,10 @@ def main() -> int:
                     else:
                         if CASE_KIND in {"redirect-denied", "redirect-budget"}:
                             raise RuntimeError("gateway unexpectedly allowed redirect")
+                        if raw_fault in RAW_ARTIFACT_FAULT_DIAGNOSTICS:
+                            raise RuntimeError(
+                                f"raw v4 fault unexpectedly completed successfully: {raw_fault}"
+                            )
                     result_dir = Path(env["MOZAIC_LIVE_RESULT_PARENT"]) / "result"
 
                     def verify_result(
@@ -1490,28 +1730,54 @@ def main() -> int:
                             "live importer accepted divergent worker evidence"
                         )
                     verified = verify_result(result_dir)
-                    expected_records = [
-                        json.loads(line)
-                        for line in expected_records_path.read_text(
-                            encoding="utf-8"
-                        ).splitlines()
-                        if line
-                    ]
-                    actual_records = [
-                        {
-                            key: value
-                            for key, value in record.items()
-                            if key != "_provenance"
-                        }
-                        for record in verified.records
-                    ]
-                    if actual_records != expected_records:
-                        raise RuntimeError(
-                            "live acquisition differs from independent test oracle"
-                        )
+                    expected_records: list[dict[str, object]] = []
+                    actual_records: list[dict[str, object]] = []
+                    if CASE_KIND in RAW_ARTIFACT_CASES:
+                        expected_body = (
+                            ROOT
+                            / "examples/use-cases/raw-artifact/expected"
+                            / RAW_ARTIFACT_FILES[CASE_KIND]
+                        ).read_bytes()
+                        if (
+                            not verified.artifact_only
+                            or verified.records
+                            or len(verified.pages) != 1
+                            or verified.pages[0].url
+                            != "https://api.fixture.test" + SOURCE_PATH
+                            or verified.pages[0].media_type
+                            != RAW_ARTIFACT_MEDIA[CASE_KIND]
+                            or verified.pages[0].body != expected_body
+                            or verified.pages[0].body_representation
+                            != "decoded-http-entity"
+                        ):
+                            raise RuntimeError(
+                                "raw artifact differs from independent controlled source bytes"
+                            )
+                    else:
+                        expected_records = [
+                            json.loads(line)
+                            for line in expected_records_path.read_text(
+                                encoding="utf-8"
+                            ).splitlines()
+                            if line
+                        ]
+                        actual_records = [
+                            {
+                                key: value
+                                for key, value in record.items()
+                                if key != "_provenance"
+                            }
+                            for record in verified.records
+                        ]
+                        if actual_records != expected_records:
+                            raise RuntimeError(
+                                "live acquisition differs from independent test oracle"
+                            )
                     if intake_submission is not None:
                         expected_target = (
-                            "https://api.fixture.test/v1/items?limit="
+                            "https://api.fixture.test" + SOURCE_PATH
+                            if CASE_KIND in RAW_ARTIFACT_CASES
+                            else "https://api.fixture.test/v1/items?limit="
                             + str(parameter_value)
                         )
                         if (
@@ -1521,7 +1787,7 @@ def main() -> int:
                             raise RuntimeError(
                                 "gateway FetchEvidence target differs from the BC13 parameter binding"
                             )
-                        if any(
+                        if CASE_KIND not in RAW_ARTIFACT_CASES and any(
                             record.get("_provenance", {}).get("source_url")
                             != expected_target
                             for record in verified.records
@@ -1546,16 +1812,21 @@ def main() -> int:
                     import_arguments = {
                         "bundle": verified,
                         "producer": producer,
-                        "payload_contract": contract,
-                        "artifact_representation": "decoded_http_entity",
                         "retention_policy_ref": str(
                             policy["evidence_retention_policy_ref"]
                         ),
-                        "artifact_title": "Controlled live "
-                        + CASE_KIND.upper()
-                        + " HTTP entity",
-                        "artifact_role": "acquired-source-response",
                     }
+                    if CASE_KIND not in RAW_ARTIFACT_CASES:
+                        import_arguments.update(
+                            {
+                                "payload_contract": contract,
+                                "artifact_representation": "decoded_http_entity",
+                                "artifact_title": "Controlled live "
+                                + CASE_KIND.upper()
+                                + " HTTP entity",
+                                "artifact_role": "acquired-source-response",
+                            }
+                        )
                     importer_app = (
                         _ImportInterruptionProxy(
                             app,
@@ -1568,14 +1839,27 @@ def main() -> int:
                         else app
                     )
                     try:
-                        output_set_id, manifest_digest = TrustedAcquisitionApplication(
-                            repo,
-                            importer_app,
-                            ArtifactCustodyHTTPClient(
-                                os.environ["ARTIFACT_CUSTODY_HTTP_URL"],
-                                os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"],
-                            ),
-                        ).import_verified_result(TENANT, run_id, **import_arguments)
+                        output_set_id, manifest_digest = (
+                            TrustedAcquisitionApplication(
+                                repo,
+                                importer_app,
+                                ArtifactCustodyHTTPClient(
+                                    os.environ["ARTIFACT_CUSTODY_HTTP_URL"],
+                                    os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"],
+                                ),
+                            ).import_verified_artifact_result(
+                                TENANT, run_id, **import_arguments
+                            )
+                            if CASE_KIND in RAW_ARTIFACT_CASES
+                            else TrustedAcquisitionApplication(
+                                repo,
+                                importer_app,
+                                ArtifactCustodyHTTPClient(
+                                    os.environ["ARTIFACT_CUSTODY_HTTP_URL"],
+                                    os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"],
+                                ),
+                            ).import_verified_result(TENANT, run_id, **import_arguments)
+                        )
                     except _InjectedImportInterruption:
                         if CASE_KIND not in {
                             "custody-interruption",
@@ -1644,11 +1928,18 @@ def main() -> int:
                             )
                         )
                         return 0
-                    replay_set_id, replay_manifest_digest = (
-                        importer.import_verified_result(
-                            TENANT, run_id, **import_arguments
+                    if CASE_KIND in RAW_ARTIFACT_CASES:
+                        replay_set_id, replay_manifest_digest = (
+                            importer.import_verified_artifact_result(
+                                TENANT, run_id, **import_arguments
+                            )
                         )
-                    )
+                    else:
+                        replay_set_id, replay_manifest_digest = (
+                            importer.import_verified_result(
+                                TENANT, run_id, **import_arguments
+                            )
+                        )
                     if (replay_set_id, replay_manifest_digest) != (
                         output_set_id,
                         manifest_digest,
@@ -1679,10 +1970,24 @@ def main() -> int:
                     if (
                         durable_membership_before != durable_membership_after
                         or after_replay.state.value != "sealed"
-                        or after_replay.member_count != len(verified.records)
+                        or after_replay.member_count
+                        != (
+                            1
+                            if CASE_KIND in RAW_ARTIFACT_CASES
+                            else len(verified.records)
+                        )
                         or after_replay.artifact_reference_count
-                        != len(verified.records)
-                        or after_replay.custody_reference_count != len(verified.records)
+                        != (
+                            1
+                            if CASE_KIND in RAW_ARTIFACT_CASES
+                            else len(verified.records)
+                        )
+                        or after_replay.custody_reference_count
+                        != (
+                            1
+                            if CASE_KIND in RAW_ARTIFACT_CASES
+                            else len(verified.records)
+                        )
                         or after_replay.manifest_digest != manifest_digest
                     ):
                         raise RuntimeError(
@@ -1693,7 +1998,7 @@ def main() -> int:
                             lease, output_set_id, manifest_digest
                         )
                     except TimeoutError:
-                        if CASE_KIND != "ack-loss":
+                        if not publication_ack_loss:
                             raise
                         pending = coordinator.inspect(TENANT, run_id)
                         if (
@@ -1756,19 +2061,83 @@ def main() -> int:
                         raise RuntimeError(
                             "independent BC05 receipt differs from BC04 terminal receipt"
                         )
-                    (
-                        artifacts,
-                        artifact_digests,
-                        output_ids,
-                        observation_ids,
-                    ) = _verify_outputs(
-                        TENANT,
-                        run_id,
-                        output_set_id,
-                        len(verified.records),
-                        contract,
-                        expected_payloads=expected_records,
-                    )
+                    if CASE_KIND in RAW_ARTIFACT_CASES:
+                        page = app.read_published_outputs(
+                            TENANT, output_set_id, limit=10
+                        )
+                        if (
+                            len(page.outputs) != 1
+                            or page.outputs[0].output_type != "artifact"
+                            or len(page.outputs[0].artifact_items) != 1
+                        ):
+                            raise RuntimeError(
+                                "BC05 did not independently expose one ArtifactOutput"
+                            )
+                        artifact_ref = page.outputs[0].artifact_items[0].artifact
+                        stored = artifact_request(TENANT, artifact_ref.artifact_id)
+                        expected_body = (
+                            ROOT
+                            / "examples/use-cases/raw-artifact/expected"
+                            / RAW_ARTIFACT_FILES[CASE_KIND]
+                        ).read_bytes()
+                        stored_digest = "sha256:" + hashlib.sha256(stored).hexdigest()
+                        if (
+                            stored != expected_body
+                            or artifact_ref.digest != stored_digest
+                            or artifact_ref.size_bytes != len(stored)
+                            or artifact_ref.media_type != RAW_ARTIFACT_MEDIA[CASE_KIND]
+                            or page.outputs[0].binding.execution.run_id != run_id
+                        ):
+                            raise RuntimeError(
+                                "independent BC05/BC06 artifact retrieval differs from gateway evidence"
+                            )
+                        artifacts = [artifact_ref.artifact_id]
+                        artifact_digests = [artifact_ref.digest]
+                        output_ids = [page.outputs[0].identity.output_id]
+                        observation_ids = [page.outputs[0].identity.observation_id]
+                        if raw_fault == "ack-loss":
+                            print(
+                                "RAW_V4_PUBLICATION_ACK_LOSS_RECONCILED "
+                                + json.dumps(
+                                    {
+                                        "tenant_id": TENANT,
+                                        "submission_id": accepted_submissions[
+                                            0
+                                        ].intent.submission_id,
+                                        "run_id": run_id,
+                                        "attempt_id": lease.attempt_id,
+                                        "output_set_id": output_set_id,
+                                        "manifest_digest": manifest_digest,
+                                        "publication_receipt": final.publication_receipt,
+                                        "artifact_ref": {
+                                            "artifact_id": artifact_ref.artifact_id,
+                                            "size_bytes": artifact_ref.size_bytes,
+                                            "digest": artifact_ref.digest,
+                                            "media_type": artifact_ref.media_type,
+                                        },
+                                        "output_id": output_ids[0],
+                                        "observation_id": observation_ids[0],
+                                        "independent_bytes_verified": True,
+                                        "fresh_coordinator": True,
+                                        "deterministic_ack_loss_injection": True,
+                                    },
+                                    sort_keys=True,
+                                )
+                            )
+                    else:
+                        (
+                            artifacts,
+                            artifact_digests,
+                            output_ids,
+                            observation_ids,
+                        ) = _verify_outputs(
+                            TENANT,
+                            run_id,
+                            output_set_id,
+                            len(verified.records),
+                            contract,
+                            expected_payloads=expected_records,
+                        )
                     evidence_ids = [page.evidence_ref for page in verified.pages]
                     correlation: dict[str, object] = {}
                     if intake_submission is not None:
@@ -1821,11 +2190,21 @@ def main() -> int:
                                 "runtime_image_digest": runtime_digest,
                                 "release_id": release_id,
                                 **correlation,
-                                "payload_contract": {
-                                    "contract_id": contract.contract_id,
-                                    "version": contract.version,
-                                    "digest": contract.digest,
-                                },
+                                **(
+                                    {
+                                        "payload_contract": {
+                                            "contract_id": contract.contract_id,
+                                            "version": contract.version,
+                                            "digest": contract.digest,
+                                        }
+                                    }
+                                    if contract is not None
+                                    else {
+                                        "output_contract": manifest.get(
+                                            "output_contract"
+                                        )
+                                    }
+                                ),
                                 "fetch_ids": evidence_ids,
                                 "redirect_counts": [
                                     page.redirect_count for page in verified.pages
@@ -1846,6 +2225,57 @@ def main() -> int:
                     api_server.shutdown()
                     api_server.server_close()
                     _run(compose + ["down", "--remove-orphans"], env=env, timeout=90)
+            if CASE_KIND == "raw-json":
+                if (
+                    len(m5_observations) != 2
+                    or m5_observations[0]["submission_id"]
+                    == m5_observations[1]["submission_id"]
+                    or m5_observations[0]["run_id"] == m5_observations[1]["run_id"]
+                    or m5_observations[0]["output_set_id"]
+                    == m5_observations[1]["output_set_id"]
+                    or m5_observations[0]["observation_ids"]
+                    == m5_observations[1]["observation_ids"]
+                    or m5_observations[0]["artifact_digests"]
+                    != m5_observations[1]["artifact_digests"]
+                ):
+                    raise RuntimeError(
+                        "intentional raw reacquisition did not preserve distinct observations"
+                    )
+                for observation in m5_observations:
+                    page = app.read_published_outputs(
+                        TENANT, observation["output_set_id"], limit=10
+                    )
+                    if (
+                        len(page.outputs) != 1
+                        or page.outputs[0].output_type != "artifact"
+                        or page.outputs[0].identity.observation_id
+                        != observation["observation_ids"][0]
+                    ):
+                        raise RuntimeError(
+                            "published raw observation changed after intentional reacquisition"
+                        )
+                print(
+                    "RAW_ARTIFACT_INTENTIONAL_REACQUISITION_ACCEPTED "
+                    + json.dumps(
+                        {
+                            "same_logical_input": True,
+                            "distinct_submissions": [
+                                item["submission_id"] for item in m5_observations
+                            ],
+                            "distinct_runs": [
+                                item["run_id"] for item in m5_observations
+                            ],
+                            "distinct_output_sets": [
+                                item["output_set_id"] for item in m5_observations
+                            ],
+                            "same_content_digest": m5_observations[0][
+                                "artifact_digests"
+                            ][0],
+                            "previous_output_immutable": True,
+                        },
+                        sort_keys=True,
+                    )
+                )
             if CASE_KIND == "work-intake":
                 revoked_pending = operations.submit(
                     logical_input=LogicalInput(

@@ -1,0 +1,18 @@
+{
+  "complete": true,
+  "source": {
+    "source_id": "controlled-http",
+    "revision": "controlled-raw-json-v1"
+  },
+  "pages": [
+    {
+      "url": "https://api.fixture.test/v1/artifacts/json",
+      "status": 200,
+      "content_type": "application/json",
+      "evidence_ref": "controlled-raw-json",
+      "body_file": "sample.json",
+      "sha256": "15a638a1dc62f113da4c27a189f7a0232543e80b1eb74e0473dae0a6f2e5cf4d",
+      "size_bytes": 44
+    }
+  ]
+}

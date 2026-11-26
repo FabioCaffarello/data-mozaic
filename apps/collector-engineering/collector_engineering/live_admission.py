@@ -28,9 +28,9 @@ class LiveAdmission:
     release_id: str
     build_id: str
     build_manifest_digest: str
-    payload_contract_id: str
-    payload_contract_version: str
-    payload_contract_digest: str
+    payload_contract_id: str | None
+    payload_contract_version: str | None
+    payload_contract_digest: str | None
 
 
 _BAD_PERCENT = re.compile(r"%(?![0-9a-fA-F]{2})")
@@ -145,21 +145,52 @@ def validate_live_admission(
     if release.get("status") != "approved":
         raise PlaybookError("BotRelease is not approved")
     contract = release.get("payload_contract")
-    if (
-        release.get("contract_version") not in {"bot-release/v2", "bot-release/v3"}
-        or not isinstance(contract, dict)
-        or set(contract) != {"contract_id", "version", "digest"}
-        or not isinstance(contract.get("contract_id"), str)
-        or not re.fullmatch(r"[a-z0-9][a-z0-9._:-]{0,127}", contract["contract_id"])
-        or not isinstance(contract.get("version"), str)
-        or not re.fullmatch(r"[a-z0-9][a-z0-9._:-]{0,63}", contract["version"])
-        or not isinstance(contract.get("digest"), str)
-        or not re.fullmatch(r"sha256:[0-9a-f]{64}", contract["digest"])
+    artifact_profile = release.get("contract_version") == "bot-release/v4"
+    if release.get("contract_version") not in {
+        "bot-release/v2",
+        "bot-release/v3",
+        "bot-release/v4",
+    } or (
+        not artifact_profile
+        and (
+            not isinstance(contract, dict)
+            or set(contract) != {"contract_id", "version", "digest"}
+            or not isinstance(contract.get("contract_id"), str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9._:-]{0,127}", contract["contract_id"])
+            or not isinstance(contract.get("version"), str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9._:-]{0,63}", contract["version"])
+            or not isinstance(contract.get("digest"), str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", contract["digest"])
+        )
     ):
         raise PlaybookError("BotRelease payload contract binding is invalid")
-    if release.get("contract_version") == "bot-release/v3":
+    if artifact_profile:
+        output_contract = release.get("output_contract")
+        if (
+            not isinstance(output_contract, dict)
+            or output_contract != build_manifest.get("output_contract")
+            or build_manifest.get("manifest_version") != "bot-build-manifest/v4"
+            or release.get("payload_contract") is not None
+        ):
+            raise PlaybookError("BotRelease raw artifact binding differs from BotBuild")
+    if release.get("contract_version") in {"bot-release/v3", "bot-release/v4"}:
         input_contract = release.get("input_contract")
         input_request = release.get("input_request")
+        manifest_request = build_manifest.get("live_request")
+        valid_request = (
+            isinstance(input_request, dict)
+            and input_request == manifest_request
+            and input_request.get("method") == "GET"
+            and (
+                (artifact_profile and set(input_request) == {"method", "url"})
+                or (
+                    not artifact_profile
+                    and set(input_request) == {"method", "url", "input_query"}
+                    and isinstance(input_request.get("input_query"), dict)
+                    and set(input_request["input_query"]) == {"parameter", "query_name"}
+                )
+            )
+        )
         if (
             not isinstance(input_contract, dict)
             or set(input_contract) != {"contract_id", "version", "digest"}
@@ -175,15 +206,7 @@ def validate_live_admission(
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", input_contract["digest"])
         ):
             raise PlaybookError("BotRelease input contract binding is invalid")
-        manifest_request = build_manifest.get("live_request")
-        if (
-            not isinstance(input_request, dict)
-            or set(input_request) != {"method", "url", "input_query"}
-            or input_request != manifest_request
-            or input_request.get("method") != "GET"
-            or not isinstance(input_request.get("input_query"), dict)
-            or set(input_request["input_query"]) != {"parameter", "query_name"}
-        ):
+        if not valid_request:
             raise PlaybookError("BotRelease input request differs from BotBuild")
     for document, field, label in (
         (source_revision, "configuration_digest", "source revision"),
@@ -312,7 +335,7 @@ def validate_live_admission(
         release_id=release["release_id"],
         build_id=release["build_id"],
         build_manifest_digest=expected_build_digest,
-        payload_contract_id=contract["contract_id"],
-        payload_contract_version=contract["version"],
-        payload_contract_digest=contract["digest"],
+        payload_contract_id=None if artifact_profile else contract["contract_id"],
+        payload_contract_version=None if artifact_profile else contract["version"],
+        payload_contract_digest=None if artifact_profile else contract["digest"],
     )

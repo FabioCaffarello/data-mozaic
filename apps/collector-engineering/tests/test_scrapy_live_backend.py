@@ -193,6 +193,62 @@ class ScrapyLiveBackendTests(unittest.TestCase):
                     target_platform="linux/amd64",
                 )
 
+    def test_raw_artifact_v4_compiles_without_record_contract_or_parser(self):
+        example = ROOT / "examples/playbooks/json-api"
+        parsed = load_playbook_v2(example / "capture-playbook.yaml")
+        document = copy.deepcopy(parsed.document)
+        document["dsl_version"] = "capture-playbook-draft/v4"
+        document["capabilities"] = ["http.fetch.fixture", "output.artifact.reference"]
+        document["output_contract"] = {
+            "mode": "artifact",
+            "media_types": ["application/pdf"],
+            "max_bytes": 512,
+        }
+        fetch = next(op for op in document["operations"] if op["op"] == "http.fetch/v1")
+        fetch["url"] = "https://api.fixture.test/v1/report"
+        fetch["content_type"] = "application/pdf"
+        document["operations"] = [
+            fetch,
+            {
+                "id": "artifact",
+                "op": "output.artifact/v1",
+                "document": {"operation": fetch["id"], "port": "document"},
+            },
+        ]
+        temporary = tempfile.TemporaryDirectory(
+            prefix=".dm-raw-artifact-test-", dir=ROOT
+        )
+        self.addCleanup(temporary.cleanup)
+        fixture_root = Path(temporary.name) / "fixtures"
+        shutil.copytree(example / "fixtures", fixture_root)
+        fixture_index = json.loads((fixture_root / "index.json").read_text())
+        fixture_index["pages"][0]["url"] = fetch["url"]
+        fixture_index["pages"][0]["content_type"] = "application/pdf"
+        (fixture_root / "index.json").write_text(json.dumps(fixture_index))
+        ir = build_typed_ir(type(parsed)(document), fixture_root=fixture_root)
+        build = Path(temporary.name) / "build"
+        manifest = compile_build(
+            ir,
+            output=build,
+            lockfile=ROOT / "uv.lock",
+            target_platform="linux/amd64",
+        )
+        self.assertEqual("collector-ir/v3", ir.document["ir_version"])
+        self.assertEqual("bot-build-manifest/v4", manifest["manifest_version"])
+        self.assertEqual("capture-playbook-draft/v4", manifest["playbook_version"])
+        self.assertEqual(
+            {"method": "GET", "url": fetch["url"]}, manifest["live_request"]
+        )
+        generated = (build / "bot.py").read_text(encoding="utf-8")
+        self.assertNotIn("extract.fields", generated)
+        self.assertEqual(manifest, verify_build(build))
+        schema = json.loads(
+            (
+                ROOT / "contracts/bot-build/draft/v4/BotBuildManifest.schema.json"
+            ).read_text()
+        )
+        Draft202012Validator(schema, format_checker=FormatChecker()).validate(manifest)
+
 
 if __name__ == "__main__":
     unittest.main()

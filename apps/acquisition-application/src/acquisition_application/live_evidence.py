@@ -250,7 +250,25 @@ def _authorized_parameterized_target(
     query_binding = inputs.get("input_query")
     if query_binding is None:
         if parameters_json is not None or parameters_digest is not None:
-            raise FixtureImportError("BC04 parameters do not match the compiled plan")
+            if (
+                plan.get("artifact_output") is None
+                or not isinstance(parameters_json, str)
+                or not isinstance(parameters_digest, str)
+            ):
+                raise FixtureImportError(
+                    "BC04 parameters do not match the compiled plan"
+                )
+            encoded_parameters = parameters_json.encode("utf-8", errors="strict")
+            if (
+                _strict_json(encoded_parameters, "parameterless BC04 input") != {}
+                or _digest(encoded_parameters) != parameters_digest
+                or not isinstance(inputs.get("url"), str)
+                or urlsplit(inputs["url"]).query
+            ):
+                raise FixtureImportError(
+                    "parameterless BC04 binding is not empty or canonical"
+                )
+            return inputs["url"]
         return None
     if (
         not isinstance(query_binding, dict)
@@ -334,6 +352,9 @@ def verify_live_result_bundle(
     execution_deadline: datetime | None = None,
     input_parameters_json: str | None = None,
     input_parameters_digest: str | None = None,
+    output_modality: str = "record",
+    artifact_media_types: tuple[str, ...] = (),
+    max_artifact_bytes: int | None = None,
 ) -> VerifiedResultBundle:
     """Validate worker declarations against current gateway evidence and plan."""
     from collector_engineering import reference_runtime
@@ -378,6 +399,11 @@ def verify_live_result_bundle(
         or report.get("requests") != report.get("pages")
         or report.get("records_file") != "records.jsonl"
         or report.get("records_sha256") != records_digest
+        or (
+            isinstance(compiled_plan, dict)
+            and compiled_plan.get("artifact_output") is not None
+            and report.get("output_mode") != "artifact"
+        )
     ):
         raise FixtureImportError("live worker report does not match its records")
     records: list[dict[str, object]] = []
@@ -411,6 +437,8 @@ def verify_live_result_bundle(
     source = plan.get("source")
     budgets = plan.get("budgets")
     select = plan.get("select")
+    artifact_only = plan.get("artifact_output") is not None
+    artifact_contract = plan.get("output_contract") if artifact_only else None
     if (
         plan.get("profile") != "scrapy-live-http-v1"
         or not isinstance(source, dict)
@@ -419,13 +447,36 @@ def verify_live_result_bundle(
         or not isinstance(budgets, dict)
         or len(worker_evidence)
         > min(int(budgets.get("max_requests", 0)), int(budgets.get("max_pages", 0)))
-        or not isinstance(select, dict)
+        or (not artifact_only and not isinstance(select, dict))
+        or (
+            artifact_only
+            and (
+                not isinstance(artifact_contract, dict)
+                or artifact_contract.get("mode") != "artifact"
+            )
+        )
+        or (artifact_only and (len(worker_evidence) != 1 or records))
+        or (artifact_only and output_modality != "artifact")
+        or (not artifact_only and output_modality != "record")
+        or (
+            artifact_only
+            and isinstance(artifact_contract, dict)
+            and (
+                artifact_contract.get("media_types") != list(artifact_media_types)
+                or artifact_contract.get("max_bytes") != max_artifact_bytes
+            )
+        )
     ):
         raise FixtureImportError("live result differs from the trusted compiled plan")
-    operator = select.get("operator_type")
-    expected_media = (
-        "text/html" if operator == "select.html_records" else "application/json"
-    )
+    if artifact_only:
+        expected_media = (
+            plan["fetch"]["inputs"]["content_type"].split(";", 1)[0].lower()
+        )
+    else:
+        operator = select.get("operator_type")
+        expected_media = (
+            "text/html" if operator == "select.html_records" else "application/json"
+        )
     trusted_pages: list[VerifiedFixturePage] = []
     seen_fetch_ids: set[str] = set()
     seen_refs: set[str] = set()
@@ -464,6 +515,11 @@ def verify_live_result_bundle(
             or metadata.get("status") != 200
             or not isinstance(media_type, str)
             or media_type.split(";", 1)[0].lower() != expected_media
+            or (
+                artifact_only
+                and expected_media not in artifact_contract.get("media_types", [])
+            )
+            or (artifact_only and len(body) > artifact_contract.get("max_bytes", 0))
             or not reference_runtime._scoped(request_url, source)
         ):
             raise FixtureImportError(
@@ -526,11 +582,12 @@ def verify_live_result_bundle(
                 request_url,
                 fetch_id,
                 _digest(body),
-                media_type,
+                media_type.split(";", 1)[0].lower(),
                 body,
                 acquired_at,
                 metadata["redirect_count"],
                 str(metadata.get("effective_path_digest", "")),
+                str(metadata.get("body_representation", "")),
             )
         )
     if len(seen_refs) != len(raw_references):
@@ -538,23 +595,36 @@ def verify_live_result_bundle(
     parameterized_target = _authorized_parameterized_target(
         plan, input_parameters_json, input_parameters_digest
     )
-    _plan_pagination_urls(
-        plan,
-        trusted_pages,
-        report.get("pagination_termination"),
-        expected_initial_url=parameterized_target,
-    )
-    verify_plan_results(
-        plan=plan,
-        pages=tuple(trusted_pages),
-        records=tuple(records),
-        source_id=source_id,
-        source_revision=source_revision_id,
-    )
+    if artifact_only:
+        if (
+            plan.get("discover") is not None
+            or plan.get("pagination") is not None
+            or plan.get("fetch", {}).get("inputs", {}).get("input_query") is not None
+            or trusted_pages[0].redirect_count != 0
+        ):
+            raise FixtureImportError(
+                "raw artifact profile contains unsupported continuation or parameter behavior"
+            )
+    else:
+        _plan_pagination_urls(
+            plan,
+            trusted_pages,
+            report.get("pagination_termination"),
+            expected_initial_url=parameterized_target,
+        )
+        verify_plan_results(
+            plan=plan,
+            pages=tuple(trusted_pages),
+            records=tuple(records),
+            source_id=source_id,
+            source_revision=source_revision_id,
+        )
     return VerifiedResultBundle(
         tuple(records),
         tuple(trusted_pages),
         records_digest,
         sum(map(len, files.values())),
         trusted_bot_id,
+        artifact_only,
+        artifact_contract,
     )

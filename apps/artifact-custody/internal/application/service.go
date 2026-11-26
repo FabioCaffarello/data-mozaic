@@ -174,8 +174,11 @@ func (s *Service) ReconcileExpiredUpload(ctx context.Context, limit int) (int, e
 	return completed, nil
 }
 
-func (s *Service) PendingEvents(ctx context.Context, limit int) ([]OutboxEvent, error) {
-	return s.store.ListPendingEvents(ctx, limit)
+func (s *Service) PendingEvents(ctx context.Context, tenantID string, limit int) ([]OutboxEvent, error) {
+	if tenantID == "" {
+		return nil, errors.New("pending event tenant is required")
+	}
+	return s.store.ListPendingEvents(ctx, tenantID, limit)
 }
 
 func ReceiptID(tenantID, operationID, intentDigest string) string {

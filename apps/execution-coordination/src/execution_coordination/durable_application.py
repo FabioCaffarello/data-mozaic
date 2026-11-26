@@ -172,15 +172,27 @@ class DurableExecutionCoordinator:
                 if isinstance(input_query, Mapping)
                 else None
             )
+            parameterless = (
+                isinstance(input_request, Mapping)
+                and resolved.release.get("contract_version") == "bot-release/v4"
+                and set(input_request) == {"method", "url"}
+                and input_query is None
+                and not input_parameters
+            )
             if (
                 not isinstance(input_request, Mapping)
-                or set(input_request) != {"method", "url", "input_query"}
                 or input_request.get("method") != "GET"
-                or not isinstance(parameter_name, str)
-                or not isinstance(query_name, str)
-                or set(input_parameters) != {parameter_name}
-                or isinstance(input_parameters[parameter_name], bool)
-                or not isinstance(input_parameters[parameter_name], (int, str))
+                or (
+                    not parameterless
+                    and (
+                        set(input_request) != {"method", "url", "input_query"}
+                        or not isinstance(parameter_name, str)
+                        or not isinstance(query_name, str)
+                        or set(input_parameters) != {parameter_name}
+                        or isinstance(input_parameters[parameter_name], bool)
+                        or not isinstance(input_parameters[parameter_name], (int, str))
+                    )
+                )
             ):
                 raise CoordinationError("BotRelease input request binding is invalid")
             try:
@@ -194,13 +206,17 @@ class DurableExecutionCoordinator:
                     or base.fragment
                 ):
                     raise ValueError("unsafe base URL")
-                initial_url = urlunsplit(
-                    (
-                        base.scheme,
-                        base.netloc,
-                        base.path,
-                        urlencode({query_name: input_parameters[parameter_name]}),
-                        "",
+                initial_url = (
+                    base.geturl()
+                    if parameterless
+                    else urlunsplit(
+                        (
+                            base.scheme,
+                            base.netloc,
+                            base.path,
+                            urlencode({query_name: input_parameters[parameter_name]}),
+                            "",
+                        )
                     )
                 )
             except (TypeError, ValueError) as error:
@@ -225,6 +241,18 @@ class DurableExecutionCoordinator:
             input_parameters_digest = None
             expected_initial_target_digest = None
         policy = resolved.policy
+        output_contract = resolved.release.get("output_contract")
+        artifact_mode = resolved.release.get("contract_version") == "bot-release/v4"
+        if artifact_mode and (
+            not isinstance(output_contract, Mapping)
+            or output_contract.get("mode") != "artifact"
+            or not isinstance(output_contract.get("media_types"), list)
+            or not isinstance(output_contract.get("max_bytes"), int)
+        ):
+            raise CoordinationError("BotRelease artifact output binding is invalid")
+        payload_contract = resolved.release.get("payload_contract")
+        if not artifact_mode and not isinstance(payload_contract, Mapping):
+            raise CoordinationError("BotRelease payload contract binding is invalid")
         binding = LiveExecutionBinding(
             source_id=source_id,
             source_revision_id=source_revision_id,
@@ -240,16 +268,31 @@ class DurableExecutionCoordinator:
             authority_snapshot_generation=resolved.snapshot_generation,
             authority_snapshot_digest=resolved.snapshot_digest,
             max_duration_seconds=int(policy["deadline_seconds"]),
-            max_requests=int(policy["max_requests"]),
-            max_total_response_bytes=int(policy["max_total_response_bytes"]),
+            max_requests=1 if artifact_mode else int(policy["max_requests"]),
+            max_total_response_bytes=(
+                min(
+                    int(policy["max_total_response_bytes"]),
+                    int(output_contract["max_bytes"]),
+                )
+                if artifact_mode
+                else int(policy["max_total_response_bytes"])
+            ),
             max_concurrency=int(policy["max_concurrency"]),
-            payload_contract_id=str(
-                resolved.release["payload_contract"]["contract_id"]
+            payload_contract_id=(
+                str(payload_contract["contract_id"])
+                if isinstance(payload_contract, Mapping)
+                else None
             ),
-            payload_contract_version=str(
-                resolved.release["payload_contract"]["version"]
+            payload_contract_version=(
+                str(payload_contract["version"])
+                if isinstance(payload_contract, Mapping)
+                else None
             ),
-            payload_contract_digest=str(resolved.release["payload_contract"]["digest"]),
+            payload_contract_digest=(
+                str(payload_contract["digest"])
+                if isinstance(payload_contract, Mapping)
+                else None
+            ),
             input_contract_id=(
                 str(resolved.release["input_contract"]["contract_id"])
                 if isinstance(trusted_input_contract, dict)
@@ -270,6 +313,13 @@ class DurableExecutionCoordinator:
             input_parameters_json=input_parameters_json,
             input_parameters_digest=input_parameters_digest,
             expected_initial_target_digest=expected_initial_target_digest,
+            output_modality="artifact" if artifact_mode else "record",
+            artifact_media_types=tuple(output_contract["media_types"])
+            if artifact_mode
+            else (),
+            max_artifact_bytes=int(output_contract["max_bytes"])
+            if artifact_mode
+            else None,
         )
         return self._repository.create(
             DurableRunIntent(

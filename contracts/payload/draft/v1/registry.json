@@ -2,6 +2,13 @@
   "contract_version": "payload-contract-registry/v1",
   "revisions": [
     {
+      "contract_id": "controlled.input.empty",
+      "version": "1.0.0",
+      "digest": "sha256:af68f3426851290402a3c8750302d097de0f0ef5763759e2f62980ec826796a8",
+      "schema_path": "controlled-empty-input.schema.json",
+      "dialect": "https://json-schema.org/draft/2020-12/schema"
+    },
+    {
       "contract_id": "controlled.input.limit",
       "version": "1.0.0",
       "digest": "sha256:ce76be721604553e02e0b7bb04dddd6081508ca97b6b7e1e03fc9571df9a23d3",

@@ -76,6 +76,7 @@ class VerifiedFixturePage:
     acquired_at: datetime | None = None
     redirect_count: int = 0
     effective_path_digest: str | None = None
+    body_representation: str = "decoded-http-entity"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +86,8 @@ class VerifiedResultBundle:
     records_digest: str
     total_bytes: int
     trusted_bot_id: str | None = None
+    artifact_only: bool = False
+    artifact_contract: dict[str, Any] | None = None
 
 
 def verify_result_bundle(

@@ -1,0 +1,73 @@
+{
+  "dsl_version": "capture-playbook-draft/v4",
+  "playbook_id": "controlled-raw-csv",
+  "status": "draft",
+  "source": {
+    "source_id": "controlled-http",
+    "revision": "controlled-raw-csv-v1",
+    "origin": "https://api.fixture.test",
+    "path_prefixes": [
+      "/v1/artifacts/csv"
+    ]
+  },
+  "objective": "Acquire the complete controlled CSV HTTP entity as a raw artifact without parsing.",
+  "proposal_ref": "controlled-raw-csv-v1",
+  "findings": [
+    {
+      "finding_id": "controlled-raw-csv",
+      "classification": "observed",
+      "evidence_refs": [
+        "controlled-raw-csv"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_ref": "controlled-raw-csv",
+      "sha256": "68e6b7d7275c4e49f6ac7b87c0c97d049dfc0ae75c63ad629db6416b2760e480"
+    }
+  ],
+  "capabilities": [
+    "http.fetch.fixture",
+    "output.artifact.reference"
+  ],
+  "budgets": {
+    "max_requests": 1,
+    "max_pages": 1,
+    "max_response_bytes": 2000000,
+    "max_records": 1,
+    "max_output_bytes": 1000000
+  },
+  "failure_policy": {
+    "missing_fixture": "fail",
+    "invalid_record": "fail",
+    "missing_required_field": "fail",
+    "conversion_error": "fail"
+  },
+  "output_contract": {
+    "media_types": [
+      "text/csv"
+    ],
+    "max_bytes": 2000000,
+    "mode": "artifact"
+  },
+  "operations": [
+    {
+      "id": "response",
+      "op": "http.fetch/v1",
+      "url": "https://api.fixture.test/v1/artifacts/csv",
+      "content_type": "text/csv",
+      "evidence_refs": [
+        "controlled-raw-csv"
+      ]
+    },
+    {
+      "id": "artifact",
+      "op": "output.artifact/v1",
+      "document": {
+        "operation": "response",
+        "port": "document"
+      }
+    }
+  ]
+}

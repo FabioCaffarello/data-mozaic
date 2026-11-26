@@ -198,16 +198,39 @@ class TrustedLiveAuthority:
         if release.get("contract_version") not in {
             "bot-release/v2",
             "bot-release/v3",
+            "bot-release/v4",
         }:
             raise CoordinationError("BotRelease contract version is unsupported")
         contract = release.get("payload_contract")
-        if not isinstance(contract, dict) or set(contract) != {
+        artifact_output = release.get("contract_version") == "bot-release/v4"
+        if artifact_output:
+            output_contract = release.get("output_contract")
+            if (
+                not isinstance(output_contract, dict)
+                or set(output_contract) != {"mode", "media_types", "max_bytes"}
+                or output_contract.get("mode") != "artifact"
+                or not isinstance(output_contract.get("media_types"), list)
+                or not output_contract["media_types"]
+                or not all(
+                    isinstance(item, str) and "/" in item
+                    for item in output_contract["media_types"]
+                )
+                or isinstance(output_contract.get("max_bytes"), bool)
+                or not isinstance(output_contract.get("max_bytes"), int)
+                or not 1 <= output_contract["max_bytes"] <= 2_000_000
+            ):
+                raise CoordinationError("BotRelease artifact output binding is invalid")
+            if contract is not None:
+                raise CoordinationError(
+                    "artifact BotRelease cannot bind a record payload contract"
+                )
+        elif not isinstance(contract, dict) or set(contract) != {
             "contract_id",
             "version",
             "digest",
         }:
             raise CoordinationError("BotRelease payload contract binding is invalid")
-        if release.get("contract_version") == "bot-release/v3":
+        if release.get("contract_version") in {"bot-release/v3", "bot-release/v4"}:
             input_contract = release.get("input_contract")
             if not isinstance(input_contract, dict) or set(input_contract) != {
                 "contract_id",
@@ -246,21 +269,36 @@ class TrustedLiveAuthority:
                 )
             except ValueError:
                 valid_base = False
+            request_keys_valid = (
+                set(input_request) == {"method", "url"}
+                if artifact_output and isinstance(input_request, dict)
+                else isinstance(input_request, dict)
+                and set(input_request) == {"method", "url", "input_query"}
+            )
             if (
                 not isinstance(input_request, dict)
-                or set(input_request) != {"method", "url", "input_query"}
+                or not request_keys_valid
                 or input_request.get("method") != "GET"
                 or not valid_base
-                or not isinstance(input_query, dict)
-                or set(input_query) != {"parameter", "query_name"}
-                or any(
-                    not isinstance(value, str)
-                    or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", value)
-                    for value in input_query.values()
+                or (
+                    not artifact_output
+                    and (
+                        not isinstance(input_query, dict)
+                        or set(input_query) != {"parameter", "query_name"}
+                    )
+                )
+                or (artifact_output and input_query is not None)
+                or (
+                    not artifact_output
+                    and any(
+                        not isinstance(value, str)
+                        or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", value)
+                        for value in input_query.values()
+                    )
                 )
             ):
                 raise CoordinationError("BotRelease input request binding is invalid")
-        if (
+        if not artifact_output and (
             not isinstance(contract.get("contract_id"), str)
             or not isinstance(contract.get("version"), str)
             or not isinstance(contract.get("digest"), str)
@@ -269,6 +307,8 @@ class TrustedLiveAuthority:
             or not _DIGEST.fullmatch(contract["digest"])
         ):
             raise CoordinationError("BotRelease payload contract binding is invalid")
+        if artifact_output and not isinstance(release.get("input_contract"), dict):
+            raise CoordinationError("BotRelease Input Contract binding is invalid")
         if (policy.get("source_id"), policy.get("source_revision_id")) != (
             source_id,
             source_revision_id,

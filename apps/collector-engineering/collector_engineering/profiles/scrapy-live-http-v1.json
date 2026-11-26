@@ -8,6 +8,7 @@
     "http.fetch.live",
     "json.path_restricted",
     "records.extract",
-    "output.records.jsonl"
+    "output.records.jsonl",
+    "output.artifact.reference"
   ]
 }

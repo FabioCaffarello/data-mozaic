@@ -28,10 +28,17 @@ SCHEMA_V3 = json.loads(
     .joinpath("schemas/CapturePlaybook.v3.schema.json")
     .read_text(encoding="utf-8")
 )
+SCHEMA_V4 = json.loads(
+    files("collector_engineering")
+    .joinpath("schemas/CapturePlaybook.v4.schema.json")
+    .read_text(encoding="utf-8")
+)
 DSL_VERSION = "capture-playbook-draft/v2"
 DSL_VERSION_V3 = "capture-playbook-draft/v3"
+DSL_VERSION_V4 = "capture-playbook-draft/v4"
 IR_VERSION = "collector-ir/v1"
 IR_VERSION_V2 = "collector-ir/v2"
+IR_VERSION_V3 = "collector-ir/v3"
 OPERATOR_VERSIONS = {
     "http.fetch/v1",
     "links.discover/v1",
@@ -43,6 +50,7 @@ OPERATOR_VERSIONS = {
     "extract.fields/v1",
     "output.records/v1",
     "output.raw/v1",
+    "output.artifact/v1",
 }
 CAPABILITY_BY_OP = {
     "http.fetch/v1": "http.fetch.fixture",
@@ -55,6 +63,7 @@ CAPABILITY_BY_OP = {
     "extract.fields/v1": "records.extract",
     "output.records/v1": "output.records.jsonl",
     "output.raw/v1": "output.raw.reference",
+    "output.artifact/v1": "output.artifact.reference",
 }
 _CAPABILITY_ORDER = tuple(CAPABILITY_BY_OP.values())
 
@@ -128,13 +137,14 @@ def _schema_diagnostics(document: dict[str, Any]) -> list[Diagnostic]:
     schema = {
         DSL_VERSION: SCHEMA,
         DSL_VERSION_V3: SCHEMA_V3,
+        DSL_VERSION_V4: SCHEMA_V4,
     }.get(document.get("dsl_version"))
     if schema is None:
         return [
             Diagnostic(
                 "DSL_VERSION_UNSUPPORTED",
                 "$.dsl_version",
-                "supported versions are capture-playbook-draft/v2 and /v3",
+                "supported versions are capture-playbook-draft/v2, /v3 and /v4",
             )
         ]
     result = []
@@ -514,6 +524,7 @@ def validate_playbook_v2(
     output_seen = False
     output_records_count = 0
     output_raw_count = 0
+    output_artifact_count = 0
     for index, operation in enumerate(operations):
         op = operation["op"]
         node_id = operation["id"]
@@ -561,7 +572,9 @@ def validate_playbook_v2(
                         )
                     )
             outputs[node_id] = {
-                "document": "HtmlDocument"
+                "document": "ArtifactDocument"
+                if document.get("dsl_version") == DSL_VERSION_V4
+                else "HtmlDocument"
                 if operation["content_type"] == "text/html"
                 else "JsonDocument"
             }
@@ -689,6 +702,10 @@ def validate_playbook_v2(
         elif op == "output.raw/v1":
             output_raw_count += 1
             outputs[node_id] = {"references": "RawReferences"}
+        elif op == "output.artifact/v1":
+            output_artifact_count += 1
+            output_seen = True
+            outputs[node_id] = {"artifact": "ArtifactIntent"}
 
         for name, binding in _bindings(operation):
             producer = by_id.get(binding["operation"])
@@ -720,6 +737,9 @@ def validate_playbook_v2(
         },
         "output.records/v1": {"records": {"TypedRecords"}},
         "output.raw/v1": {"documents": {"HtmlDocument", "JsonDocument", "PageSet"}},
+        "output.artifact/v1": {
+            "document": {"HtmlDocument", "JsonDocument", "ArtifactDocument"}
+        },
     }
     for index, operation in enumerate(operations):
         op_path = f"$.operations[{index}]"
@@ -1039,7 +1059,77 @@ def validate_playbook_v2(
                 f"missing={sorted(missing_capabilities)} unused={sorted(unused_capabilities)}",
             )
         )
-    if not extraction_seen or not output_seen:
+    artifact_profile = document.get("dsl_version") == DSL_VERSION_V4
+    if artifact_profile:
+        fetches = [
+            operation for operation in operations if operation["op"] == "http.fetch/v1"
+        ]
+        sinks = [
+            operation
+            for operation in operations
+            if operation["op"] == "output.artifact/v1"
+        ]
+        if (
+            len(fetches) != 1
+            or len(sinks) != 1
+            or output_records_count != 0
+            or output_raw_count != 0
+            or len(operations) != 2
+            or extraction_seen
+            or any("input_query" in operation for operation in operations)
+        ):
+            diagnostics.append(
+                Diagnostic(
+                    "ARTIFACT_PROFILE_UNSUPPORTED",
+                    "$.operations",
+                    "v4 raw acquisition requires exactly one GET fetch and one artifact output, without parameters or continuation",
+                )
+            )
+        if len(fetches) == 1 and len(sinks) == 1:
+            fetch, sink = fetches[0], sinks[0]
+            binding = sink["document"]
+            contract = document["output_contract"]
+            if (
+                binding.get("operation") != fetch["id"]
+                or binding.get("port") != "document"
+            ):
+                diagnostics.append(
+                    Diagnostic(
+                        "ARTIFACT_PROFILE_BINDING_INVALID",
+                        "$.operations",
+                        "artifact output must bind directly to the fetched document",
+                    )
+                )
+            if (
+                fetch["content_type"].split(";", 1)[0].lower()
+                not in contract["media_types"]
+            ):
+                diagnostics.append(
+                    Diagnostic(
+                        "ARTIFACT_MEDIA_TYPE_UNBOUND",
+                        "$.operations",
+                        "fetch media type must be approved by the artifact contract",
+                    )
+                )
+            if contract["max_bytes"] > document["budgets"].get(
+                "max_response_bytes", contract["max_bytes"]
+            ):
+                diagnostics.append(
+                    Diagnostic(
+                        "ARTIFACT_SIZE_BOUND_INVALID",
+                        "$.output_contract.max_bytes",
+                        "artifact bound exceeds the playbook response budget",
+                    )
+                )
+    elif output_artifact_count:
+        diagnostics.append(
+            Diagnostic(
+                "ARTIFACT_PROFILE_VERSION_INVALID",
+                "$.operations",
+                "artifact output requires Playbook v4",
+            )
+        )
+    if not artifact_profile and (not extraction_seen or not output_seen):
         diagnostics.append(
             Diagnostic(
                 "OUTPUT_PIPELINE_INCOMPLETE",
@@ -1047,7 +1137,7 @@ def validate_playbook_v2(
                 "v2 requires extract.fields and output.records operations",
             )
         )
-    if output_records_count != 1 or output_raw_count > 1:
+    if not artifact_profile and (output_records_count != 1 or output_raw_count > 1):
         diagnostics.append(
             Diagnostic(
                 "OUTPUT_SINK_CARDINALITY",
@@ -1083,7 +1173,7 @@ def validate_playbook_v2(
     sinks = {
         item["id"]
         for item in operations
-        if item["op"] in {"output.records/v1", "output.raw/v1"}
+        if item["op"] in {"output.records/v1", "output.raw/v1", "output.artifact/v1"}
     }
     reachable = set(sinks)
     changed = True
@@ -1151,6 +1241,12 @@ def build_typed_ir(
             dependencies = sorted(
                 {binding["operation"] for _, binding in _bindings(operation)}
             )
+            output_types = _ir_output_types(operation)
+            if (
+                document.get("dsl_version") == DSL_VERSION_V4
+                and operation["op"] == "http.fetch/v1"
+            ):
+                output_types = {"document": "ArtifactDocument"}
             ordered.append(
                 {
                     "operation_id": node,
@@ -1184,7 +1280,7 @@ def build_typed_ir(
                     },
                     "dependencies": dependencies,
                     "input_types": _ir_input_types(operation, by_id),
-                    "output_types": _ir_output_types(operation),
+                    "output_types": output_types,
                     "capability_requirements": [CAPABILITY_BY_OP[operation["op"]]],
                     "budgets": dict(document["budgets"]),
                     "evidence_refs": sorted(operation.get("evidence_refs", [])),
@@ -1196,7 +1292,9 @@ def build_typed_ir(
         deepcopy(
             {
                 "ir_version": (
-                    IR_VERSION_V2
+                    IR_VERSION_V3
+                    if document.get("dsl_version") == DSL_VERSION_V4
+                    else IR_VERSION_V2
                     if document.get("dsl_version") == DSL_VERSION_V3
                     else IR_VERSION
                 ),
@@ -1230,10 +1328,13 @@ def _ir_input_types(
 
 def _ir_output_types(operation: dict[str, Any]) -> dict[str, str]:
     if operation["op"] == "http.fetch/v1":
+        content_type = operation["content_type"].split(";", 1)[0].lower()
         return {
             "document": "HtmlDocument"
-            if operation["content_type"] == "text/html"
+            if content_type == "text/html"
             else "JsonDocument"
+            if content_type == "application/json" or content_type.endswith("+json")
+            else "ArtifactDocument"
         }
     return {
         "links.discover/v1": {"links": "LinkSet"},
@@ -1245,4 +1346,5 @@ def _ir_output_types(operation: dict[str, Any]) -> dict[str, str]:
         "extract.fields/v1": {"records": "TypedRecords"},
         "output.records/v1": {"report": "ExecutionReport"},
         "output.raw/v1": {"references": "RawReferences"},
+        "output.artifact/v1": {"artifact": "ArtifactIntent"},
     }[operation["op"]]

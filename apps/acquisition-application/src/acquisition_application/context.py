@@ -50,6 +50,9 @@ class TrustedExecutionContext:
     input_parameters_digest: str | None = None
     replay_output_set_id: str | None = None
     replay_manifest_digest: str | None = None
+    output_modality: str = "record"
+    artifact_media_types: tuple[str, ...] = ()
+    max_artifact_bytes: int | None = None
 
 
 def load_current_execution(
@@ -193,6 +196,9 @@ def load_current_execution(
             submission_id=binding.submission_id,
             input_parameters_json=binding.input_parameters_json,
             input_parameters_digest=binding.input_parameters_digest,
+            output_modality=binding.output_modality,
+            artifact_media_types=tuple(binding.artifact_media_types),
+            max_artifact_bytes=binding.max_artifact_bytes,
             replay_output_set_id=(
                 reservation.output_set_id if completed_replay else None
             ),
