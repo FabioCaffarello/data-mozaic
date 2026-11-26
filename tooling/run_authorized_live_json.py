@@ -1100,7 +1100,10 @@ def main() -> int:
                         "parameters-" + intake_submission.intent.submission_id + ".json"
                     )
                     parameter_file.write_bytes(intake_submission.intent.parameters_json)
-                    parameter_file.chmod(0o400)
+                    # The protected worker runs as UID 65532. The temporary
+                    # parent directory is private to this harness, while this
+                    # mounted input file must be readable by that container UID.
+                    parameter_file.chmod(0o444)
                     result_parent = results / intake_submission.intent.submission_id
                     result_parent.mkdir(mode=0o777)
                     result_parent.chmod(0o777)
