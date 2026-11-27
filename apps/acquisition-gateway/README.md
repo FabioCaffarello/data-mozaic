@@ -22,9 +22,30 @@ new BC04 operation admission. Retries are disabled. Incomplete requests
 conservatively consume the reserved response size. Quota state is fsync-backed
 and survives restart; in-flight reservations are charged on recovery. A
 gateway restart invalidates all old capabilities and requires the attempt to
-be recovered and re-authorized. Evidence bodies and metadata are written to a
-bounded, private gateway-owned spool and are verified on read by the package
-boundary.
+be recovered and re-authorized.
+
+Upstream bodies are read in fixed 64 KiB chunks into private `.part` files while
+size and SHA-256 are calculated. The body is fsynced and renamed before bounded
+evidence metadata is made visible. The gateway reserves the complete
+policy-authorized response allowance against its configured spool capacity and
+entry bound before dialing; a unique reservation identity prevents duplicate
+release from reducing another operation's reservation. Capacity is local to a
+single gateway process and rebuilt from completed files at startup. Interrupted
+and unpaired temporary files are removed after safe-file checks. Completed
+evidence is retained; no TTL is applied while recovery dependencies remain
+unknown. Authenticated `GET /internal/v1/resources` exposes only component-wide
+used/reserved bytes, entry counts, configured bounds, active source fetches and
+active evidence transfers. Evidence retrieval admits at most four concurrent
+transfers and rejects excess work with `429`; it does not queue requests. It
+exposes no tenant or evidence identifiers.
+
+The raw-only worker may request an evidence-reference response. The gateway
+still acquires and verifies the full authorized response and stores authoritative
+FetchEvidence; only the bounded metadata/reference is returned to that worker.
+Structured profiles still receive the complete bounded body for extraction.
+The trusted importer independently retrieves the exact attempt-bound evidence.
+See the [M7 resource evidence](../../docs/architecture/assessments/acquisition-resource-maturity-2026-11-27.md)
+for limits and controlled measurements.
 
 For ordinary policies the gateway requires `BC04HTTPAuthorizer`. It sends the
 signed capability, a unique operation ID, and a digest of the normalized

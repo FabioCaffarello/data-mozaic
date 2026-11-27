@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -57,7 +58,8 @@ def _fetch_trusted_evidence(
     attempt_id: str,
     generation: int,
     max_body_bytes: int,
-) -> tuple[dict[str, object], bytes]:
+    artifact_spool_dir: Path | None = None,
+) -> tuple[dict[str, object], bytes | Path, int, str]:
     if re.fullmatch(r"[0-9a-f]{32}", fetch_id) is None:
         raise FixtureImportError("gateway fetch identity is invalid")
     request = Request(
@@ -75,9 +77,39 @@ def _fetch_trusted_evidence(
             if response.status != 200:
                 raise FixtureImportError("gateway evidence lookup was rejected")
             encoded = response.headers.get("X-Mozaic-Evidence", "")
-            body = response.read(max_body_bytes + 1)
-            if len(body) > max_body_bytes or response.read(1):
-                raise FixtureImportError("gateway evidence body exceeds its bound")
+            digest = hashlib.sha256()
+            body_size = 0
+            if artifact_spool_dir is None:
+                body_buffer = bytearray()
+                body_target: bytes | Path = b""
+            else:
+                import os
+
+                descriptor, body_name = tempfile.mkstemp(
+                    prefix="evidence-", suffix=".body", dir=artifact_spool_dir
+                )
+                body_target = Path(body_name)
+                body_file = os.fdopen(descriptor, "wb")
+            try:
+                while chunk := response.read(64 << 10):
+                    body_size += len(chunk)
+                    if body_size > max_body_bytes:
+                        raise FixtureImportError(
+                            "gateway evidence body exceeds its bound"
+                        )
+                    digest.update(chunk)
+                    if artifact_spool_dir is None:
+                        body_buffer.extend(chunk)
+                    else:
+                        body_file.write(chunk)
+                if artifact_spool_dir is not None:
+                    body_file.flush()
+                    os.fsync(body_file.fileno())
+            finally:
+                if artifact_spool_dir is not None:
+                    body_file.close()
+            if artifact_spool_dir is None:
+                body_target = bytes(body_buffer)
     except (HTTPError, URLError, TimeoutError, OSError) as error:
         raise FixtureImportError("trusted gateway evidence is unavailable") from error
     if not encoded or len(encoded) > 12_000:
@@ -119,6 +151,7 @@ def _fetch_trusted_evidence(
         "body_digest",
         "body_ref",
     }
+    body_digest = "sha256:" + digest.hexdigest()
     if (
         set(metadata) != expected_fields
         or metadata.get("contract_version") != "fetch-evidence/v1"
@@ -128,9 +161,9 @@ def _fetch_trusted_evidence(
         or metadata.get("attempt_id") != attempt_id
         or metadata.get("generation") != generation
         or metadata.get("body_ref") != fetch_id + ".body"
-        or metadata.get("body_size") != len(body)
+        or metadata.get("body_size") != body_size
         or isinstance(metadata.get("body_size"), bool)
-        or metadata.get("body_digest") != _digest(body)
+        or metadata.get("body_digest") != body_digest
         or metadata.get("body_representation") != "decoded-http-entity"
         or not isinstance(metadata.get("query_parameter_names"), list)
         or any(not isinstance(name, str) for name in metadata["query_parameter_names"])
@@ -153,7 +186,7 @@ def _fetch_trusted_evidence(
         or not isinstance(metadata.get("media_type"), str)
     ):
         raise FixtureImportError("gateway evidence bytes or execution binding diverged")
-    return metadata, body
+    return metadata, body_target, body_size, body_digest
 
 
 def _plan_pagination_urls(
@@ -439,6 +472,11 @@ def verify_live_result_bundle(
     select = plan.get("select")
     artifact_only = plan.get("artifact_output") is not None
     artifact_contract = plan.get("output_contract") if artifact_only else None
+    artifact_tempdir = (
+        tempfile.TemporaryDirectory(prefix="mozaic-evidence-")
+        if artifact_only
+        else None
+    )
     if (
         plan.get("profile") != "scrapy-live-http-v1"
         or not isinstance(source, dict)
@@ -492,7 +530,7 @@ def verify_live_result_bundle(
         ):
             raise FixtureImportError("worker fetch identity is missing or duplicated")
         seen_fetch_ids.add(fetch_id)
-        metadata, body = _fetch_trusted_evidence(
+        metadata, body, body_size, body_digest = _fetch_trusted_evidence(
             endpoint=gateway_evidence_url,
             token=gateway_evidence_token,
             fetch_id=fetch_id,
@@ -501,8 +539,11 @@ def verify_live_result_bundle(
             attempt_id=attempt_id,
             generation=generation,
             max_body_bytes=max_response_bytes,
+            artifact_spool_dir=(
+                Path(artifact_tempdir.name) if artifact_tempdir is not None else None
+            ),
         )
-        aggregate_response_bytes += len(body)
+        aggregate_response_bytes += body_size
         if aggregate_response_bytes > maximum_total_response_bytes:
             raise FixtureImportError("aggregate gateway response bytes exceed policy")
         media_type = metadata.get("media_type")
@@ -519,7 +560,7 @@ def verify_live_result_bundle(
                 artifact_only
                 and expected_media not in artifact_contract.get("media_types", [])
             )
-            or (artifact_only and len(body) > artifact_contract.get("max_bytes", 0))
+            or (artifact_only and body_size > artifact_contract.get("max_bytes", 0))
             or not reference_runtime._scoped(request_url, source)
         ):
             raise FixtureImportError(
@@ -537,9 +578,9 @@ def verify_live_result_bundle(
             != urlsplit(request_url).scheme + "://" + urlsplit(request_url).netloc
             or metadata.get("request_path_digest")
             != _digest(urlsplit(request_url).path.encode("utf-8"))
-            or metadata.get("body_size") != len(body)
+            or metadata.get("body_size") != body_size
             or isinstance(metadata.get("body_size"), bool)
-            or metadata.get("body_digest") != _digest(body)
+            or metadata.get("body_digest") != body_digest
             or metadata.get("body_representation") != "decoded-http-entity"
             or not isinstance(metadata.get("redirect_count"), int)
             or isinstance(metadata.get("redirect_count"), bool)
@@ -552,8 +593,8 @@ def verify_live_result_bundle(
         declared_media = worker_row.get("media_type")
         if (
             worker_row.get("evidence_ref") != fetch_id
-            or worker_row.get("body_sha256") != hashlib.sha256(body).hexdigest()
-            or worker_row.get("body_size_bytes") != len(body)
+            or worker_row.get("body_sha256") != body_digest.removeprefix("sha256:")
+            or worker_row.get("body_size_bytes") != body_size
             or declared_media != media_type.split(";", 1)[0].lower()
             or worker_row.get("body_representation")
             != metadata.get("body_representation")
@@ -572,7 +613,7 @@ def verify_live_result_bundle(
         raw = matches[0]
         if (
             raw.get("url") != request_url
-            or raw.get("sha256") != hashlib.sha256(body).hexdigest()
+            or raw.get("sha256") != body_digest.removeprefix("sha256:")
             or raw.get("evidence_ref") in seen_refs
         ):
             raise FixtureImportError("live raw reference differs from trusted evidence")
@@ -581,13 +622,15 @@ def verify_live_result_bundle(
             VerifiedFixturePage(
                 request_url,
                 fetch_id,
-                _digest(body),
+                body_digest,
                 media_type.split(";", 1)[0].lower(),
-                body,
+                body if isinstance(body, bytes) else b"",
                 acquired_at,
                 metadata["redirect_count"],
                 str(metadata.get("effective_path_digest", "")),
                 str(metadata.get("body_representation", "")),
+                body if isinstance(body, Path) else None,
+                body_size,
             )
         )
     if len(seen_refs) != len(raw_references):
@@ -627,4 +670,5 @@ def verify_live_result_bundle(
         trusted_bot_id,
         artifact_only,
         artifact_contract,
+        artifact_tempdir,
     )

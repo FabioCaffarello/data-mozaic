@@ -22,7 +22,7 @@ from scrapy.responsetypes import responsetypes
 
 from .reference_runtime import RuntimeFailure
 
-LIVE_RUNTIME_VERSION = "scrapy-live-http-runtime/1.2.0"
+LIVE_RUNTIME_VERSION = "scrapy-live-http-runtime/1.3.0"
 MAX_GATEWAY_BODY = 8192
 MAX_RESPONSE_BYTES = 2_000_000
 ALLOWED_RESPONSE_HEADERS = {
@@ -33,6 +33,8 @@ ALLOWED_RESPONSE_HEADERS = {
     "x-mozaic-acquired-at",
     "x-mozaic-body-representation",
     "x-mozaic-media-type",
+    "x-mozaic-body-size",
+    "x-mozaic-response-mode",
 }
 
 
@@ -179,28 +181,84 @@ class GatewayDownloadHandler(BaseDownloadHandler):
             raise RuntimeFailure(
                 "GATEWAY_REQUEST_TOO_LARGE", "gateway request exceeds bound"
             )
+        reference_only = request.meta.get("dm_evidence_reference_only") is True
+        request_headers = {
+            "Authorization": self.authorization,
+            "Content-Type": "application/json",
+        }
+        if reference_only:
+            # This is a transfer optimization only. The trusted importer still
+            # resolves and verifies the evidence against the immutable release.
+            request_headers["X-Mozaic-Response-Mode"] = "evidence-reference"
         try:
             async with self.session.post(
                 self.endpoint,
                 data=payload,
-                headers={
-                    "Authorization": self.authorization,
-                    "Content-Type": "application/json",
-                },
+                headers=request_headers,
                 allow_redirects=False,
             ) as gateway_response:
                 status = gateway_response.status
                 headers = gateway_response.headers
-                body = await gateway_response.content.read(MAX_RESPONSE_BYTES + 1)
+                chunks = bytearray()
+                if status >= 400:
+                    error_body = bytearray()
+                    async for chunk in gateway_response.content.iter_chunked(1024):
+                        if len(error_body) + len(chunk) > 4096:
+                            raise RuntimeFailure(
+                                "GATEWAY_ERROR_INVALID",
+                                "gateway error response exceeds its bound",
+                            )
+                        error_body.extend(chunk)
+                    try:
+                        gateway_error = json.loads(error_body).get("error")
+                    except (
+                        json.JSONDecodeError,
+                        UnicodeDecodeError,
+                        AttributeError,
+                    ):
+                        gateway_error = None
+                    if not isinstance(gateway_error, str) or not gateway_error:
+                        raise RuntimeFailure(
+                            "GATEWAY_ERROR_INVALID",
+                            "gateway error response is invalid",
+                        )
+                    raise RuntimeFailure("GATEWAY_FETCH_FAILED", gateway_error)
+                if reference_only:
+                    if headers.get(
+                        "X-Mozaic-Response-Mode"
+                    ) != "evidence-reference" or await gateway_response.content.read(1):
+                        raise RuntimeFailure(
+                            "GATEWAY_REFERENCE_INVALID",
+                            "gateway did not return an empty evidence reference",
+                        )
+                else:
+                    async for chunk in gateway_response.content.iter_chunked(64 << 10):
+                        if len(chunks) + len(chunk) > MAX_RESPONSE_BYTES:
+                            raise RuntimeFailure(
+                                "GATEWAY_RESPONSE_TOO_LARGE",
+                                "gateway response exceeds runtime bound",
+                            )
+                        chunks.extend(chunk)
+                body = bytes(chunks)
         except asyncio.CancelledError:
             raise
         except (aiohttp.ClientError, TimeoutError) as error:
             raise RuntimeFailure(
                 "GATEWAY_UNAVAILABLE", "acquisition gateway request failed"
             ) from error
-        if len(body) > MAX_RESPONSE_BYTES:
+        try:
+            expected_size = int(headers.get("X-Mozaic-Body-Size", "-1"))
+        except ValueError as error:
+            raise RuntimeFailure(
+                "GATEWAY_EVIDENCE_INVALID", "gateway body size is invalid"
+            ) from error
+        if expected_size < 0 or expected_size > MAX_RESPONSE_BYTES:
             raise RuntimeFailure(
                 "GATEWAY_RESPONSE_TOO_LARGE", "gateway response exceeds runtime bound"
+            )
+        if not reference_only and expected_size != len(body):
+            raise RuntimeFailure(
+                "GATEWAY_EVIDENCE_INVALID", "gateway response size differs"
             )
         bounded = {
             name.lower().encode("ascii"): str(value).encode("latin-1", errors="replace")

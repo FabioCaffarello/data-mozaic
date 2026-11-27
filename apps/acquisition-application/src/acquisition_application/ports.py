@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Protocol
 
 from acquisition_output.domain import ArtifactRef, SourceRevisionRef
@@ -21,7 +22,7 @@ class ArtifactCustodyPort(Protocol):
         operation_id: str,
         tenant_id: str,
         source: SourceRevisionRef,
-        body: bytes,
+        body: bytes | Path,
         representation: str,
         retention_policy_ref: str,
         evidence_ref: str,

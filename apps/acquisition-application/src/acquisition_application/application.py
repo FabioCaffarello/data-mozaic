@@ -505,14 +505,17 @@ class TrustedAcquisitionApplication:
             build_root=build_root,
             max_response_bytes=max_response_bytes,
         )
-        result = self.import_verified_artifact_result(
-            tenant_id,
-            run_id,
-            bundle=bundle,
-            producer=producer,
-            retention_policy_ref=retention_policy_ref,
-        )
-        return result[0], result[1], bundle
+        try:
+            result = self.import_verified_artifact_result(
+                tenant_id,
+                run_id,
+                bundle=bundle,
+                producer=producer,
+                retention_policy_ref=retention_policy_ref,
+            )
+            return result[0], result[1], bundle
+        finally:
+            bundle.cleanup()
 
     def import_verified_result(
         self,
@@ -630,8 +633,11 @@ class TrustedAcquisitionApplication:
         if (
             page.body_representation != "decoded-http-entity"
             or page.media_type not in context.artifact_media_types
-            or len(page.body) > context.max_artifact_bytes
-            or page.digest != "sha256:" + hashlib.sha256(page.body).hexdigest()
+            or page.acquired_size > context.max_artifact_bytes
+            or (
+                page.body_path is None
+                and page.digest != "sha256:" + hashlib.sha256(page.body).hexdigest()
+            )
         ):
             raise FixtureImportError(
                 "artifact bytes differ from the trusted output constraints"
@@ -681,7 +687,7 @@ class TrustedAcquisitionApplication:
             },
         )
         artifact = ArtifactRef(
-            artifact_id, page.digest, len(page.body), page.media_type
+            artifact_id, page.digest, page.acquired_size, page.media_type
         )
         self._custody.store_verified_entity(
             artifact=artifact,
@@ -690,7 +696,7 @@ class TrustedAcquisitionApplication:
             ),
             tenant_id=tenant_id,
             source=source,
-            body=page.body,
+            body=page.body_path if page.body_path is not None else page.body,
             representation=page.body_representation,
             retention_policy_ref=retention_policy_ref,
             evidence_ref=page.evidence_ref,

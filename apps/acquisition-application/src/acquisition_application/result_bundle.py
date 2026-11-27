@@ -77,6 +77,12 @@ class VerifiedFixturePage:
     redirect_count: int = 0
     effective_path_digest: str | None = None
     body_representation: str = "decoded-http-entity"
+    body_path: Path | None = None
+    body_size: int | None = None
+
+    @property
+    def acquired_size(self) -> int:
+        return len(self.body) if self.body_size is None else self.body_size
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +94,11 @@ class VerifiedResultBundle:
     trusted_bot_id: str | None = None
     artifact_only: bool = False
     artifact_contract: dict[str, Any] | None = None
+    artifact_tempdir: Any | None = None
+
+    def cleanup(self) -> None:
+        if self.artifact_tempdir is not None:
+            self.artifact_tempdir.cleanup()
 
 
 def verify_result_bundle(

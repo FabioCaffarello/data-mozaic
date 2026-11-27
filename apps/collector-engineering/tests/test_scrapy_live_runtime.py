@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import tempfile
@@ -34,16 +35,32 @@ class _Gateway(BaseHTTPRequestHandler):
         if json.loads(body).get("url", "").endswith("/slow"):
             time.sleep(0.5)
         payload = b'{"records":[{"id":1}]}'
+        if json.loads(body).get("url", "").endswith("/denied"):
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b'{"error":"redirect_denied"}')))
+            self.end_headers()
+            self.wfile.write(b'{"error":"redirect_denied"}')
+            return
+        reference_only = (
+            self.headers.get("X-Mozaic-Response-Mode") == "evidence-reference"
+        )
+        response_body = b"" if reference_only else payload
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("X-Mozaic-Fetch-ID", "f" * 32)
         self.send_header("X-Mozaic-Evidence-Ref", "f" * 32)
-        self.send_header("X-Mozaic-Body-SHA256", "sha256:test")
+        self.send_header(
+            "X-Mozaic-Body-SHA256", "sha256:" + hashlib.sha256(payload).hexdigest()
+        )
+        self.send_header("X-Mozaic-Body-Size", str(len(payload)))
+        if reference_only:
+            self.send_header("X-Mozaic-Response-Mode", "evidence-reference")
         self.send_header("X-Private-Internal", "must-not-reach-worker")
-        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Content-Length", str(len(response_body)))
         self.end_headers()
         try:
-            self.wfile.write(payload)
+            self.wfile.write(response_body)
         except OSError:
             # The cancellation test closes the gateway transport before this
             # deliberately slow controlled response completes.
@@ -100,6 +117,41 @@ class ScrapyLiveRuntimeTests(unittest.TestCase):
         self.assertEqual(body, b'{"url":"https://source.test/v1/records?id=2"}')
         self.assertEqual(headers.get("Authorization"), "Bearer " + "a" * 48)
         self.assertEqual(headers.get("Host"), f"127.0.0.1:{self.server.server_port}")
+
+    def test_raw_only_handler_receives_metadata_without_artifact_body(self) -> None:
+        handler = GatewayDownloadHandler(SimpleNamespace(settings=SimpleNamespace()))
+        request = Request(
+            "https://source.test/archive", meta={"dm_evidence_reference_only": True}
+        )
+
+        async def fetch_and_close():
+            try:
+                return await handler.download_request(request)
+            finally:
+                await handler.close()
+
+        response = asyncio.run(fetch_and_close())
+        self.assertEqual(response.body, b"")
+        self.assertEqual(
+            response.headers.get(b"X-Mozaic-Response-Mode"), b"evidence-reference"
+        )
+        self.assertEqual(len(_Gateway.received), 1)
+        _, _, headers = _Gateway.received[0]
+        self.assertEqual(headers.get("X-Mozaic-Response-Mode"), "evidence-reference")
+
+    def test_gateway_errors_without_evidence_headers_keep_their_failure_code(
+        self,
+    ) -> None:
+        handler = GatewayDownloadHandler(SimpleNamespace(settings=SimpleNamespace()))
+
+        async def fetch_and_close():
+            try:
+                await handler.download_request(Request("https://source.test/denied"))
+            finally:
+                await handler.close()
+
+        with self.assertRaisesRegex(RuntimeFailure, "redirect_denied"):
+            asyncio.run(fetch_and_close())
 
     def test_request_guard_rejects_method_and_routing_headers(self) -> None:
         guard = LiveRequestGuard()

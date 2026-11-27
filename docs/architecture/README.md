@@ -73,5 +73,7 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 64. [M5 Work Intake — implementation and W1–W18 acceptance evidence](assessments/work-intake-2026-11-26.md)
 65. [ADR 031 — raw artifact acquisition](decisions/031-raw-artifact-acquisition.md)
 66. [Controlled raw artifact acquisition — M6 implementation evidence](assessments/raw-artifact-acquisition-2026-11-26.md)
+67. [ADR 032 — bounded raw artifact transfer](decisions/032-bounded-raw-artifact-transfer.md)
+68. [M7 acquisition resource maturity — implementation evidence](assessments/acquisition-resource-maturity-2026-11-27.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.
