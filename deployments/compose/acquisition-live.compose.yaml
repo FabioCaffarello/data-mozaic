@@ -51,9 +51,10 @@ services:
     environment:
       CONTROLLED_SOURCE_MALFORMED: "${CONTROLLED_SOURCE_MALFORMED:-0}"
       CONTROLLED_SOURCE_RAW_FAULT: "${CONTROLLED_SOURCE_RAW_FAULT:-}"
+      CONTROLLED_SOURCE_ARTIFACT_SIZE: "${CONTROLLED_SOURCE_ARTIFACT_SIZE:-}"
     networks:
       controlled-source:
-        ipv4_address: 172.30.249.10
+        ipv4_address: ${MOZAIC_CONTROLLED_SOURCE_IP:-172.30.249.10}
         aliases: [api.fixture.test]
     # The acceptance harness creates the private test key with owner-only
     # permissions. Run this unprivileged process as that owner so Linux
@@ -109,7 +110,7 @@ networks:
     internal: true
     ipam:
       config:
-        - subnet: 172.30.249.0/24
+        - subnet: ${MOZAIC_CONTROLLED_SOURCE_SUBNET:-172.30.249.0/24}
   gateway-egress:
     driver: bridge
 

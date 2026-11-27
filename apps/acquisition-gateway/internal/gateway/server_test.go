@@ -7,6 +7,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -14,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,6 +32,37 @@ type denyOperationAuthorizer struct{}
 
 func (denyOperationAuthorizer) AuthorizeOperation(_ context.Context, _ Capability, _ string, _ string) error {
 	return ErrOperationDenied
+}
+
+type blockingEvidenceWriter struct {
+	header   http.Header
+	started  chan struct{}
+	release  chan struct{}
+	startOne sync.Once
+	status   int
+}
+
+type failingEvidenceWriter struct {
+	header http.Header
+	status int
+}
+
+func (w *failingEvidenceWriter) Header() http.Header { return w.header }
+
+func (w *failingEvidenceWriter) WriteHeader(status int) { w.status = status }
+
+func (w *failingEvidenceWriter) Write([]byte) (int, error) {
+	return 0, errors.New("injected evidence consumer disconnect")
+}
+
+func (w *blockingEvidenceWriter) Header() http.Header { return w.header }
+
+func (w *blockingEvidenceWriter) WriteHeader(status int) { w.status = status }
+
+func (w *blockingEvidenceWriter) Write(body []byte) (int, error) {
+	w.startOne.Do(func() { close(w.started) })
+	<-w.release
+	return len(body), nil
 }
 
 func TestDelegatedGETReturnsBoundEvidenceAndRejectsSpoolDivergence(t *testing.T) {
@@ -106,6 +140,287 @@ func TestDelegatedGETReturnsBoundEvidenceAndRejectsSpoolDivergence(t *testing.T)
 	}
 	if seen.Load() != 1 {
 		t.Fatalf("upstream requests = %d", seen.Load())
+	}
+}
+
+func TestLargeChunkedEvidenceUsesVerifiedSpoolAndReferenceResponse(t *testing.T) {
+	want := bytes.Repeat([]byte("bounded-transfer"), 32_768)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		for offset := 0; offset < len(want); offset += 32 << 10 {
+			end := min(offset+(32<<10), len(want))
+			_, _ = w.Write(want[offset:end])
+			w.(http.Flusher).Flush()
+		}
+	}))
+	defer upstream.Close()
+	g, cap, _ := testGateway(t, upstream.URL, func(p *Policy) {
+		p.MaxResponseBytes = int64(len(want))
+		p.MaxTotalResponseBytes = int64(len(want))
+	})
+	body, _ := json.Marshal(fetchRequest{URL: upstream.URL + "/api/v1/records?limit=7"})
+	response := fetch(g, cap, string(body), map[string]string{"X-Mozaic-Response-Mode": "evidence-reference"})
+	if response.Code != http.StatusOK || response.Body.Len() != 0 || response.Header().Get("X-Mozaic-Response-Mode") != "evidence-reference" {
+		t.Fatalf("reference response code=%d body=%d headers=%v", response.Code, response.Body.Len(), response.Header())
+	}
+	evidence, file, err := openVerifiedEvidence(g.evidenceDirectory, response.Header().Get("X-Mozaic-Fetch-ID"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	actual, err := io.ReadAll(file)
+	if err != nil || !bytes.Equal(actual, want) || evidence.BodySize != int64(len(want)) || evidence.BodyDigest != hashDigest(want) {
+		t.Fatalf("stored chunked body diverged: size=%d digest=%q err=%v", evidence.BodySize, evidence.BodyDigest, err)
+	}
+}
+
+func TestEvidenceTransferCapacityRejectsAndReleasesSlot(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"records":[{"id":7}]}`))
+	}))
+	defer upstream.Close()
+	g, cap, _ := testGateway(t, upstream.URL, nil)
+	fetchResponse := fetch(g, cap, `{"url":"`+upstream.URL+`/api/v1/records?limit=7"}`, nil)
+	if fetchResponse.Code != http.StatusOK {
+		t.Fatalf("fetch status=%d body=%s", fetchResponse.Code, fetchResponse.Body.String())
+	}
+	evidence, _, err := readEvidence(g.evidenceDirectory, fetchResponse.Header().Get("X-Mozaic-Fetch-ID"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Shrink the production limit to one for a deterministic rejection test.
+	g.evidenceTransfers = make(chan struct{}, 1)
+	request := func() *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/internal/v1/evidence/"+evidence.FetchID, nil)
+		r.Header.Set("Authorization", "Bearer "+g.evidenceToken)
+		r.Header.Set("X-DM-Tenant-ID", evidence.TenantID)
+		r.Header.Set("X-DM-Run-ID", evidence.RunID)
+		r.Header.Set("X-DM-Attempt-ID", evidence.AttemptID)
+		r.Header.Set("X-DM-Generation", strconv.FormatInt(evidence.Generation, 10))
+		return r
+	}
+	blocked := &blockingEvidenceWriter{
+		header: make(http.Header), started: make(chan struct{}), release: make(chan struct{}),
+	}
+	firstDone := make(chan struct{})
+	go func() {
+		g.ServeHTTP(blocked, request())
+		close(firstDone)
+	}()
+	select {
+	case <-blocked.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first evidence stream did not begin")
+	}
+	resources := httptest.NewRequest(http.MethodGet, "/internal/v1/resources", nil)
+	resources.Header.Set("Authorization", "Bearer "+g.evidenceToken)
+	resourceResponse := httptest.NewRecorder()
+	g.ServeHTTP(resourceResponse, resources)
+	var snapshot map[string]int64
+	if err := json.Unmarshal(resourceResponse.Body.Bytes(), &snapshot); err != nil || snapshot["active_evidence_transfers"] != 1 {
+		t.Fatalf("active evidence transfer snapshot=%v err=%v", snapshot, err)
+	}
+	second := httptest.NewRecorder()
+	g.ServeHTTP(second, request())
+	if second.Code != http.StatusTooManyRequests || !strings.Contains(second.Body.String(), "evidence_concurrency_exhausted") {
+		t.Fatalf("excess transfer status=%d body=%s", second.Code, second.Body.String())
+	}
+	close(blocked.release)
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first evidence stream did not finish")
+	}
+	if blocked.status != http.StatusOK || len(g.evidenceTransfers) != 0 {
+		t.Fatalf("first status=%d remaining slots=%d", blocked.status, len(g.evidenceTransfers))
+	}
+	third := httptest.NewRecorder()
+	g.ServeHTTP(third, request())
+	if third.Code != http.StatusOK || third.Body.String() != fetchResponse.Body.String() {
+		t.Fatalf("released slot transfer status=%d body=%q", third.Code, third.Body.String())
+	}
+}
+
+func TestEvidenceTransferReleasesSlotAfterConsumerWriteFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"records":[{"id":9}]}`))
+	}))
+	defer upstream.Close()
+	g, cap, _ := testGateway(t, upstream.URL, nil)
+	fetched := fetch(g, cap, `{"url":"`+upstream.URL+`/api/v1/records?limit=7"}`, nil)
+	if fetched.Code != http.StatusOK {
+		t.Fatalf("fetch status=%d body=%s", fetched.Code, fetched.Body.String())
+	}
+	evidence, _, err := readEvidence(g.evidenceDirectory, fetched.Header().Get("X-Mozaic-Fetch-ID"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.evidenceTransfers = make(chan struct{}, 1)
+	request := httptest.NewRequest(http.MethodGet, "/internal/v1/evidence/"+evidence.FetchID, nil)
+	request.Header.Set("Authorization", "Bearer "+g.evidenceToken)
+	request.Header.Set("X-DM-Tenant-ID", evidence.TenantID)
+	request.Header.Set("X-DM-Run-ID", evidence.RunID)
+	request.Header.Set("X-DM-Attempt-ID", evidence.AttemptID)
+	request.Header.Set("X-DM-Generation", strconv.FormatInt(evidence.Generation, 10))
+	failing := &failingEvidenceWriter{header: make(http.Header)}
+	g.ServeHTTP(failing, request)
+	if len(g.evidenceTransfers) != 0 {
+		t.Fatalf("consumer write failure leaked evidence transfer slot: %d", len(g.evidenceTransfers))
+	}
+	completed := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/internal/v1/evidence/"+evidence.FetchID, nil)
+	request.Header.Set("Authorization", "Bearer "+g.evidenceToken)
+	request.Header.Set("X-DM-Tenant-ID", evidence.TenantID)
+	request.Header.Set("X-DM-Run-ID", evidence.RunID)
+	request.Header.Set("X-DM-Attempt-ID", evidence.AttemptID)
+	request.Header.Set("X-DM-Generation", strconv.FormatInt(evidence.Generation, 10))
+	g.ServeHTTP(completed, request)
+	if completed.Code != http.StatusOK {
+		t.Fatalf("evidence transfer after consumer failure status=%d", completed.Code)
+	}
+}
+
+func TestSpoolCapacityReservationsAreBoundedAndReleasedOnce(t *testing.T) {
+	g, _, _ := testGateway(t, "http://127.0.0.1:1", nil)
+	g.maxSpoolBytes = 100
+	reservation, err := g.reserveSpool(80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.reserveSpool(21); err == nil || err.Error() != "evidence_spool_capacity_exhausted" {
+		t.Fatalf("overlapping spool reservation = %v", err)
+	}
+	g.releaseSpoolReservation(reservation, 0, false)
+	other, err := g.reserveSpool(70)
+	if err != nil {
+		t.Fatalf("capacity remained reserved after release: %v", err)
+	}
+	g.releaseSpoolReservation(reservation, 0, false)
+	if g.spoolReservedBytes != other.bytes {
+		t.Fatalf("duplicate release consumed another lease: %d", g.spoolReservedBytes)
+	}
+	g.releaseSpoolReservation(other, 0, false)
+	if g.spoolReservedBytes != 0 || g.spoolReservedFiles != 0 {
+		t.Fatalf("reservation release diverged: bytes=%d files=%d", g.spoolReservedBytes, g.spoolReservedFiles)
+	}
+	if _, err := g.reserveSpool(100); err != nil {
+		t.Fatalf("capacity remained reserved after release: %v", err)
+	}
+}
+
+func TestSpoolEntryReservationsAreBounded(t *testing.T) {
+	g, _, _ := testGateway(t, "http://127.0.0.1:1", nil)
+	g.maxEvidenceFiles = 1
+	first, err := g.reserveSpool(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.reserveSpool(0); err == nil || err.Error() != "evidence_spool_capacity_exhausted" {
+		t.Fatalf("entry over-reservation = %v", err)
+	}
+	g.releaseSpoolReservation(first, 0, false)
+	if _, err := g.reserveSpool(1); err != nil {
+		t.Fatalf("entry capacity remained reserved: %v", err)
+	}
+}
+
+func TestResourceSnapshotRequiresAuthenticationAndContainsOnlyAggregateState(t *testing.T) {
+	g, _, _ := testGateway(t, "http://127.0.0.1:1", nil)
+	unauthenticated := httptest.NewRecorder()
+	g.ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodGet, "/internal/v1/resources", nil))
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated resource snapshot status=%d", unauthenticated.Code)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/internal/v1/resources", nil)
+	request.Header.Set("Authorization", "Bearer "+g.evidenceToken)
+	response := httptest.NewRecorder()
+	g.ServeHTTP(response, request)
+	var snapshot map[string]int64
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &snapshot) != nil {
+		t.Fatalf("resource snapshot response status=%d body=%q", response.Code, response.Body.String())
+	}
+	if _, hasTenant := snapshot["tenant_id"]; hasTenant || snapshot["spool_max_bytes"] != g.maxSpoolBytes {
+		t.Fatalf("resource snapshot contains tenant detail or wrong bounds: %#v", snapshot)
+	}
+}
+
+func TestSpoolStartupRemovesOnlyIncompleteAndUnpairedEvidenceFiles(t *testing.T) {
+	root := t.TempDir()
+	id := strings.Repeat("a", 32)
+	for name, body := range map[string][]byte{
+		".fetch-interrupted.part":    []byte("partial"),
+		".evidence-meta-interrupted": []byte("partial"),
+		"orphan.body":                []byte("uncommitted"),
+		"orphan-metadata.json":       []byte("uncommitted"),
+		id + ".body":                 []byte("kept"),
+		id + ".json":                 []byte("metadata"),
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), body, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	used, files, err := prepareSpool(root, 100, 10)
+	if err != nil || used != 4 || files != 2 {
+		t.Fatalf("startup spool recovery used=%d files=%d err=%v", used, files, err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("startup recovery left unexpected spool entries: %#v err=%v", entries, err)
+	}
+}
+
+func TestOverlappingGatewayTransfersRespectReservedSpoolCapacity(t *testing.T) {
+	payload := bytes.Repeat([]byte("concurrent"), 48_000)
+	var arrived atomic.Int32
+	var maxConcurrent atomic.Int32
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		active := arrived.Add(1)
+		for {
+			previous := maxConcurrent.Load()
+			if active <= previous || maxConcurrent.CompareAndSwap(previous, active) {
+				break
+			}
+		}
+		if active == 2 {
+			releaseOnce.Do(func() { close(release) })
+		}
+		select {
+		case <-release:
+		case <-time.After(2 * time.Second):
+			http.Error(w, "concurrent transfer did not overlap", http.StatusGatewayTimeout)
+			return
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		_, _ = w.Write(payload)
+	}))
+	defer upstream.Close()
+	g, cap, private := testGateway(t, upstream.URL, func(p *Policy) {
+		p.MaxResponseBytes = int64(len(payload))
+		p.MaxTotalResponseBytes = int64(len(payload) * 2)
+		p.MaxConcurrency = 2
+		p.RequestsPerSecond = 10
+	})
+	g.maxSpoolBytes = int64(len(payload) * 2)
+	body := `{"url":"` + upstream.URL + `/api/v1/records?limit=7"}`
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	second := cap
+	second.RunID = "run-test-second"
+	second.CapabilityID = "capability_test_second"
+	second = resignCapability(t, private, second)
+	for _, capability := range []Capability{cap, second} {
+		capability := capability
+		go func() { responses <- fetch(g, capability, body, nil) }()
+	}
+	for range 2 {
+		response := <-responses
+		if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), payload) {
+			t.Fatalf("concurrent transfer status=%d bytes=%d", response.Code, response.Body.Len())
+		}
+	}
+	if maxConcurrent.Load() != 2 || g.spoolBytes != int64(len(payload)*2) || g.spoolReservedBytes != 0 {
+		t.Fatalf("concurrent resource accounting diverged: overlap=%d spool=%d reserved=%d", maxConcurrent.Load(), g.spoolBytes, g.spoolReservedBytes)
 	}
 }
 

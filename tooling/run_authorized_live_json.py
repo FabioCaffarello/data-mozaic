@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -18,11 +19,13 @@ from datetime import UTC, datetime, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 import rfc8785
 from acquisition_acceptance_support import (
     InProcessBC05Publisher,
     artifact_request,
+    artifact_request_identity,
     configuration,
     key_material,
     write,
@@ -73,12 +76,14 @@ REVISION_ID = "controlled-v1"
 POLICY_ID = "controlled-live-json-get"
 POLICY_VERSION = "1.0.0"
 AUTHORITY_ID = "local-controlled-live-authority"
+RUN_ISOLATION_ID: str | None = None
 AUDIENCE = "data-mozaic/acquisition-gateway"
 PAYLOAD_SCHEMA = (
     ROOT / "examples/use-cases/controlled-live-json/output-contract.schema.json"
 )
 EXPECTED = ROOT / "examples/use-cases/controlled-live-json/expected-records.jsonl"
 CASE_KIND = "json"
+ARTIFACT_SIZE: int | None = None
 MEDIA_TYPE = "application/json"
 SOURCE_PATH = "/v1/items"
 SOURCE_PATHS = ("/v1/items",)
@@ -400,6 +405,49 @@ def _port() -> int:
         return int(listener.getsockname()[1])
 
 
+def _gateway_resource_snapshot(port: int, token: str) -> dict[str, int]:
+    request = Request(
+        f"http://127.0.0.1:{port}/internal/v1/resources",
+        headers={"Authorization": "Bearer " + token},
+    )
+    with urlopen(request, timeout=3) as response:
+        payload = response.read(4097)
+        if len(payload) > 4096:
+            raise RuntimeError("gateway resource snapshot exceeded its bound")
+    result = json.loads(payload)
+    if not isinstance(result, dict) or any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 0
+        for value in result.values()
+    ):
+        raise RuntimeError("gateway resource snapshot is invalid")
+    return result
+
+
+def _expected_artifact_identity() -> tuple[int, str]:
+    digest = hashlib.sha256()
+    size = 0
+    if ARTIFACT_SIZE is None:
+        path = (
+            ROOT
+            / "examples/use-cases/raw-artifact/expected"
+            / RAW_ARTIFACT_FILES[CASE_KIND]
+        )
+        source = path.open("rb")
+        try:
+            while chunk := source.read(64 << 10):
+                size += len(chunk)
+                digest.update(chunk)
+        finally:
+            source.close()
+    else:
+        for offset in range(0, ARTIFACT_SIZE, 64 << 10):
+            stop = min(offset + (64 << 10), ARTIFACT_SIZE)
+            chunk = bytes(((index * 31 + 17) & 0xFF) for index in range(offset, stop))
+            size += len(chunk)
+            digest.update(chunk)
+    return size, "sha256:" + digest.hexdigest()
+
+
 def _contract_registry() -> ImmutableContractRegistry:
     return ImmutableContractRegistry(ROOT / "contracts/payload/draft/v1")
 
@@ -591,6 +639,10 @@ def _authority_snapshot(
 
 
 def _policy() -> dict[str, object]:
+    response_limit = ARTIFACT_SIZE or 100_000
+    source_ip = "172.30.249.10"
+    if RUN_ISOLATION_ID is not None:
+        source_ip = f"172.30.{240 + (int(RUN_ISOLATION_ID, 36) % 9)}.10"
     policy: dict[str, object] = {
         "contract_version": "acquisition-policy/v1",
         "policy_id": POLICY_ID,
@@ -603,7 +655,7 @@ def _policy() -> dict[str, object]:
         "path_prefixes": list(SOURCE_PATH_PREFIXES),
         "query_parameter_values": {},
         "dns_policy": "test-fixture-only",
-        "test_destination_cidrs": ["172.30.249.10/32"],
+        "test_destination_cidrs": [source_ip + "/32"],
         "redirect_policy": (
             "revalidate-every-hop"
             if CASE_KIND in {"redirect", "redirect-budget"}
@@ -616,8 +668,8 @@ def _policy() -> dict[str, object]:
         else len(SOURCE_PATHS),
         "max_concurrency": 1,
         "requests_per_second": 10,
-        "max_response_bytes": 100_000,
-        "max_total_response_bytes": 200_000,
+        "max_response_bytes": response_limit,
+        "max_total_response_bytes": max(200_000, response_limit),
         "deadline_seconds": 15 if CASE_KIND == "slow" else 90,
         "require_tls": False,
         "credential_refs": [],
@@ -700,7 +752,7 @@ def _verify_outputs(
 
 
 def main() -> int:
-    global TENANT
+    global ARTIFACT_SIZE, AUTHORITY_ID, POLICY_ID, RUN_ISOLATION_ID, TENANT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--case",
@@ -729,11 +781,44 @@ def main() -> int:
         default="json",
     )
     parser.add_argument("--raw-fault", choices=sorted(RAW_ARTIFACT_FAULTS))
+    parser.add_argument(
+        "--isolation-id",
+        help="short lowercase identifier to isolate parallel controlled raw runs",
+    )
+    parser.add_argument(
+        "--artifact-size",
+        type=int,
+        help="controlled deterministic body size for raw-only v4 resource experiments",
+    )
     args = parser.parse_args()
     raw_fault = args.raw_fault
+    if args.isolation_id is not None and not re.fullmatch(
+        r"[a-z0-9]{1,12}", args.isolation_id
+    ):
+        parser.error(
+            "--isolation-id must contain 1–12 lowercase ASCII letters or digits"
+        )
+    if args.isolation_id is not None and args.case not in RAW_ARTIFACT_CASES:
+        parser.error("--isolation-id requires a raw-only v4 --case")
+    RUN_ISOLATION_ID = args.isolation_id
+    if RUN_ISOLATION_ID is not None:
+        AUTHORITY_ID = "local-live-" + RUN_ISOLATION_ID
     if raw_fault is not None and args.case not in RAW_ARTIFACT_CASES:
         parser.error("--raw-fault requires a raw-only v4 --case")
+    if args.artifact_size is not None and (
+        args.case not in RAW_ARTIFACT_CASES
+        or not 1 <= args.artifact_size <= 2_000_000
+        or raw_fault is not None
+    ):
+        parser.error(
+            "--artifact-size requires successful raw-only v4 and must fit the historical 2,000,000-byte limit"
+        )
+    ARTIFACT_SIZE = args.artifact_size
     _configure_case(args.case)
+    if ARTIFACT_SIZE is not None:
+        POLICY_ID = (
+            "controlled-resource-" + str(ARTIFACT_SIZE) + "-" + uuid.uuid4().hex[:8]
+        )
     required = (
         "BC04_DATABASE_URL",
         "BC04_GRANT_SIGNING_KEY",
@@ -764,7 +849,9 @@ def main() -> int:
         "data-mozaic-authorized-live-"
         + CASE_KIND
         + ("-" + raw_fault if raw_fault else "")
+        + ("-" + RUN_ISOLATION_ID if RUN_ISOLATION_ID else "")
     )
+    resource_start_snapshot: dict[str, int] | None = None
 
     with tempfile.TemporaryDirectory(prefix="dm-authorized-live-json-") as temporary:
         root = Path(temporary)
@@ -810,9 +897,16 @@ def main() -> int:
             "GATEWAY_BC04_AUTHORIZATION_URL": f"http://host.docker.internal:{api_port}/internal/v1/acquisition-operations/admit",
             "GATEWAY_BC04_AUTHORIZATION_TOKEN": operation_token,
             "GATEWAY_EVIDENCE_IMPORT_TOKEN": evidence_token,
+            "CONTROLLED_SOURCE_ARTIFACT_SIZE": (
+                str(ARTIFACT_SIZE) if ARTIFACT_SIZE is not None else ""
+            ),
             "MOZAIC_LIVE_PLAYBOOK": str(PLAYBOOK.relative_to(ROOT)),
             "MOZAIC_LIVE_FIXTURES": str(FIXTURES.relative_to(ROOT)),
         }
+        if RUN_ISOLATION_ID is not None:
+            subnet_octet = 240 + (int(RUN_ISOLATION_ID, 36) % 9)
+            env["MOZAIC_CONTROLLED_SOURCE_SUBNET"] = f"172.30.{subnet_octet}.0/24"
+            env["MOZAIC_CONTROLLED_SOURCE_IP"] = f"172.30.{subnet_octet}.10"
         if CASE_KIND in FAILURE_CASES:
             scenario_directory = ROOT / ".local/controlled-live-scenarios"
             scenario_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1415,6 +1509,10 @@ def main() -> int:
                         ),
                         timeout=300,
                     )
+                    if CASE_KIND in RAW_ARTIFACT_CASES and raw_fault is None:
+                        resource_start_snapshot = _gateway_resource_snapshot(
+                            gateway_port, evidence_token
+                        )
                     # Capability issuance follows gateway startup because gateway
                     # restart invalidates capabilities issued before its epoch.
                     capability = coordinator.issue_execution_capability(
@@ -1733,11 +1831,7 @@ def main() -> int:
                     expected_records: list[dict[str, object]] = []
                     actual_records: list[dict[str, object]] = []
                     if CASE_KIND in RAW_ARTIFACT_CASES:
-                        expected_body = (
-                            ROOT
-                            / "examples/use-cases/raw-artifact/expected"
-                            / RAW_ARTIFACT_FILES[CASE_KIND]
-                        ).read_bytes()
+                        expected_size, expected_digest = _expected_artifact_identity()
                         if (
                             not verified.artifact_only
                             or verified.records
@@ -1746,7 +1840,8 @@ def main() -> int:
                             != "https://api.fixture.test" + SOURCE_PATH
                             or verified.pages[0].media_type
                             != RAW_ARTIFACT_MEDIA[CASE_KIND]
-                            or verified.pages[0].body != expected_body
+                            or verified.pages[0].acquired_size != expected_size
+                            or verified.pages[0].digest != expected_digest
                             or verified.pages[0].body_representation
                             != "decoded-http-entity"
                         ):
@@ -1927,6 +2022,7 @@ def main() -> int:
                                 sort_keys=True,
                             )
                         )
+                        verified.cleanup()
                         return 0
                     if CASE_KIND in RAW_ARTIFACT_CASES:
                         replay_set_id, replay_manifest_digest = (
@@ -1947,6 +2043,10 @@ def main() -> int:
                         raise RuntimeError(
                             "live result replay changed OutputSet identity or manifest"
                         )
+                    # Keep the verified spool through the idempotent import
+                    # replay; downstream staging and publication use only the
+                    # independently verified BC06 reference from this point.
+                    verified.cleanup()
                     before_replay = app.inspect_output_set(TENANT, output_set_id)
                     after_replay = app.inspect_output_set(TENANT, replay_set_id)
                     if before_replay is None or after_replay is None:
@@ -2074,17 +2174,14 @@ def main() -> int:
                                 "BC05 did not independently expose one ArtifactOutput"
                             )
                         artifact_ref = page.outputs[0].artifact_items[0].artifact
-                        stored = artifact_request(TENANT, artifact_ref.artifact_id)
-                        expected_body = (
-                            ROOT
-                            / "examples/use-cases/raw-artifact/expected"
-                            / RAW_ARTIFACT_FILES[CASE_KIND]
-                        ).read_bytes()
-                        stored_digest = "sha256:" + hashlib.sha256(stored).hexdigest()
+                        stored_size, stored_digest = artifact_request_identity(
+                            TENANT, artifact_ref.artifact_id
+                        )
+                        expected_size, expected_digest = _expected_artifact_identity()
                         if (
-                            stored != expected_body
+                            stored_digest != expected_digest
                             or artifact_ref.digest != stored_digest
-                            or artifact_ref.size_bytes != len(stored)
+                            or artifact_ref.size_bytes != stored_size
                             or artifact_ref.media_type != RAW_ARTIFACT_MEDIA[CASE_KIND]
                             or page.outputs[0].binding.execution.run_id != run_id
                         ):
@@ -2217,6 +2314,17 @@ def main() -> int:
                                 "publication_receipt": final.publication_receipt,
                                 "records": len(verified.records),
                                 "state": final.state.value,
+                                **(
+                                    {
+                                        "gateway_resource_snapshot": _gateway_resource_snapshot(
+                                            gateway_port, evidence_token
+                                        ),
+                                        "gateway_resource_start_snapshot": resource_start_snapshot,
+                                    }
+                                    if CASE_KIND in RAW_ARTIFACT_CASES
+                                    and raw_fault is None
+                                    else {}
+                                ),
                             },
                             sort_keys=True,
                         )

@@ -19,6 +19,8 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,6 +54,8 @@ type OperationAuthorizer interface {
 
 var ErrOperationDenied = errors.New("acquisition_operation_denied")
 
+const maxEvidenceTransfers = 4
+
 type budget struct {
 	Requests            int   `json:"requests"`
 	Bytes               int64 `json:"bytes"`
@@ -68,6 +72,7 @@ type Gateway struct {
 	policies            map[string]Policy
 	budgets             map[string]*budget
 	global              chan struct{}
+	evidenceTransfers   chan struct{}
 	statePath           string
 	evidenceDirectory   string
 	maxSpoolBytes       int64
@@ -77,6 +82,15 @@ type Gateway struct {
 	evidenceToken       string
 	spoolBytes          int64
 	spoolFiles          int
+	spoolReservedBytes  int64
+	spoolReservedFiles  int
+	spoolReservationSeq uint64
+	spoolReservations   map[uint64]int64
+}
+
+type spoolReservation struct {
+	id    uint64
+	bytes int64
 }
 
 type fetchRequest struct {
@@ -127,7 +141,7 @@ func New(options Options) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	g := &Gateway{started: options.Started.UTC(), audience: options.Audience, keys: options.Keys, policies: map[string]Policy{}, budgets: map[string]*budget{}, global: make(chan struct{}, options.GlobalConcurrency), statePath: options.StatePath, evidenceDirectory: options.EvidenceDirectory, maxSpoolBytes: options.MaxSpoolBytes, maxEvidenceFiles: options.MaxEvidenceFiles, testRoots: options.TestRoots, operationAuthorizer: options.OperationAuthorizer, evidenceToken: options.EvidenceToken, spoolBytes: spoolBytes, spoolFiles: spoolFiles}
+	g := &Gateway{started: options.Started.UTC(), audience: options.Audience, keys: options.Keys, policies: map[string]Policy{}, budgets: map[string]*budget{}, global: make(chan struct{}, options.GlobalConcurrency), evidenceTransfers: make(chan struct{}, maxEvidenceTransfers), statePath: options.StatePath, evidenceDirectory: options.EvidenceDirectory, maxSpoolBytes: options.MaxSpoolBytes, maxEvidenceFiles: options.MaxEvidenceFiles, testRoots: options.TestRoots, operationAuthorizer: options.OperationAuthorizer, evidenceToken: options.EvidenceToken, spoolBytes: spoolBytes, spoolFiles: spoolFiles, spoolReservations: map[uint64]int64{}}
 	for key, saved := range state {
 		g.budgets[key] = &saved
 	}
@@ -158,6 +172,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"status":"ready"}`)
 		return
 	}
+	if r.URL.Path == "/internal/v1/resources" {
+		g.serveResourceSnapshot(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/internal/v1/evidence/") {
 		g.serveEvidence(w, r)
 		return
@@ -185,6 +203,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "policy_binding_denied")
 		return
 	}
+	responseMode := r.Header.Get("X-Mozaic-Response-Mode")
+	if responseMode != "" && responseMode != "evidence-reference" {
+		writeError(w, http.StatusBadRequest, "response_mode_invalid")
+		return
+	}
 	var input fetchRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	decoder.DisallowUnknownFields()
@@ -210,8 +233,57 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Mozaic-Acquired-At", result.evidence.AcquiredAt.Format(time.RFC3339Nano))
 	w.Header().Set("X-Mozaic-Body-Representation", result.evidence.BodyRepresentation)
 	w.Header().Set("X-Mozaic-Media-Type", result.evidence.MediaType)
+	w.Header().Set("X-Mozaic-Body-Size", strconv.FormatInt(result.evidence.BodySize, 10))
+	if responseMode == "evidence-reference" {
+		w.Header().Set("X-Mozaic-Response-Mode", "evidence-reference")
+		w.Header().Set("Content-Length", "0")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	verified, body, openErr := openVerifiedEvidence(g.evidenceDirectory, result.evidence.FetchID)
+	if openErr != nil || verified.BodyDigest != result.evidence.BodyDigest || verified.BodySize != result.evidence.BodySize {
+		if body != nil {
+			_ = body.Close()
+		}
+		writeError(w, http.StatusBadGateway, "evidence_integrity_failed")
+		return
+	}
+	defer body.Close()
+	w.Header().Set("Content-Length", strconv.FormatInt(result.evidence.BodySize, 10))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(result.body)
+	if _, err := io.CopyN(w, body, result.evidence.BodySize); err != nil {
+		return
+	}
+}
+
+// serveResourceSnapshot exposes component-wide capacity only; it contains no
+// tenant, run, fetch, URL, or artifact identifiers.
+func (g *Gateway) serveResourceSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || r.URL.RawQuery != "" || g.evidenceToken == "" {
+		writeError(w, http.StatusNotFound, "route_not_found")
+		return
+	}
+	if !constantTimeBearer(r.Header.Get("Authorization"), g.evidenceToken) {
+		writeError(w, http.StatusUnauthorized, "resource_inspection_authentication_required")
+		return
+	}
+	g.mu.Lock()
+	snapshot := map[string]int64{
+		"spool_bytes_used":          g.spoolBytes,
+		"spool_bytes_reserved":      g.spoolReservedBytes,
+		"spool_entries":             int64(g.spoolFiles / 2),
+		"spool_entry_reservations":  int64(g.spoolReservedFiles / 2),
+		"spool_max_bytes":           g.maxSpoolBytes,
+		"spool_max_entries":         int64(g.maxEvidenceFiles),
+		"active_fetches":            int64(len(g.global)),
+		"active_evidence_transfers": int64(len(g.evidenceTransfers)),
+	}
+	g.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(snapshot); err != nil {
+		return
+	}
 }
 
 func (g *Gateway) serveEvidence(w http.ResponseWriter, r *http.Request) {
@@ -233,11 +305,19 @@ func (g *Gateway) serveEvidence(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "evidence_binding_invalid")
 		return
 	}
-	evidence, body, err := readEvidence(g.evidenceDirectory, fetchID)
+	select {
+	case g.evidenceTransfers <- struct{}{}:
+		defer func() { <-g.evidenceTransfers }()
+	default:
+		writeError(w, http.StatusTooManyRequests, "evidence_concurrency_exhausted")
+		return
+	}
+	evidence, body, err := openVerifiedEvidence(g.evidenceDirectory, fetchID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "evidence_unavailable")
 		return
 	}
+	defer body.Close()
 	if evidence.TenantID != r.Header.Get("X-DM-Tenant-ID") || evidence.RunID != r.Header.Get("X-DM-Run-ID") || evidence.AttemptID != r.Header.Get("X-DM-Attempt-ID") || evidence.Generation != generation {
 		writeError(w, http.StatusForbidden, "evidence_binding_denied")
 		return
@@ -250,9 +330,12 @@ func (g *Gateway) serveEvidence(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Mozaic-Evidence", base64.RawURLEncoding.EncodeToString(metadata))
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Header().Set("Content-Length", strconv.FormatInt(evidence.BodySize, 10))
+	w.Header().Set("Digest", evidence.BodyDigest)
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	if _, err := io.CopyN(w, body, evidence.BodySize); err != nil {
+		return
+	}
 }
 
 func constantTimeBearer(header, token string) bool {
@@ -265,7 +348,7 @@ func constantTimeBearer(header, token string) bool {
 
 type fetchResult struct {
 	evidence Evidence
-	body     []byte
+	bodyPath string
 }
 
 func (g *Gateway) fetch(parent context.Context, cap Capability, policy Policy, requested string) (fetchResult, error) {
@@ -310,14 +393,24 @@ func (g *Gateway) fetch(parent context.Context, cap Capability, policy Policy, r
 		}
 		// Hash a delimited tuple: identifiers may themselves contain separators.
 		key := hashDigest([]byte(cap.TenantID + "\x00" + cap.RunID + "\x00" + cap.PolicyDigest))
-		if err := g.reserve(key, policy); err != nil {
+		spoolLease, err := g.reserveSpool(policy.MaxResponseBytes)
+		if err != nil {
 			return fetchResult{}, err
 		}
-		response, body, complete, err := g.doRequest(ctx, target, policy)
+		if err := g.reserve(key, policy); err != nil {
+			g.releaseSpoolReservation(spoolLease, 0, false)
+			return fetchResult{}, err
+		}
+		response, bodyFile, bodySize, bodyDigest, complete, err := g.doRequest(ctx, target, policy)
 		if err != nil {
 			if response != nil && response.Body != nil {
 				_ = response.Body.Close()
 			}
+			if bodyFile != nil {
+				_ = bodyFile.Close()
+				_ = os.Remove(bodyFile.Name())
+			}
+			g.releaseSpoolReservation(spoolLease, 0, false)
 			if finishErr := g.finish(key, policy.MaxResponseBytes, policy.MaxResponseBytes, complete); finishErr != nil {
 				return fetchResult{}, errors.New("quota_state_unavailable")
 			}
@@ -326,7 +419,12 @@ func (g *Gateway) fetch(parent context.Context, cap Capability, policy Policy, r
 		if response.StatusCode >= 300 && response.StatusCode <= 399 {
 			location := response.Header.Get("Location")
 			response.Body.Close()
-			if err := g.finish(key, policy.MaxResponseBytes, int64(len(body)), true); err != nil {
+			if bodyFile != nil {
+				_ = bodyFile.Close()
+				_ = os.Remove(bodyFile.Name())
+			}
+			g.releaseSpoolReservation(spoolLease, 0, false)
+			if err := g.finish(key, policy.MaxResponseBytes, bodySize, true); err != nil {
 				return fetchResult{}, err
 			}
 			if location == "" {
@@ -344,33 +442,66 @@ func (g *Gateway) fetch(parent context.Context, cap Capability, policy Policy, r
 		}
 		if err := validateResponse(response); err != nil {
 			response.Body.Close()
+			if bodyFile != nil {
+				_ = bodyFile.Close()
+				_ = os.Remove(bodyFile.Name())
+			}
+			g.releaseSpoolReservation(spoolLease, 0, false)
 			_ = g.finish(key, policy.MaxResponseBytes, policy.MaxResponseBytes, false)
 			return fetchResult{}, err
 		}
 		response.Body.Close()
-		if err := g.finish(key, policy.MaxResponseBytes, int64(len(body)), true); err != nil {
-			return fetchResult{}, err
-		}
 		id, err := randomID()
 		if err != nil {
+			_ = bodyFile.Close()
+			_ = os.Remove(bodyFile.Name())
+			g.releaseSpoolReservation(spoolLease, 0, false)
+			_ = g.finish(key, policy.MaxResponseBytes, policy.MaxResponseBytes, false)
 			return fetchResult{}, errors.New("evidence_id_failed")
 		}
-		digest := sha256.Sum256(body)
 		mediaType := response.Header.Get("Content-Type")
 		requestIdentity, identityErr := sanitizedTarget(initial)
 		if identityErr != nil {
+			_ = bodyFile.Close()
+			_ = os.Remove(bodyFile.Name())
+			g.releaseSpoolReservation(spoolLease, 0, false)
+			_ = g.finish(key, policy.MaxResponseBytes, policy.MaxResponseBytes, false)
 			return fetchResult{}, errors.New("evidence_identity_invalid")
 		}
 		effectiveIdentity, identityErr := sanitizedTarget(current)
 		if identityErr != nil {
+			_ = bodyFile.Close()
+			_ = os.Remove(bodyFile.Name())
+			g.releaseSpoolReservation(spoolLease, 0, false)
+			_ = g.finish(key, policy.MaxResponseBytes, policy.MaxResponseBytes, false)
 			return fetchResult{}, errors.New("evidence_identity_invalid")
 		}
-		evidence := Evidence{ContractVersion: "fetch-evidence/v1", FetchID: id, TenantID: cap.TenantID, RunID: cap.RunID, AttemptID: cap.AttemptID, Generation: cap.Generation, SourceID: cap.SourceID, SourceRevisionID: cap.SourceRevisionID, PolicyDigest: cap.PolicyDigest, ReleaseID: cap.ReleaseID, BuildManifestDigest: cap.BuildManifestDigest, RequestTargetDigest: requestIdentity.targetDigest, EffectiveTargetDigest: effectiveIdentity.targetDigest, RequestOrigin: requestIdentity.origin, EffectiveOrigin: effectiveIdentity.origin, RequestPathDigest: requestIdentity.pathDigest, EffectivePathDigest: effectiveIdentity.pathDigest, QueryParameterNames: requestIdentity.queryNames, RedirectCount: redirects, Status: response.StatusCode, AcquiredAt: time.Now().UTC(), MediaType: mediaType, BodyRepresentation: "decoded-http-entity", BodySize: int64(len(body)), BodyDigest: "sha256:" + hex.EncodeToString(digest[:])}
+		evidence := Evidence{ContractVersion: "fetch-evidence/v1", FetchID: id, TenantID: cap.TenantID, RunID: cap.RunID, AttemptID: cap.AttemptID, Generation: cap.Generation, SourceID: cap.SourceID, SourceRevisionID: cap.SourceRevisionID, PolicyDigest: cap.PolicyDigest, ReleaseID: cap.ReleaseID, BuildManifestDigest: cap.BuildManifestDigest, RequestTargetDigest: requestIdentity.targetDigest, EffectiveTargetDigest: effectiveIdentity.targetDigest, RequestOrigin: requestIdentity.origin, EffectiveOrigin: effectiveIdentity.origin, RequestPathDigest: requestIdentity.pathDigest, EffectivePathDigest: effectiveIdentity.pathDigest, QueryParameterNames: requestIdentity.queryNames, RedirectCount: redirects, Status: response.StatusCode, AcquiredAt: time.Now().UTC(), MediaType: mediaType, BodyRepresentation: "decoded-http-entity", BodySize: bodySize, BodyDigest: bodyDigest}
 		evidence.BodyRef = evidence.FetchID + ".body"
-		if err := g.preserveEvidence(evidence, body); err != nil {
+		bodyPath := bodyFile.Name()
+		if err := commitEvidence(g.evidenceDirectory, evidence, bodyPath); err != nil {
+			_ = bodyFile.Close()
+			_ = os.Remove(bodyPath)
+			g.releaseSpoolReservation(spoolLease, 0, false)
+			if finishErr := g.finish(key, policy.MaxResponseBytes, policy.MaxResponseBytes, false); finishErr != nil {
+				return fetchResult{}, errors.New("quota_state_unavailable")
+			}
 			return fetchResult{}, err
 		}
-		return fetchResult{evidence: evidence, body: body}, nil
+		if err := bodyFile.Close(); err != nil {
+			_ = os.Remove(filepath.Join(g.evidenceDirectory, evidence.BodyRef))
+			_ = os.Remove(filepath.Join(g.evidenceDirectory, evidence.FetchID+".json"))
+			g.releaseSpoolReservation(spoolLease, 0, false)
+			if finishErr := g.finish(key, policy.MaxResponseBytes, policy.MaxResponseBytes, false); finishErr != nil {
+				return fetchResult{}, errors.New("quota_state_unavailable")
+			}
+			return fetchResult{}, errors.New("evidence_body_write_failed")
+		}
+		g.releaseSpoolReservation(spoolLease, bodySize, true)
+		if err := g.finish(key, policy.MaxResponseBytes, bodySize, true); err != nil {
+			return fetchResult{}, err
+		}
+		return fetchResult{evidence: evidence, bodyPath: filepath.Join(g.evidenceDirectory, evidence.BodyRef)}, nil
 	}
 }
 
@@ -402,23 +533,37 @@ func sanitizedTarget(raw string) (targetIdentity, error) {
 	return targetIdentity{targetDigest: hashDigest([]byte(u.String())), origin: origin, pathDigest: hashDigest([]byte(u.EscapedPath())), queryNames: names}, nil
 }
 
-func (g *Gateway) preserveEvidence(evidence Evidence, body []byte) error {
+func (g *Gateway) reserveSpool(bytes int64) (spoolReservation, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.spoolBytes+int64(len(body)) > g.maxSpoolBytes || g.spoolFiles+2 > g.maxEvidenceFiles*2 {
-		return errors.New("evidence_spool_capacity_exhausted")
+	if bytes < 0 || bytes > g.maxSpoolBytes-g.spoolBytes-g.spoolReservedBytes || g.spoolFiles+g.spoolReservedFiles+2 > g.maxEvidenceFiles*2 {
+		return spoolReservation{}, errors.New("evidence_spool_capacity_exhausted")
 	}
-	// Capacity is charged before writing. A partial write remains conservatively
-	// charged until process recovery inspects the owned spool directory.
-	g.spoolBytes += int64(len(body))
-	g.spoolFiles += 2
-	if err := writeEvidence(g.evidenceDirectory, evidence, body); err != nil {
-		return err
-	}
-	return nil
+	g.spoolReservationSeq++
+	reservation := spoolReservation{id: g.spoolReservationSeq, bytes: bytes}
+	g.spoolReservations[reservation.id] = bytes
+	g.spoolReservedBytes += bytes
+	g.spoolReservedFiles += 2
+	return reservation, nil
 }
 
-func (g *Gateway) doRequest(ctx context.Context, target *url.URL, policy Policy) (*http.Response, []byte, bool, error) {
+func (g *Gateway) releaseSpoolReservation(reservation spoolReservation, actual int64, committed bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	reserved, ok := g.spoolReservations[reservation.id]
+	if !ok || reserved != reservation.bytes {
+		return
+	}
+	delete(g.spoolReservations, reservation.id)
+	g.spoolReservedBytes -= reserved
+	g.spoolReservedFiles -= 2
+	if committed {
+		g.spoolBytes += actual
+		g.spoolFiles += 2
+	}
+}
+
+func (g *Gateway) doRequest(ctx context.Context, target *url.URL, policy Policy) (*http.Response, *os.File, int64, string, bool, error) {
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	if policy.DNSPolicy == "test-fixture-only" && g.testRoots != nil {
 		tlsConfig.RootCAs = g.testRoots
@@ -447,30 +592,71 @@ func (g *Gateway) doRequest(ctx context.Context, target *url.URL, policy Policy)
 	client := &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
-		return nil, nil, false, errors.New("request_invalid")
+		return nil, nil, 0, "", false, errors.New("request_invalid")
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("User-Agent", "DataMozaic-AcquisitionGateway/0.1")
 	response, err := client.Do(req)
 	if err != nil {
-		return nil, nil, false, errors.New("upstream_request_failed")
+		return nil, nil, 0, "", false, errors.New("upstream_request_failed")
 	}
 	encoding := strings.ToLower(strings.TrimSpace(response.Header.Get("Content-Encoding")))
 	if encoding != "" && encoding != "identity" {
-		return response, nil, false, errors.New("content_encoding_denied")
+		return response, nil, 0, "", false, errors.New("content_encoding_denied")
 	}
 	if response.ContentLength > policy.MaxResponseBytes {
-		return response, nil, false, errors.New("response_too_large")
+		return response, nil, 0, "", false, errors.New("response_too_large")
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, policy.MaxResponseBytes+1))
+	spool, err := os.CreateTemp(g.evidenceDirectory, ".fetch-*.part")
 	if err != nil {
-		return response, nil, false, errors.New("response_interrupted")
+		return response, nil, 0, "", false, errors.New("evidence_spool_write_failed")
 	}
-	if int64(len(body)) > policy.MaxResponseBytes {
-		return response, nil, false, errors.New("response_too_large")
+	if err = spool.Chmod(0600); err != nil {
+		_ = spool.Close()
+		_ = os.Remove(spool.Name())
+		return response, nil, 0, "", false, errors.New("evidence_spool_write_failed")
 	}
-	return response, body, true, nil
+	hash := sha256.New()
+	buffer := make([]byte, 64<<10)
+	var count int64
+	for {
+		readCount, readErr := response.Body.Read(buffer)
+		if readCount > 0 {
+			if int64(readCount) > policy.MaxResponseBytes-count {
+				_ = spool.Close()
+				_ = os.Remove(spool.Name())
+				return response, nil, count, "", false, errors.New("response_too_large")
+			}
+			written, writeErr := spool.Write(buffer[:readCount])
+			if writeErr != nil || written != readCount {
+				_ = spool.Close()
+				_ = os.Remove(spool.Name())
+				return response, nil, count, "", false, errors.New("evidence_spool_write_failed")
+			}
+			_, _ = hash.Write(buffer[:readCount])
+			count += int64(readCount)
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			_ = spool.Close()
+			_ = os.Remove(spool.Name())
+			return response, nil, count, "", false, errors.New("response_interrupted")
+		}
+	}
+	if response.ContentLength >= 0 && count != response.ContentLength {
+		_ = spool.Close()
+		_ = os.Remove(spool.Name())
+		return response, nil, count, "", false, errors.New("response_interrupted")
+	}
+	if err = spool.Sync(); err != nil {
+		_ = spool.Close()
+		_ = os.Remove(spool.Name())
+		return response, nil, count, "", false, errors.New("evidence_spool_write_failed")
+	}
+	return response, spool, count, "sha256:" + hex.EncodeToString(hash.Sum(nil)), true, nil
 }
 
 func validateResponse(response *http.Response) error {
@@ -502,11 +688,16 @@ func (g *Gateway) reserve(key string, p Policy) error {
 	if b.Bytes+b.Reserved+p.MaxResponseBytes > p.MaxTotalResponseBytes {
 		return errors.New("aggregate_byte_budget_exhausted")
 	}
+	previousLastRequest := b.LastRequestUnixNano
 	b.Requests++
 	b.LastRequestUnixNano = now.UnixNano()
 	b.active++
 	b.Reserved += p.MaxResponseBytes
 	if err := g.persistLocked(); err != nil {
+		b.Requests--
+		b.LastRequestUnixNano = previousLastRequest
+		b.active--
+		b.Reserved -= p.MaxResponseBytes
 		return err
 	}
 	return nil

@@ -166,6 +166,17 @@ func main() {
 				http.Error(w, "fixture unavailable", http.StatusInternalServerError)
 				return
 			}
+			if rawSize := os.Getenv("CONTROLLED_SOURCE_ARTIFACT_SIZE"); rawSize != "" {
+				size, parseErr := strconv.ParseInt(rawSize, 10, 64)
+				if parseErr != nil || size < 0 || size > 100_000_000 {
+					http.Error(w, "artifact size denied", http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", fixture.mediaType)
+				w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+				writeDeterministicArtifact(w, size)
+				return
+			}
 			switch os.Getenv("CONTROLLED_SOURCE_RAW_FAULT") {
 			case "oversized":
 				body = make([]byte, 100_001)
@@ -213,5 +224,22 @@ func main() {
 	}()
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		panic(err)
+	}
+}
+
+func writeDeterministicArtifact(w http.ResponseWriter, size int64) {
+	const chunkBytes = 32 << 10
+	var offset int64
+	for offset < size {
+		count := min(int64(chunkBytes), size-offset)
+		chunk := make([]byte, int(count))
+		for index := range chunk {
+			chunk[index] = byte(((offset+int64(index))*31 + 17) & 0xff)
+		}
+		written, err := w.Write(chunk)
+		if err != nil || written != len(chunk) {
+			return
+		}
+		offset += int64(written)
 	}
 }

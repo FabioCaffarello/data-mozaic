@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -364,6 +365,7 @@ class LivePlanSpider(Spider):
             callback=self.parse_page,
             errback=self._failed,
             cb_kwargs={"page_index": 0},
+            meta={"dm_evidence_reference_only": self.artifact_output is not None},
             headers={
                 "Accept": self.fetch["inputs"]["content_type"]
                 if self.artifact_output is not None
@@ -388,9 +390,22 @@ class LivePlanSpider(Spider):
             raise RuntimeFailure(
                 "PLAYBOOK_RESPONSE_BUDGET_EXCEEDED", "response exceeds budget"
             )
-        digest = hashlib.sha256(response.body).hexdigest()
         headers = response.headers
         expected_digest = headers.get(b"x-mozaic-body-sha256", b"").decode("ascii")
+        body_size_header = headers.get(b"x-mozaic-body-size", b"").decode("ascii")
+        reference_only = self.artifact_output is not None
+        try:
+            body_size = int(body_size_header)
+        except ValueError:
+            body_size = -1
+        if reference_only:
+            digest = expected_digest.removeprefix("sha256:")
+            if len(response.body) != 0 or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise RuntimeFailure(
+                    "GATEWAY_EVIDENCE_INVALID", "raw response reference is malformed"
+                )
+        else:
+            digest = hashlib.sha256(response.body).hexdigest()
         fetch_id = headers.get(b"x-mozaic-fetch-id", b"").decode("ascii")
         evidence_ref = headers.get(b"x-mozaic-evidence-ref", b"").decode("ascii")
         acquired_at = headers.get(b"x-mozaic-acquired-at", b"").decode("ascii")
@@ -412,9 +427,18 @@ class LivePlanSpider(Spider):
             or not fetch_id
             or not evidence_ref
             or media_type not in allowed_media
+            or body_size < 0
+            or body_size > self.budgets["max_response_bytes"]
+            or (not reference_only and body_size != len(response.body))
         ):
             raise RuntimeFailure(
-                "GATEWAY_EVIDENCE_INVALID", "gateway evidence metadata differs"
+                "GATEWAY_EVIDENCE_INVALID",
+                "gateway evidence metadata differs: "
+                f"size={body_size}; "
+                f"digest_match={'sha256:' + digest == expected_digest}; "
+                f"fetch_id_present={bool(fetch_id)}; "
+                f"evidence_ref_present={bool(evidence_ref)}; "
+                f"media_type={media_type!r}; allowed={sorted(allowed_media)!r}",
             )
         acquired_datetime = datetime.fromisoformat(
             acquired_at.replace("Z", "+00:00")  # noqa: FURB162
@@ -468,7 +492,7 @@ class LivePlanSpider(Spider):
         self.records.extend(extracted)
         self.runtime_context.pages_used += 1
         self.runtime_context.requests_used += 1
-        self.runtime_context.bytes_used += len(response.body)
+        self.runtime_context.bytes_used += body_size
         self.evidence.append(
             {
                 "fetch_id": fetch_id,
@@ -478,7 +502,7 @@ class LivePlanSpider(Spider):
                 "acquired_at": acquired_at,
                 "media_type": media_type,
                 "body_sha256": digest,
-                "body_size_bytes": len(response.body),
+                "body_size_bytes": body_size,
                 "body_representation": headers.get(
                     b"x-mozaic-body-representation", b""
                 ).decode("ascii"),

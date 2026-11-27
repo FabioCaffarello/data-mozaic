@@ -91,6 +91,35 @@ def artifact_request(tenant_id: str, artifact_id: str) -> bytes:
         raise RuntimeError("BC06 could not read the controlled artifact") from error
 
 
+def artifact_request_identity(tenant_id: str, artifact_id: str) -> tuple[int, str]:
+    """Independently retrieve public BC06 content with a fixed hashing buffer."""
+    from urllib.parse import quote
+
+    url = (
+        os.environ["ARTIFACT_CUSTODY_HTTP_URL"].rstrip("/")
+        + f"/draft/v1/artifacts/{quote(artifact_id, safe='')}/content"
+    )
+    request = Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {os.environ['ARTIFACT_CUSTODY_LOCAL_TOKEN']}",
+            "X-DM-Tenant-ID": tenant_id,
+        },
+    )
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with urlopen(request, timeout=30) as response:
+            while chunk := response.read(64 << 10):
+                size += len(chunk)
+                if size > 2_000_000:
+                    raise RuntimeError("BC06 artifact exceeds the local read bound")
+                digest.update(chunk)
+    except (HTTPError, URLError, TimeoutError, OSError) as error:
+        raise RuntimeError("BC06 could not read the controlled artifact") from error
+    return size, "sha256:" + digest.hexdigest()
+
+
 def write(path: Path, data: bytes, mode: int) -> None:
     path.write_bytes(data)
     path.chmod(mode)

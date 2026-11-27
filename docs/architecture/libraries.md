@@ -142,6 +142,16 @@ No general strict-JSON library is extracted: duplicate-key rejection is required
 
 M6 keeps raw-artifact evidence verification and custody transfer in the trusted acquisition application. The new artifact importer is its only consumer of the BC06 upload flow; BC05's custody verification remains a different contract and operation. A custody SDK, evidence SDK, generic bounded-I/O package, and media-type helper therefore remain unjustified L0/L1 candidates. Reconsider only when another named application has compatible transport, receipt, resource-lifecycle, and error semantics and can run independent consumer conformance tests.
 
+M7 keeps the incremental gateway spool and importer file upload owner-local. The
+gateway and BC06 both hash fixed-size I/O buffers, but gateway evidence
+reservation/retention and BC06 verified custody spool/receipt are not one
+compatible lifecycle. The trusted acquisition HTTP adapter is still the only
+consumer needing streamed raw upload; BC05 verifies custody through another
+public operation. No Go/Python library or BC06 SDK extraction reached L2.
+The consumer tests cover independent digest, size, cancellation/error and
+receipt behavior at the owning contracts. See the [M7 evidence](assessments/acquisition-resource-maturity-2026-11-27.md)
+for the examined responsibilities and measured transfer envelope.
+
 For each real library, include a small `library.yaml` next to its README. The first library includes actual ownership, consumers, exclusions and dependency/test policy; the manifest remains documentation until a validator needs machine-readable enforcement. Required fields:
 
 ```yaml

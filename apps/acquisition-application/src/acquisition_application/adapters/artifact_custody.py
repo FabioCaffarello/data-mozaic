@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
+import ssl
+import stat
+from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from acquisition_output.domain import ArtifactRef, SourceRevisionRef
@@ -37,15 +41,16 @@ class ArtifactCustodyHTTPClient:
         operation_id: str,
         tenant_id: str,
         source: SourceRevisionRef,
-        body: bytes,
+        body: bytes | Path,
         representation: str,
         retention_policy_ref: str,
         evidence_ref: str,
     ) -> ArtifactRef:
+        body_size, body_digest = self._body_identity(body)
         if (
-            len(body) > _MAX_UPLOAD_BYTES
-            or len(body) != artifact.size_bytes
-            or "sha256:" + hashlib.sha256(body).hexdigest() != artifact.digest
+            body_size > _MAX_UPLOAD_BYTES
+            or body_size != artifact.size_bytes
+            or body_digest != artifact.digest
         ):
             raise FixtureImportError("BC06 upload bytes differ from verified artifact")
         intent = {
@@ -113,7 +118,11 @@ class ArtifactCustodyHTTPClient:
             raise FixtureImportError("BC06 did not confirm the exact artifact bytes")
         return artifact
 
-    def _request(self, path: str, *, method: str, tenant_id: str, body: bytes):
+    def _request(self, path: str, *, method: str, tenant_id: str, body: bytes | Path):
+        if isinstance(body, Path):
+            if method != "PUT":
+                raise FixtureImportError("BC06 file transfer method is invalid")
+            return self._upload_file(path, tenant_id=tenant_id, body=body)
         request = Request(
             self._base_url + path,
             data=body if method != "GET" else None,
@@ -133,4 +142,89 @@ class ArtifactCustodyHTTPClient:
         result = _strict_json(payload, "BC06 response")
         if not isinstance(result, dict):
             raise FixtureImportError("BC06 response must be an object")
+        return result
+
+    def _body_identity(self, body: bytes | Path) -> tuple[int, str]:
+        digest = hashlib.sha256()
+        if isinstance(body, bytes):
+            digest.update(body)
+            return len(body), "sha256:" + digest.hexdigest()
+        try:
+            info = body.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size < 0:
+                raise FixtureImportError("BC06 upload source is not a regular file")
+            size = 0
+            with body.open("rb") as source:
+                while chunk := source.read(64 << 10):
+                    size += len(chunk)
+                    if size > _MAX_UPLOAD_BYTES:
+                        raise FixtureImportError("BC06 upload exceeds its bound")
+                    digest.update(chunk)
+            if size != info.st_size:
+                raise FixtureImportError("BC06 upload source changed while hashing")
+            return size, "sha256:" + digest.hexdigest()
+        except OSError as error:
+            raise FixtureImportError("BC06 upload source is unavailable") from error
+
+    def _upload_file(
+        self, path: str, *, tenant_id: str, body: Path
+    ) -> dict[str, object]:
+        parsed = urlsplit(self._base_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+        ):
+            raise FixtureImportError("BC06 client endpoint is invalid")
+        connection_type = (
+            http.client.HTTPSConnection
+            if parsed.scheme == "https"
+            else http.client.HTTPConnection
+        )
+        kwargs = {"timeout": 30}
+        if parsed.scheme == "https":
+            kwargs["context"] = ssl.create_default_context()
+        connection = connection_type(parsed.hostname, parsed.port, **kwargs)
+        request_path = (parsed.path.rstrip("/") + path) or "/"
+        try:
+            size, _ = self._body_identity(body)
+            connection.putrequest("PUT", request_path)
+            connection.putheader("Authorization", "Bearer " + self._token)
+            connection.putheader("X-DM-Tenant-ID", tenant_id)
+            connection.putheader("Content-Length", str(size))
+            connection.putheader("Connection", "close")
+            connection.endheaders()
+            with body.open("rb") as source:
+                while chunk := source.read(64 << 10):
+                    connection.send(chunk)
+            response = connection.getresponse()
+            payload = response.read(_MAX_RESPONSE_BYTES + 1)
+            if len(payload) > _MAX_RESPONSE_BYTES or response.read(1):
+                raise FixtureImportError("BC06 response exceeds its bound")
+            status = response.status
+        except (
+            HTTPError,
+            URLError,
+            TimeoutError,
+            OSError,
+            http.client.HTTPException,
+            ssl.SSLError,
+        ) as error:
+            raise FixtureImportError("BC06 custody upload failed") from error
+        finally:
+            connection.close()
+        try:
+            result = _strict_json(payload, "BC06 response")
+        except FixtureImportError as error:
+            raise FixtureImportError(
+                f"BC06 response was not valid JSON (HTTP {status}, {payload[:200]!r})"
+            ) from error
+        if not isinstance(result, dict):
+            raise FixtureImportError("BC06 response must be an object")
+        if status < 200 or status >= 300:
+            code = result.get("code", "unknown")
+            raise FixtureImportError(
+                f"BC06 custody upload was rejected ({status}, {code})"
+            )
         return result

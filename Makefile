@@ -1,4 +1,4 @@
-.PHONY: raw-artifact-acquisition-acceptance raw-artifact-negative-acceptance
+.PHONY: raw-artifact-acquisition-acceptance raw-artifact-negative-acceptance acquisition-resource-benchmark
 .PHONY: authorized-live-scenario work-intake-setup work-intake-migrate work-intake-postgres-tests work-intake-acceptance
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 MONGO_COMPOSE_FILE := deployments/compose/mongodb.compose.yaml
@@ -195,6 +195,12 @@ raw-artifact-negative-acceptance: work-intake-migrate
 	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
 	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
 	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; for fault in oversized interrupted media-type content-encoding ack-loss; do ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 MOZAIC_LIFECYCLE_ACCEPTANCE=1 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case raw-pdf --raw-fault $$fault || exit $$?; done
+
+acquisition-resource-benchmark: work-intake-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 MOZAIC_LIFECYCLE_ACCEPTANCE=1 uv run --locked --all-packages python tooling/acquisition_resource_benchmark.py $(ACQUISITION_RESOURCE_BENCHMARK_ARGS)
 
 acquisition-lifecycle-migrate: execution-coordination-durable-migrate
 	@set -a; . ./.env.execution-coordination; set +a; uv run --locked --all-packages acquisition-lifecycle migrate

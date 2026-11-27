@@ -28,6 +28,18 @@ Lost publication acknowledgments continue through the existing BC04 reconciliati
 
 ## Contract and resource limits
 
-Payload validation resolves the exact BC04 execution-bound `PayloadContractRef` through the BC08 installed registry. BotRelease v2 binds this reference for live admission; fixture attempts carry it in the immutable BC04 binding. The resolver verifies SHA-256 over exact UTF-8 schema bytes and supports only bounded, self-contained Draft 2020-12 documents. It does not approve contracts, fetch `$ref` targets, or fall back to another revision. Historical BotRelease v1 documents remain immutable and cannot authorize new M3 admissions; unbound historical runs fail closed for new imports. The bundle reader rejects closed-membership, path, symlink, size, strict JSON, digest, identity, and provenance violations. Existing per-file, aggregate result, response, evidence, deadline, and custody upload bounds remain in force. The importer still materializes bounded records and evidence bodies; this increment makes no streaming or performance claim.
+Payload validation resolves the exact BC04 execution-bound `PayloadContractRef` through the BC08 installed registry. BotRelease v2 binds this reference for live admission; fixture attempts carry it in the immutable BC04 binding. The resolver verifies SHA-256 over exact UTF-8 schema bytes and supports only bounded, self-contained Draft 2020-12 documents. It does not approve contracts, fetch `$ref` targets, or fall back to another revision. Historical BotRelease v1 documents remain immutable and cannot authorize new M3 admissions; unbound historical runs fail closed for new imports. The bundle reader rejects closed-membership, path, symlink, size, strict JSON, digest, identity, and provenance violations.
+
+For raw-only v4, the live worker receives an empty completion response with
+gateway evidence metadata; it does not receive the artifact body. The importer
+streams exact attempt-bound gateway evidence to a private temporary file while
+counting and hashing, then streams that file with a known Content-Length through
+the existing public BC06 custody contract. BC06 independently verifies the
+body. Temporary importer files are removed after the import operation. This
+does not apply to structured profiles, whose extractors consume bounded response
+bodies. The raw-only v4 capability remains capped at 2,000,000 bytes. Completed
+gateway evidence remains retained because current cross-context contracts do
+not prove that no recovery path still needs it. See the [M7 resource evidence](../../docs/architecture/assessments/acquisition-resource-maturity-2026-11-27.md)
+for measurements and remaining bounds.
 
 Run `make acquisition-application-tests` for focused tests and `make execution-coordination-fixture-acquisition` / `make authorized-live-json-acquisition` for the local integrated profiles. The acceptance composition and expected records remain in `tooling/`; production validation does not import test oracles.
