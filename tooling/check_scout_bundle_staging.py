@@ -73,26 +73,30 @@ async def _exercise_http(token: str) -> None:
     ):
         await session.initialize()
         result = await session.list_tools()
-    names = {tool.name for tool in result.tools}
-    required = {
-        "scout_preflight",
-        "scout_start",
-        "scout_fetch",
-        "scout_record_finding",
-        "scout_propose",
-        "scout_status",
-        "scout_export_transcript",
-        "scout_proposal_history",
-        "scout_validate_proposal",
-        "scout_prepare_promotion",
-    }
-    if names != required:
-        raise RuntimeError("installed broker MCP tool catalog is not authoring-only")
-    denied = await session.call_tool(
-        "scout_bc15_replay", {"session_id": "unavailable", "draft_yaml": "{}"}
-    )
-    if "unknown_tool" not in str(denied):
-        raise RuntimeError("installed broker accepted a tool outside the authoring set")
+        names = {tool.name for tool in result.tools}
+        required = {
+            "scout_preflight",
+            "scout_start",
+            "scout_fetch",
+            "scout_record_finding",
+            "scout_propose",
+            "scout_status",
+            "scout_export_transcript",
+            "scout_proposal_history",
+            "scout_validate_proposal",
+            "scout_prepare_promotion",
+        }
+        if names != required:
+            raise RuntimeError(
+                "installed broker MCP tool catalog is not authoring-only"
+            )
+        denied = await session.call_tool(
+            "scout_bc15_replay", {"session_id": "unavailable", "draft_yaml": "{}"}
+        )
+        if "unknown_tool" not in str(denied):
+            raise RuntimeError(
+                "installed broker accepted a tool outside the authoring set"
+            )
 
 
 def _request_unauthenticated(request: Request) -> None:
