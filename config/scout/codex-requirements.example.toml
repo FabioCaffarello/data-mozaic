@@ -1,6 +1,8 @@
 # Provision this file through /etc/codex/requirements.toml on Unix, or through
 # a forced com.openai.codex MDM preference on macOS. Never place it only in
 # the repository: project configuration is agent-writable.
+# This pins the server identity; the protected broker independently exposes
+# exactly its authoring tool set. Do not treat this table as a per-tool policy.
 [mcp_servers.data_mozaic_scout.identity]
 url = "http://127.0.0.1:8765/mcp"
 

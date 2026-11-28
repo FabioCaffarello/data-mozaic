@@ -1,0 +1,39 @@
+{
+  "request_version": 1,
+  "status": "operator-approval-required",
+  "principal": "scout-local-acceptance",
+  "source": {
+    "source_id": "e2e-catalog-single",
+    "revision": "single-resource-v1"
+  },
+  "grants": [
+    {
+      "origin": "https://catalog.fixture.test",
+      "path_prefixes": ["/api/catalog"],
+      "methods": ["GET"]
+    }
+  ],
+  "limits": {
+    "max_requests": 1,
+    "max_pages": 1,
+    "max_duration_seconds": 120,
+    "max_response_bytes": 4096
+  },
+  "usage": "single-use",
+  "approval_expiry": {
+    "set_at_grant_time": true,
+    "maximum_seconds_after_grant": 1800
+  },
+  "deny": [
+    "all other SourceRevision identities",
+    "all other origins and paths",
+    "all methods other than GET",
+    "all public or external destinations",
+    "release approval, signing, and reviewer promotion"
+  ],
+  "installation": {
+    "target": "protected broker service-owned authoring policy",
+    "requires_human_approval": true,
+    "not_an_installable_policy_document": true
+  }
+}

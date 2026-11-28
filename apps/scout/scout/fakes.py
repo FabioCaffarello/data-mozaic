@@ -4,7 +4,13 @@ import copy
 import hashlib
 from threading import RLock
 
-from .domain import ArtifactRef, AuthorizationError, ConflictError, IntegrityError
+from .domain import (
+    ArtifactRef,
+    AuthorizationError,
+    ConflictError,
+    IntegrityError,
+    proposal_event_id,
+)
 
 
 class FakeSourceLookup:
@@ -210,7 +216,7 @@ class FakeSessionRepository:
 
     def _queue_proposal(self, session):
         if session.proposal is not None:
-            event_id = "handoff:" + session.proposal.proposal_id
+            event_id = proposal_event_id(session.proposal)
             self.outbox.setdefault(
                 event_id,
                 {

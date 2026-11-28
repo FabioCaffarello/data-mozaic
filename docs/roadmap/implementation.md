@@ -128,3 +128,25 @@ O M6 raw-only v4 foi integrado pelo PR #28 (head revisado `3451359c4a31121ee1e57
 ## M7 — bounded transfer e resource maturity
 
 M7 implementa gateway disk spool com hashing incremental, referência de evidence sem body no worker raw-only, transferência privada do importer para BC06 com buffer fixo, reserva single-instance de spool e snapshot autenticado de recursos. Playbook/BotBuild/BotRelease v4 continuam limitados a 2.000.000 bytes. Workloads controlados de 64 KiB, 1.000.000 e 2.000.000 bytes completaram a aquisição integral com duas repetições; dois workloads independentes de 1.000.000 bytes também se sobrepuseram e publicaram corretamente. Os experimentos de 8/32/64 MiB foram explicitamente diferidos porque excedem a autorização imutável v4. Medidas e limitações estão no [assessment M7](../architecture/assessments/acquisition-resource-maturity-2026-11-27.md), e ADR 032 segue Proposed. Não houve execução externa nem aumento do limite v4.
+
+M7 foi integrado pelo PR #29 (head revisado `f50ae1bdb4cebdfe49affc75e9084a24734be217`; main `f112ef6f947291d09f13729c07a8dde5b175be2f`). A avaliação de 8/32/64 MiB permanece deferida por escopo; retenção indefinida de evidence em spool finito exige lifecycle seguro de liberação como requisito operacional M9.
+
+## M8 — Agent-to-Raw Functional Conformance
+
+M8 implementa PlaybookProposal v2 com revisões imutáveis e digest canônico, validação baseada em evidências BC14 com semântica delegada ao compilador BC15, promoção explícita via reviewer e registro imutável M4. A aceitação determinística percorre três fontes HTTPS controladas — PDF raw, JSON estruturado e JSON parametrizado — desde Scout discovery até Work Intake, BC04, Gateway, import confiável e publicação BC05/BC06; os resultados publicados são lidos independentemente. Os Inputs parametrizados reutilizam o mesmo build, runtime e release. A aceitação roda no CI sem serviço de LLM ou sessão Codex.
+
+**A6 — autoria real por agente protegido — foi diferida explicitamente pelo owner** para um gate futuro Protected Agent Operational Acceptance. Não foi demonstrada, não é declarada aprovada e continua obrigatória antes de usar essa modalidade com fontes externas reais. Source approval, preflight NO-GO, autenticação do broker, identidade reviewer, release approval e autoridade assinada permanecem intactos. Nenhuma fonte externa foi acessada.
+
+Os templates de bundle Linux, systemd, identidade/reviewer, SSH, LaunchDaemon e configuração MDM são materiais operacionais opcionais e não requisitos para desenvolvimento ou conformance M8; nenhum ambiente protegido está provisionado. Linux continua referência aceitável para deployment protegido, mas suporte a múltiplos sistemas operacionais não é meta corrente. Ver [assessment M8](../architecture/assessments/agent-to-raw-conformance-2026-11-27.md), [runbook opcional de deployment](../operations/scout-trusted-broker-deployment.md) e ADR 033 (Proposed).
+
+## M9 — Acquisition Operational Baseline (planejado; não iniciado)
+
+Priorizar retenção sustentável de evidence do Gateway, recuperação segura e inspeção de efeitos residuais, startup reproduzível para desenvolvimento/operação, envelopes de recursos explícitos, interfaces operacionais de aquisição, consumo independente dos dados raw, e onboarding/desenvolvedor. Não implementar neste incremento M8.
+
+## Future Protected Agent Operational Acceptance (planejado; não iniciado)
+
+Depois de haver necessidade operacional, usar Linux como referência protegida e exigir ambiente provisionado, principal confiável, source approval legítima, ferramentas MCP efetivas, preflight bem-sucedido, sessão real de autoria agente, proposta baseada em evidências e handoff a reviewer independente. Essa aceitação permanece pré-requisito para usar autoria protegida contra fonte externa real. Não implica suporte multi-OS.
+
+## Future production deployment maturity (planejado; não iniciado)
+
+Avaliar somente quando requisitos de operação justificarem controles de disponibilidade, observabilidade, capacity, lifecycle e deployment produtivo. Não iniciar junto com M8 ou assumir necessidade de infraestrutura remota agora.

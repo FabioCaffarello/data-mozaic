@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from typing import Any
 
+import yaml
 from acquisition_lifecycle.application import AcquisitionLifecycle
 from acquisition_lifecycle.domain import LifecycleError, canonical_digest
 
@@ -11,6 +13,7 @@ class MemoryStore:
     def __init__(self) -> None:
         self.sources: dict[tuple[str, str], dict[str, Any]] = {}
         self.policies: dict[tuple[str, str], dict[str, Any]] = {}
+        self.playbooks: dict[tuple[str, str], dict[str, Any]] = {}
 
     def register_source(self, document: dict[str, Any], actor_id: str) -> str:
         key = (document["source_id"], document["revision_id"])
@@ -55,6 +58,23 @@ class MemoryStore:
         self, policy_id: str, version: str, state: str, actor_id: str
     ) -> None:
         self.policies[(policy_id, version)]["status"] = state
+
+    def register_playbook(
+        self, playbook_id, digest, source_id, revision_id, content, actor_id
+    ):
+        key = (playbook_id, digest)
+        value = (source_id, revision_id, bytes(content))
+        if key in self.playbooks and self.playbooks[key] != value:
+            raise LifecycleError("Playbook identity conflicts with immutable content")
+        self.playbooks[key] = value
+
+    def resolve_playbook(self, playbook_id, digest):
+        source_id, revision_id, content = self.playbooks[(playbook_id, digest)]
+        return {
+            "source_id": source_id,
+            "source_revision_id": revision_id,
+            "content": content,
+        }
 
 
 class NoContracts:
@@ -170,6 +190,28 @@ class AcquisitionLifecycleTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(LifecycleError, "conflicts with immutable content"):
             self.app.register_source_revision(changed, actor_id="operator-1")
+
+    def test_register_playbook_document_is_immutable_and_idempotent(self):
+        self.app.register_source_revision(self.source(), actor_id="operator-1")
+        root = Path(__file__).resolve().parents[3]
+        candidate = yaml.safe_load(
+            (
+                root / "examples/use-cases/raw-artifact/cases/pdf/capture-playbook.yaml"
+            ).read_text()
+        )
+        candidate["playbook_id"] = "promoted-controlled-document"
+        candidate["source"].update(
+            source_id="controlled-source",
+            revision="revision-1",
+            origin="https://example.test",
+            path_prefixes=["/v1/items"],
+        )
+        candidate["operations"][0]["url"] = "https://example.test/v1/items/file"
+        candidate["proposal_ref"] = "proposal-session-1"
+        first = self.app.register_playbook_document(candidate, actor_id="reviewer-1")
+        replay = self.app.register_playbook_document(candidate, actor_id="reviewer-2")
+        self.assertEqual(first, replay)
+        self.assertEqual("promoted-controlled-document", first["playbook_id"])
 
     def test_policy_requires_an_existing_eligible_source(self) -> None:
         with self.assertRaisesRegex(LifecycleError, "unresolved"):

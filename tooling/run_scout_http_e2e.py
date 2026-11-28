@@ -136,7 +136,7 @@ def _make_certificates(directory: Path) -> None:
             "-out",
             str(ca_cert),
             "-days",
-            "1",
+            "30",
             "-subj",
             "/CN=DataMozaic-Scout-E2E-CA",
             "-sha256",
@@ -175,7 +175,7 @@ def _make_certificates(directory: Path) -> None:
             "-out",
             str(server_cert),
             "-days",
-            "1",
+            "30",
             "-sha256",
             "-extfile",
             str(extensions),
@@ -360,6 +360,16 @@ def main() -> int:
     port = _test_proxy_port()
     dns_control_port = _free_loopback_port()
     worker_tag, base_tag, worker_image = _build_test_worker_image()
+    test_state_root = ROOT / ".local/state/scout-http-e2e"
+    test_state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if test_state_root.is_symlink():
+        raise RuntimeError("Scout HTTP E2E state directory must not be a symlink")
+    test_state_metadata = test_state_root.stat()
+    if (
+        test_state_metadata.st_uid != os.geteuid()
+        or test_state_metadata.st_mode & 0o077
+    ):
+        raise RuntimeError("Scout HTTP E2E state directory must be private")
     with tempfile.TemporaryDirectory(prefix="scout-http-e2e-") as temporary:
         temporary = str(Path(temporary).resolve())
         cert_dir = Path(temporary) / "certs"
@@ -386,7 +396,7 @@ def main() -> int:
                 "SCOUT_HTTP_E2E_SQUID_CONFIG": str(squid_config),
                 "SCOUT_HTTP_E2E_DATABASE_URL": env["SCOUT_DATABASE_URL"],
                 "SCOUT_TEST_WORKER_IMAGE_DIGEST": worker_image,
-                "SCOUT_TEST_REGISTRY_PATH": str(Path(temporary) / "bc15-runs.sqlite3"),
+                "SCOUT_TEST_REGISTRY_PATH": str(test_state_root / "bc15-runs.sqlite3"),
             }
         )
         compose = [
@@ -484,11 +494,25 @@ def main() -> int:
             fixture_page_hits = {
                 "/docs/page": logs.count("fixture.request method=GET path=/docs/page"),
                 "/docs/next": logs.count("fixture.request method=GET path=/docs/next"),
+                "/v1/artifacts/pdf": logs.count(
+                    "fixture.request method=GET path=/v1/artifacts/pdf"
+                ),
+                "/v1/items": logs.count("fixture.request method=GET path=/v1/items"),
             }
             expected_fixture_page_hits = (
-                {"/docs/page": 1, "/docs/next": 1}
+                {
+                    "/docs/page": 1,
+                    "/docs/next": 2,
+                    "/v1/artifacts/pdf": 1,
+                    "/v1/items": 2,
+                }
                 if args.suite == "http"
-                else {"/docs/page": 1, "/docs/next": 0}
+                else {
+                    "/docs/page": 1,
+                    "/docs/next": 0,
+                    "/v1/artifacts/pdf": 0,
+                    "/v1/items": 0,
+                }
             )
             access_records = [line.split() for line in squid_access.splitlines()]
             squid_version_match = re.search(
@@ -501,7 +525,13 @@ def main() -> int:
                 fields
                 for fields in access_records
                 if len(fields) >= 7
-                and fields[2] in {"catalog.fixture.test", "catalog.fixture.test:443"}
+                and fields[2]
+                in {
+                    "catalog.fixture.test",
+                    "catalog.fixture.test:443",
+                    "api.fixture.test",
+                    "api.fixture.test:443",
+                }
                 and fields[3] == addresses["SCOUT_HTTP_E2E_FIXTURE_IP"]
                 and fields[4] == "HIER_DIRECT"
                 and fields[5] == "TCP_TUNNEL/200"

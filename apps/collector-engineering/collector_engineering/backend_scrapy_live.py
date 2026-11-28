@@ -30,6 +30,16 @@ PROFILE = json.loads(
     .joinpath("profiles/scrapy-live-http-v1.json")
     .read_text(encoding="utf-8")
 )
+RAW_V4_OPERATORS = frozenset({"http.fetch/v1", "output.artifact/v1"})
+RAW_V4_CONSTRAINTS = {
+    "requires_input_contract": False,
+    "redirects": False,
+    "pagination": False,
+    "query_parameters": False,
+    "extraction_or_unpacking": False,
+    "content_encoding": ["identity"],
+}
+PARAMETERIZED_QUERY_MAX_KEYS = 1
 
 
 def _supported_graph(
@@ -52,6 +62,8 @@ def _supported_graph(
             len(fetches) != 1
             or len(sinks) != 1
             or len(nodes) != 2
+            or {f"{node['operator_type']}/{node['operator_version']}" for node in nodes}
+            != RAW_V4_OPERATORS
             or by_type.get("output.records")
             or by_type.get("output.raw")
             or sinks[0]["inputs"].get("document", {}).get("operation")
@@ -101,7 +113,10 @@ def _supported_graph(
             )
         except ValueError:
             query_items = []
-        if len(query_items) != 1 or query_items[0][0] != input_query["query_name"]:
+        if (
+            len(query_items) != PARAMETERIZED_QUERY_MAX_KEYS
+            or query_items[0][0] != input_query["query_name"]
+        ):
             raise PlaybookError(
                 "[LIVE_INPUT_QUERY_INVALID] URL must contain only the bound query key"
             )

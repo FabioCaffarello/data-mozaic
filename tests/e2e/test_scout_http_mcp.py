@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 import aiohttp
+import yaml
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from psycopg import connect
@@ -104,10 +105,17 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
             from scout.domain import SourceRef
 
             source = SourceRef("e2e-catalog", "revision-7")
+            raw_source = SourceRef("controlled-http", "controlled-raw-pdf-v1")
+            parameter_source = SourceRef("controlled-http", "controlled-work-intake-v1")
+            structured_source = parameter_source
             start_url = "https://catalog.fixture.test/docs/page"
             self.configure_dns(
                 {
                     "catalog.fixture.test": {
+                        "A": [FIXTURE_IP],
+                        "ttl": 60,
+                    },
+                    "api.fixture.test": {
                         "A": [FIXTURE_IP],
                         "ttl": 60,
                     },
@@ -133,7 +141,40 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                             "max_duration_seconds": 60,
                             "max_response_bytes": 32768,
                         },
-                    }
+                    },
+                    {
+                        "source_id": raw_source.source_id,
+                        "revision": raw_source.revision,
+                        "grants": [
+                            {
+                                "origin": "https://api.fixture.test",
+                                "path_prefixes": ["/v1/artifacts/pdf"],
+                            }
+                        ],
+                        "limits": {
+                            "max_requests": 1,
+                            "max_duration_seconds": 60,
+                            "max_response_bytes": 2_000_000,
+                        },
+                    },
+                    *[
+                        {
+                            "source_id": item.source_id,
+                            "revision": item.revision,
+                            "grants": [
+                                {
+                                    "origin": "https://api.fixture.test",
+                                    "path_prefixes": ["/v1/items"],
+                                }
+                            ],
+                            "limits": {
+                                "max_requests": 1,
+                                "max_duration_seconds": 60,
+                                "max_response_bytes": 32768,
+                            },
+                        }
+                        for item in dict.fromkeys((structured_source, parameter_source))
+                    ],
                 ],
                 "approvals": [
                     {
@@ -154,7 +195,67 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                             "max_duration_seconds": 60,
                             "max_response_bytes": 32768,
                         },
-                    }
+                    },
+                    {
+                        "principal": "e2e-other-tenant",
+                        "source_id": source.source_id,
+                        "revision": source.revision,
+                        "grants": [
+                            {
+                                "origin": "https://catalog.fixture.test",
+                                "path_prefixes": ["/docs"],
+                            }
+                        ],
+                        "expires_at": (
+                            datetime.now(UTC) + timedelta(hours=1)
+                        ).isoformat(),
+                        "limits": {
+                            "max_requests": 4,
+                            "max_duration_seconds": 60,
+                            "max_response_bytes": 32768,
+                        },
+                    },
+                    {
+                        "principal": principal,
+                        "source_id": raw_source.source_id,
+                        "revision": raw_source.revision,
+                        "grants": [
+                            {
+                                "origin": "https://api.fixture.test",
+                                "path_prefixes": ["/v1/artifacts/pdf"],
+                            }
+                        ],
+                        "expires_at": (
+                            datetime.now(UTC) + timedelta(hours=1)
+                        ).isoformat(),
+                        "limits": {
+                            "max_requests": 1,
+                            "max_duration_seconds": 60,
+                            "max_response_bytes": 2_000_000,
+                        },
+                    },
+                    *[
+                        {
+                            "principal": principal,
+                            "source_id": item.source_id,
+                            "revision": item.revision,
+                            "grants": [
+                                {
+                                    "origin": "https://api.fixture.test",
+                                    "path_prefixes": ["/v1/items"],
+                                }
+                            ],
+                            "expires_at": (
+                                datetime.now(UTC) + timedelta(hours=1)
+                            ).isoformat(),
+                            "limits": {
+                                "max_requests": 1,
+                                "max_duration_seconds": 60,
+                                "max_response_bytes": 32768,
+                            },
+                        }
+                        for item in dict.fromkeys((structured_source, parameter_source))
+                    ],
                 ],
             }
             policy_path.write_text(json.dumps(policy), encoding="utf-8")
@@ -175,6 +276,13 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                     "SSL_CERT_FILE": os.environ["SCOUT_HTTP_E2E_CA_FILE"],
                 }
             )
+            candidate_dir = None
+            candidate_dir_value = os.environ.get("SCOUT_HTTP_E2E_CANDIDATE_DIR")
+            if candidate_dir_value:
+                candidate_dir = Path(candidate_dir_value)
+                if not candidate_dir.is_absolute() or candidate_dir.is_symlink():
+                    raise ValueError("candidate output directory is unsafe")
+                candidate_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             params = StdioServerParameters(
                 command=sys.executable,
                 args=[str(ROOT / "tests" / "mcp_authoring_stdio_fixture.py")],
@@ -185,6 +293,37 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 "revision": source.revision,
                 "objective": "verify controlled HTTPS discovery and replay",
             }
+
+            async def fetch_other_principal_manifest():
+                foreign_env = env | {"SCOUT_LOCAL_PRINCIPAL": "e2e-other-tenant"}
+                foreign_params = StdioServerParameters(
+                    command=sys.executable,
+                    args=[str(ROOT / "tests" / "mcp_authoring_stdio_fixture.py")],
+                    env=foreign_env,
+                )
+                async with (
+                    stdio_client(foreign_params) as (foreign_read, foreign_write),
+                    ClientSession(foreign_read, foreign_write) as foreign_client,
+                ):
+                    await foreign_client.initialize()
+                    foreign_start = await foreign_client.call_tool(
+                        "scout_start", source_args
+                    )
+                    foreign_start_value = json.loads(foreign_start.content[0].text)
+                    self.assertTrue(foreign_start_value["ok"], foreign_start_value)
+                    foreign_fetch = await foreign_client.call_tool(
+                        "scout_fetch",
+                        {
+                            "session_id": foreign_start_value["session_id"],
+                            "expected_version": 0,
+                            "url": "https://catalog.fixture.test/docs/next",
+                        },
+                    )
+                    foreign_fetch_value = json.loads(foreign_fetch.content[0].text)
+                    self.assertTrue(foreign_fetch_value["ok"], foreign_fetch_value)
+                    return foreign_fetch_value["manifest_id"]
+
+            foreign_manifest_id = await fetch_other_principal_manifest()
             session_id = None
             fetch_args = None
             first = None
@@ -204,10 +343,22 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                         "scout_record_finding",
                         "scout_propose",
                         "scout_export_transcript",
+                        "scout_proposal_history",
+                        "scout_validate_proposal",
+                        "scout_prepare_promotion",
                         "scout_bc15_replay",
                         "scout_bc15_accept",
                     }
                     <= set(tools)
+                )
+                self.assertFalse(
+                    {
+                        "scout_promote_proposal",
+                        "scout_approve_release",
+                        "scout_sign_authority",
+                        "scout_install_authority",
+                    }
+                    & set(tools)
                 )
                 self.assertIn("scout_fetch", tools)
                 self.assertFalse(
@@ -322,6 +473,26 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 )
                 finding_value = json.loads(finding.content[0].text)
                 self.assertTrue(finding_value["ok"], finding_value)
+                cross_principal_evidence = await client.call_tool(
+                    "scout_propose",
+                    {
+                        "session_id": session_id,
+                        "expected_version": 3,
+                        "summary": "Attempt to reference evidence owned by another Scout principal.",
+                        "finding_ids": finding_value["finding_ids"],
+                        "manifest_ids": [foreign_manifest_id],
+                        "assumptions": [],
+                        "risks": [],
+                        "required_capabilities": ["http.fetch", "links.discover"],
+                    },
+                )
+                cross_principal_value = json.loads(
+                    cross_principal_evidence.content[0].text
+                )
+                self.assertFalse(cross_principal_value["ok"])
+                self.assertEqual(
+                    cross_principal_value["error"]["code"], "invalid_command"
+                )
                 proposal = await client.call_tool(
                     "scout_propose",
                     {
@@ -356,13 +527,17 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 self.assertTrue(exported_value["ok"], exported_value)
                 transcript = json.loads(exported_value["transcript_json"])
                 self.assertEqual(
-                    "scout-transcript-draft/v2", transcript["transcript_schema"]
+                    "scout-transcript-draft/v3", transcript["transcript_schema"]
                 )
                 self.assertEqual(
                     start_url, transcript["navigation"]["start_requested_url"]
                 )
                 self.assertEqual(
                     [1, 2], [page["sequence"] for page in transcript["pages"]]
+                )
+                self.assertEqual(
+                    ["text/html", "text/html"],
+                    [page["content_type"] for page in transcript["pages"]],
                 )
                 self.assertFalse(transcript["redaction"]["raw_content_included"])
                 self.assertEqual(
@@ -456,6 +631,690 @@ class ScoutHTTPMcpE2ETests(unittest.TestCase):
                 )
                 restarted_value = json.loads(after_restart.content[0].text)
                 self.assertEqual(restarted_value, first)
+
+                # Exercise the current BC14→BC15 raw-only authoring handoff
+                # with one controlled PDF observation. The response body is
+                # held by local custody; the proposal contains only metadata.
+                pdf_start = await restarted_client.call_tool(
+                    "scout_start",
+                    {
+                        "source_id": raw_source.source_id,
+                        "revision": raw_source.revision,
+                        "objective": "identify the controlled downloadable PDF",
+                    },
+                )
+                pdf_started = json.loads(pdf_start.content[0].text)
+                self.assertTrue(pdf_started["ok"], pdf_started)
+                pdf_session = pdf_started["session_id"]
+                pdf_fetch = await restarted_client.call_tool(
+                    "scout_fetch",
+                    {
+                        "session_id": pdf_session,
+                        "expected_version": 0,
+                        "url": "https://api.fixture.test/v1/artifacts/pdf",
+                    },
+                )
+                pdf_value = json.loads(pdf_fetch.content[0].text)
+                self.assertTrue(pdf_value["ok"], pdf_value)
+                self.assertEqual("application/pdf", pdf_value["content_type"])
+                self.assertEqual("", pdf_value["text"])
+                pdf_evidence = pdf_value["evidence"][0]
+                pdf_artifact = custody.lookup(pdf_evidence["evidence_id"])
+                pdf_bytes = custody.read(pdf_artifact)
+                self.assertEqual(
+                    hashlib.sha256(pdf_bytes).hexdigest(), pdf_evidence["sha256"]
+                )
+                self.assertEqual(len(pdf_bytes), pdf_evidence["size_bytes"])
+                self.assertEqual(
+                    pdf_bytes,
+                    (
+                        ROOT / "examples/use-cases/raw-artifact/expected/sample.pdf"
+                    ).read_bytes(),
+                )
+                finding = await restarted_client.call_tool(
+                    "scout_record_finding",
+                    {
+                        "session_id": pdf_session,
+                        "expected_version": 1,
+                        "statement": "The authorized document endpoint declares application/pdf and returns one custody-verified opaque response.",
+                        "epistemic_status": "observation",
+                        "confidence": 1.0,
+                        "manifest_ids": [pdf_value["manifest_id"]],
+                        "verification_note": "The response media declaration, size and custody digest were observed; the PDF contents were not parsed.",
+                    },
+                )
+                finding_value = json.loads(finding.content[0].text)
+                self.assertTrue(finding_value["ok"], finding_value)
+                proposal = await restarted_client.call_tool(
+                    "scout_propose",
+                    {
+                        "session_id": pdf_session,
+                        "expected_version": 2,
+                        "summary": "Acquire the single observed PDF response as an opaque raw artifact.",
+                        "finding_ids": [finding_value["finding_ids"][-1]],
+                        "manifest_ids": [pdf_value["manifest_id"]],
+                        "assumptions": [],
+                        "risks": [
+                            "The declared media type is not semantic PDF validation."
+                        ],
+                        "required_capabilities": ["http.fetch", "output.raw"],
+                    },
+                )
+                self.assertTrue(json.loads(proposal.content[0].text)["ok"])
+                pdf_export = await restarted_client.call_tool(
+                    "scout_export_transcript", {"session_id": pdf_session}
+                )
+                pdf_exported = json.loads(pdf_export.content[0].text)
+                self.assertTrue(pdf_exported["ok"], pdf_exported)
+                pdf_transcript = json.loads(pdf_exported["transcript_json"])
+                self.assertEqual(
+                    "scout-transcript-draft/v3", pdf_transcript["transcript_schema"]
+                )
+                self.assertEqual(
+                    "application/pdf", pdf_transcript["pages"][0]["content_type"]
+                )
+                self.assertFalse(pdf_transcript["redaction"]["raw_content_included"])
+                pdf_dir = Path(os.environ["SCOUT_HTTP_E2E_TEMP"]) / "pdf-authoring"
+                pdf_dir.mkdir(mode=0o700)
+                pdf_transcript_path = pdf_dir / "transcript.json"
+                pdf_transcript_path.write_text(
+                    pdf_exported["transcript_json"], encoding="utf-8"
+                )
+                draft_code, pdf_yaml, draft_error = await self.run_cli(
+                    "draft",
+                    str(pdf_transcript_path),
+                    "--profile",
+                    "raw-artifact-v4",
+                    "--output",
+                    str(pdf_dir / "capture-playbook.yaml"),
+                    env=env,
+                )
+                self.assertEqual(0, draft_code, draft_error)
+                self.assertIn("wrote draft", pdf_yaml)
+                generated_pdf_draft = (pdf_dir / "capture-playbook.yaml").read_text()
+                self.assertIn("capture-playbook-draft/v4", generated_pdf_draft)
+                self.assertIn("application/pdf", generated_pdf_draft)
+                candidate_specification = yaml.safe_load(generated_pdf_draft)
+                revised_proposal = await restarted_client.call_tool(
+                    "scout_propose",
+                    {
+                        "session_id": pdf_session,
+                        "expected_version": 3,
+                        "summary": "Acquire the single observed PDF response as an opaque raw artifact.",
+                        "finding_ids": [finding_value["finding_ids"][-1]],
+                        "manifest_ids": [pdf_value["manifest_id"]],
+                        "assumptions": [],
+                        "risks": [
+                            "The declared media type is not semantic PDF validation."
+                        ],
+                        "required_capabilities": ["http.fetch", "output.raw"],
+                        "candidate_specification": candidate_specification,
+                    },
+                )
+                revised_value = json.loads(revised_proposal.content[0].text)
+                self.assertTrue(revised_value["ok"], revised_value)
+                self.assertEqual(2, revised_value["proposal_revision"])
+                pdf_export = await restarted_client.call_tool(
+                    "scout_export_transcript", {"session_id": pdf_session}
+                )
+                pdf_exported = json.loads(pdf_export.content[0].text)
+                pdf_transcript = json.loads(pdf_exported["transcript_json"])
+                self.assertEqual(
+                    "scout-transcript-draft/v4", pdf_transcript["transcript_schema"]
+                )
+                self.assertEqual(2, pdf_transcript["proposal"]["proposal_revision"])
+                self.assertEqual(
+                    [1, 2],
+                    [item["revision"] for item in pdf_transcript["proposal_history"]],
+                )
+                persisted_pdf_session = self.repository.get_session(pdf_session)
+                self.assertEqual(
+                    [1, 2],
+                    [
+                        item.proposal_revision
+                        for item in persisted_pdf_session.proposal_history
+                    ],
+                )
+                with connect(self.dsn) as conn:
+                    proposal_events = conn.execute(
+                        "SELECT proposal_revision FROM scout_outbox WHERE aggregate_id=%s ORDER BY proposal_revision",
+                        (pdf_session,),
+                    ).fetchall()
+                self.assertEqual([(1,), (2,)], proposal_events)
+                self.assertEqual(
+                    candidate_specification,
+                    pdf_transcript["proposal"]["candidate_specification"],
+                )
+                history_call = await restarted_client.call_tool(
+                    "scout_proposal_history", {"session_id": pdf_session}
+                )
+                history_value = json.loads(history_call.content[0].text)
+                self.assertEqual(
+                    [1, 2], [item["revision"] for item in history_value["history"]]
+                )
+                validation_call = await restarted_client.call_tool(
+                    "scout_validate_proposal", {"session_id": pdf_session}
+                )
+                validation_value = json.loads(validation_call.content[0].text)
+                self.assertTrue(validation_value["valid"], validation_value)
+                self.assertEqual(2, validation_value["proposal_revision"])
+                handoff_call = await restarted_client.call_tool(
+                    "scout_prepare_promotion", {"session_id": pdf_session}
+                )
+                handoff_value = json.loads(handoff_call.content[0].text)
+                self.assertTrue(handoff_value["valid"], handoff_value)
+                self.assertTrue(handoff_value["review_required"])
+                self.assertFalse(handoff_value["promotion_authority_exposed"])
+                self.assertNotIn("scout_promote_proposal", tools)
+                from acquisition_lifecycle.adapters.postgres import (
+                    PostgresLifecycleStore,
+                )
+                from acquisition_lifecycle.application import AcquisitionLifecycle
+                from acquisition_lifecycle.domain import canonical_digest
+                from collector_engineering.playbook_v2 import validate_playbook_v2
+                from mozaic_contract_resolution import ImmutableContractRegistry
+                from scout.application import ScoutApplication
+                from scout.domain import AuthorizationError, IntegrityError, SourceRef
+                from scout.proposal_workflow import (
+                    ProposalDiagnostic,
+                    ProposalWorkflow,
+                )
+                from scout.reviewer_identity import (
+                    AuthenticatedReviewerAccess,
+                    AuthenticatedReviewerPromotion,
+                    ReviewerPromotionAdapter,
+                    UnixReviewerIdentityProvider,
+                )
+                from scout.tool_host.composition import (
+                    _LocalPolicyDecision,
+                    _LocalSourceLookup,
+                )
+                from scout.tools.policy import LocalAuthorizationStore
+
+                class UnusedPort:
+                    def __getattr__(self, _name):
+                        raise AssertionError("unexpected release approval operation")
+
+                lifecycle_store = PostgresLifecycleStore(self.dsn, ROOT / "migrations")
+                lifecycle_store.migrate()
+                source_document = {
+                    "contract_version": "source-revision/v1",
+                    "source_id": raw_source.source_id,
+                    "revision_id": raw_source.revision,
+                    "owner": "controlled Scout E2E",
+                    "status": "eligible",
+                    "scope": {
+                        "origins": ["https://api.fixture.test"],
+                        "methods": ["GET"],
+                        "path_prefixes": ["/v1/artifacts/pdf"],
+                        "query_parameter_values": {},
+                    },
+                    "configuration_version": "1.0.0",
+                    "configuration_digest": "",
+                    "metadata": {"classification": "controlled-test-only"},
+                }
+                source_document["configuration_digest"] = canonical_digest(
+                    {
+                        key: value
+                        for key, value in source_document.items()
+                        if key != "configuration_digest"
+                    }
+                )
+                lifecycle = AcquisitionLifecycle(
+                    lifecycle_store,
+                    ImmutableContractRegistry(ROOT / "contracts/payload/draft/v1"),
+                    UnusedPort(),
+                    UnusedPort(),
+                    {},
+                    UnusedPort(),
+                    authority_id="scout-e2e-test-authority",
+                )
+                lifecycle.register_source_revision(
+                    source_document, actor_id="controlled-test-operator"
+                )
+                for additional_source in dict.fromkeys(
+                    (structured_source, parameter_source)
+                ):
+                    document = {
+                        **source_document,
+                        "source_id": additional_source.source_id,
+                        "revision_id": additional_source.revision,
+                        "scope": {
+                            **source_document["scope"],
+                            "path_prefixes": ["/v1/items"],
+                        },
+                    }
+                    document["configuration_digest"] = canonical_digest(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "configuration_digest"
+                        }
+                    )
+                    lifecycle.register_source_revision(
+                        document, actor_id="controlled-test-operator"
+                    )
+
+                reviewer_policy_path = (
+                    Path(os.environ["SCOUT_HTTP_E2E_TEMP"]) / "reviewer-identities.json"
+                )
+                reviewer_policy_path.write_text(
+                    json.dumps(
+                        {
+                            "version": 1,
+                            "agent_uid": 7001,
+                            "reviewers": [
+                                {
+                                    "uid": 7002,
+                                    "principal": "controlled-test-reviewer",
+                                    "source_scopes": [
+                                        {
+                                            "source_id": item.source_id,
+                                            "revision": item.revision,
+                                        }
+                                        for item in dict.fromkeys(
+                                            (
+                                                raw_source,
+                                                structured_source,
+                                                parameter_source,
+                                            )
+                                        )
+                                    ],
+                                }
+                            ],
+                        },
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+                reviewer_policy_path.chmod(0o440)
+                reviewer_identity_provider = UnixReviewerIdentityProvider(
+                    reviewer_policy_path,
+                    uid_provider=lambda: (7002, 7002),
+                    expected_owner_uid=os.geteuid(),
+                )
+                review_identity = reviewer_identity_provider.current()
+                source_policy = LocalAuthorizationStore.from_file(policy_path)
+                reviewer_scout = ScoutApplication(
+                    _LocalSourceLookup(source_policy),
+                    _LocalPolicyDecision(source_policy),
+                    self.repository,
+                    LocalFileEvidenceCustody(custody_root),
+                    proposal_review_access=AuthenticatedReviewerAccess(review_identity),
+                )
+
+                class CandidateValidator:
+                    def validate(_self, candidate):
+                        result = validate_playbook_v2(candidate)
+                        return tuple(
+                            ProposalDiagnostic(item.code, item.path, item.message)
+                            for item in result.diagnostics
+                        )
+
+                class PlaybookPort:
+                    def register(_self, candidate, *, actor_id):
+                        registered = lifecycle.register_playbook_document(
+                            candidate, actor_id=actor_id
+                        )
+                        return registered
+
+                async def author_structured_candidate(
+                    source_ref, url, template_path, output_name, required_capabilities
+                ):
+                    started = await restarted_client.call_tool(
+                        "scout_start",
+                        {
+                            "source_id": source_ref.source_id,
+                            "revision": source_ref.revision,
+                            "objective": (
+                                "observe the controlled JSON response for the "
+                                + output_name
+                                + " declarative acquisition proposal"
+                            ),
+                        },
+                    )
+                    started_value = json.loads(started.content[0].text)
+                    self.assertTrue(started_value["ok"], started_value)
+                    candidate_session = started_value["session_id"]
+                    fetched = await restarted_client.call_tool(
+                        "scout_fetch",
+                        {
+                            "session_id": candidate_session,
+                            "expected_version": 0,
+                            "url": url,
+                        },
+                    )
+                    fetched_value = json.loads(fetched.content[0].text)
+                    self.assertTrue(fetched_value["ok"], fetched_value)
+                    finding_call = await restarted_client.call_tool(
+                        "scout_record_finding",
+                        {
+                            "session_id": candidate_session,
+                            "expected_version": 1,
+                            "statement": "The controlled JSON response exposes the observed item fields and values relevant to this request.",
+                            "epistemic_status": "observation",
+                            "confidence": 1.0,
+                            "manifest_ids": [fetched_value["manifest_id"]],
+                            "verification_note": "The finding is bound to the digest-verified controlled HTTPS response.",
+                        },
+                    )
+                    finding_data = json.loads(finding_call.content[0].text)
+                    self.assertTrue(finding_data["ok"], finding_data)
+                    finding_id = finding_data["finding_ids"][-1]
+                    initial = await restarted_client.call_tool(
+                        "scout_propose",
+                        {
+                            "session_id": candidate_session,
+                            "expected_version": 2,
+                            "summary": "Extract only the supported JSON fields observed in the controlled response.",
+                            "finding_ids": [finding_id],
+                            "manifest_ids": [fetched_value["manifest_id"]],
+                            "assumptions": [],
+                            "risks": [
+                                "Controlled fixture evidence does not establish production source behavior."
+                            ],
+                            "required_capabilities": required_capabilities,
+                        },
+                    )
+                    initial_value = json.loads(initial.content[0].text)
+                    self.assertTrue(initial_value["ok"], initial_value)
+                    exported = await restarted_client.call_tool(
+                        "scout_export_transcript", {"session_id": candidate_session}
+                    )
+                    exported_value = json.loads(exported.content[0].text)
+                    self.assertTrue(exported_value["ok"], exported_value)
+                    exported_transcript = json.loads(exported_value["transcript_json"])
+                    evidence_ref = exported_transcript["pages"][0]["evidence_ref"]
+                    candidate = yaml.safe_load(Path(template_path).read_text())
+                    if "input.query.scalar" in required_capabilities:
+                        candidate["dsl_version"] = "capture-playbook-draft/v3"
+                        fetch = next(
+                            operation
+                            for operation in candidate["operations"]
+                            if operation.get("op") == "http.fetch/v1"
+                        )
+                        fetch["url"] = url
+                        fetch["input_query"] = {
+                            "parameter": "limit",
+                            "query_name": "limit",
+                        }
+                    candidate["source"]["revision"] = source_ref.revision
+                    candidate["proposal_ref"] = initial_value["proposal_id"]
+                    candidate["findings"] = [
+                        {
+                            "finding_id": finding_id,
+                            "classification": "observed",
+                            "evidence_refs": [evidence_ref],
+                        }
+                    ]
+                    candidate["evidence"] = [
+                        {
+                            "evidence_ref": evidence_ref,
+                            "sha256": exported_transcript["pages"][0]["sha256"],
+                        }
+                    ]
+                    for operation in candidate["operations"]:
+                        if "evidence_refs" in operation:
+                            operation["evidence_refs"] = [evidence_ref]
+                    revised = await restarted_client.call_tool(
+                        "scout_propose",
+                        {
+                            "session_id": candidate_session,
+                            "expected_version": 3,
+                            "summary": "Extract only the supported JSON fields observed in the controlled response.",
+                            "finding_ids": [finding_id],
+                            "manifest_ids": [fetched_value["manifest_id"]],
+                            "assumptions": [],
+                            "risks": [
+                                "Controlled fixture evidence does not establish production source behavior."
+                            ],
+                            "required_capabilities": required_capabilities,
+                            "candidate_specification": candidate,
+                        },
+                    )
+                    revised_value = json.loads(revised.content[0].text)
+                    self.assertTrue(revised_value["ok"], revised_value)
+                    exported = await restarted_client.call_tool(
+                        "scout_export_transcript", {"session_id": candidate_session}
+                    )
+                    exported_value = json.loads(exported.content[0].text)
+                    exported_transcript = json.loads(exported_value["transcript_json"])
+                    candidate_path = (
+                        Path(os.environ["SCOUT_HTTP_E2E_CANDIDATE_DIR"]) / output_name
+                        if os.environ.get("SCOUT_HTTP_E2E_CANDIDATE_DIR")
+                        else Path(os.environ["SCOUT_HTTP_E2E_TEMP"]) / output_name
+                    )
+                    candidate_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    candidate_path.write_text(
+                        yaml.safe_dump(candidate), encoding="utf-8"
+                    )
+                    candidate_path.chmod(0o600)
+                    validation_code, _, validation_error = await self.run_cli(
+                        "validate", str(candidate_path), env=env
+                    )
+                    self.assertEqual(0, validation_code, validation_error)
+                    validation = workflow.validate_for_review(
+                        candidate_session,
+                        review_identity.principal,
+                        datetime.now(UTC),
+                    )
+                    self.assertTrue(validation.valid, validation.diagnostics)
+                    promotion = reviewer.promote(
+                        candidate_session,
+                        validation.proposal_id,
+                        validation.proposal_revision,
+                        validation.candidate_sha256,
+                        now=datetime.now(UTC),
+                    )
+                    self.assertEqual(
+                        validation.candidate_sha256,
+                        promotion["candidate_sha256"],
+                    )
+                    if os.environ.get("SCOUT_HTTP_E2E_CANDIDATE_DIR"):
+                        (candidate_dir / f"{output_name}.provenance.json").write_text(
+                            json.dumps(
+                                {
+                                    "source": exported_transcript["session"]["source"],
+                                    "scout_request_id": candidate_session,
+                                    "evidence_manifest_ids": [
+                                        item["manifest_id"]
+                                        for item in exported_transcript["evidence"]
+                                    ],
+                                    "finding_ids": [
+                                        item["finding_id"]
+                                        for item in exported_transcript["findings"]
+                                    ],
+                                    "proposal_id": validation.proposal_id,
+                                    "proposal_revision": validation.proposal_revision,
+                                    "candidate_sha256": validation.candidate_sha256,
+                                    "promoted_playbook": promotion,
+                                },
+                                indent=2,
+                                sort_keys=True,
+                            )
+                            + "\n",
+                            encoding="utf-8",
+                        )
+                    return candidate_session, promotion
+
+                workflow = ProposalWorkflow(
+                    reviewer_scout,
+                    CandidateValidator(),
+                    AuthenticatedReviewerPromotion(review_identity),
+                    PlaybookPort(),
+                )
+
+                reviewer = ReviewerPromotionAdapter(
+                    reviewer_identity_provider, workflow
+                )
+                with self.assertRaises(AuthorizationError):
+                    AuthenticatedReviewerAccess(review_identity).authorize(
+                        review_identity.principal,
+                        SourceRef("unapproved-source", "revision-1"),
+                    )
+                with self.assertRaises(AuthorizationError):
+                    UnixReviewerIdentityProvider(
+                        reviewer_policy_path,
+                        uid_provider=lambda: (7001, 7001),
+                        expected_owner_uid=os.geteuid(),
+                    ).current()
+                validation = workflow.validate_for_review(
+                    pdf_session,
+                    review_identity.principal,
+                    datetime.now(UTC),
+                )
+                self.assertTrue(validation.valid)
+                with self.assertRaisesRegex(IntegrityError, "promotion intent differs"):
+                    reviewer.promote(
+                        pdf_session,
+                        validation.proposal_id,
+                        validation.proposal_revision,
+                        "0" * 64,
+                        now=datetime.now(UTC),
+                    )
+                promoted = reviewer.promote(
+                    pdf_session,
+                    validation.proposal_id,
+                    validation.proposal_revision,
+                    validation.candidate_sha256,
+                    now=datetime.now(UTC),
+                )
+                replayed_promotion = reviewer.promote(
+                    pdf_session,
+                    validation.proposal_id,
+                    validation.proposal_revision,
+                    validation.candidate_sha256,
+                    now=datetime.now(UTC),
+                )
+                self.assertEqual(promoted, replayed_promotion)
+                registered_playbook = lifecycle_store.resolve_playbook(
+                    promoted["playbook_id"], promoted["playbook_digest"]
+                )
+                self.assertEqual(raw_source.source_id, registered_playbook["source_id"])
+                self.assertEqual(
+                    promoted["playbook_digest"],
+                    "sha256:"
+                    + hashlib.sha256(registered_playbook["content"]).hexdigest(),
+                )
+                self.assertEqual([], lifecycle_store.list_releases())
+                self.assertEqual(
+                    "sha256:" + validation.candidate_sha256,
+                    promoted["playbook_digest"],
+                )
+                if os.environ.get("SCOUT_HTTP_E2E_CANDIDATE_DIR"):
+                    (candidate_dir / "raw-provenance.json").write_text(
+                        json.dumps(
+                            {
+                                "source": pdf_transcript["session"]["source"],
+                                "scout_request_id": pdf_session,
+                                "evidence_manifest_ids": [
+                                    item["manifest_id"]
+                                    for item in pdf_transcript["evidence"]
+                                ],
+                                "finding_ids": [
+                                    item["finding_id"]
+                                    for item in pdf_transcript["findings"]
+                                ],
+                                "proposal_id": validation.proposal_id,
+                                "proposal_revision": validation.proposal_revision,
+                                "candidate_sha256": validation.candidate_sha256,
+                                "promoted_playbook": promoted,
+                            },
+                            indent=2,
+                            sort_keys=True,
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                (
+                    structured_session,
+                    structured_promotion,
+                ) = await author_structured_candidate(
+                    structured_source,
+                    "https://api.fixture.test/v1/items?limit=2",
+                    ROOT
+                    / "examples/use-cases/controlled-work-intake/capture-playbook.yaml",
+                    "structured.json.yaml",
+                    [
+                        "http.fetch",
+                        "json.path_restricted",
+                        "records.extract",
+                        "output.records.jsonl",
+                        "input.query.scalar",
+                    ],
+                )
+                (
+                    parameter_session,
+                    parameter_promotion,
+                ) = await author_structured_candidate(
+                    parameter_source,
+                    "https://api.fixture.test/v1/items?limit=1",
+                    ROOT
+                    / "examples/use-cases/controlled-work-intake/capture-playbook.yaml",
+                    "parameterized.yaml",
+                    [
+                        "http.fetch",
+                        "json.path_restricted",
+                        "records.extract",
+                        "output.records.jsonl",
+                        "input.query.scalar",
+                    ],
+                )
+                self.assertNotEqual(structured_session, parameter_session)
+                self.assertNotEqual(
+                    structured_promotion["playbook_digest"],
+                    parameter_promotion["playbook_digest"],
+                )
+                fixture_root = pdf_dir / "empty-fixtures"
+                fixture_root.mkdir(mode=0o700)
+                build_root = pdf_dir / "verified-build"
+                compile_code, compile_stdout, compile_stderr = await self.run_cli(
+                    "compile",
+                    str(pdf_dir / "capture-playbook.yaml"),
+                    "--backend",
+                    "scrapy-live-http",
+                    "--fixtures",
+                    str(fixture_root),
+                    "--output",
+                    str(build_root),
+                    env=env,
+                )
+                self.assertEqual(0, compile_code, compile_stderr or compile_stdout)
+                verify_code, verify_stdout, verify_stderr = await self.run_cli(
+                    "verify-build", str(build_root), env=env
+                )
+                self.assertEqual(0, verify_code, verify_stderr or verify_stdout)
+                pdf_transcript_path.write_text(
+                    pdf_exported["transcript_json"], encoding="utf-8"
+                )
+                candidate_code, _, candidate_error = await self.run_cli(
+                    "draft",
+                    str(pdf_transcript_path),
+                    "--output",
+                    str(pdf_dir / "promoted-candidate.yaml"),
+                    env=env,
+                )
+                self.assertEqual(0, candidate_code, candidate_error)
+                validate_code, _, validate_error = await self.run_cli(
+                    "validate", str(pdf_dir / "promoted-candidate.yaml"), env=env
+                )
+                self.assertEqual(0, validate_code, validate_error)
+                validate_code, _, validate_error = await self.run_cli(
+                    "validate", str(pdf_dir / "capture-playbook.yaml"), env=env
+                )
+                self.assertEqual(0, validate_code, validate_error)
+                candidate_out = os.environ.get("SCOUT_HTTP_E2E_RAW_CANDIDATE_OUT")
+                if candidate_out:
+                    destination = Path(candidate_out)
+                    self.assertTrue(destination.is_absolute())
+                    self.assertFalse(destination.is_symlink())
+                    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    destination.write_text(generated_pdf_draft, encoding="utf-8")
+                    destination.chmod(0o600)
+                if candidate_dir is not None:
+                    raw_candidate = candidate_dir / "raw.yaml"
+                    raw_candidate.write_text(generated_pdf_draft, encoding="utf-8")
+                    raw_candidate.chmod(0o600)
 
             artifact_root = (
                 Path(os.environ["SCOUT_HTTP_E2E_TEMP"])

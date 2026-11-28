@@ -114,6 +114,21 @@ class ProtectedRunRegistryTests(unittest.TestCase):
                 sum(call[2:4] == ["volume", "rm"] for call in calls),
             )
 
+    def test_test_executor_capacity_is_scoped_to_its_owner_label(self):
+        executor = object.__new__(DockerProtectedReplayExecutor)
+        executor._context = "test"
+        executor._volume_owner_label = "bc15-http-e2e"
+        calls = []
+
+        def docker(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, b"", b"")
+
+        executor._run = docker
+        executor._docker_args = lambda *args: ["--context", "test", *args]
+        executor._ensure_capacity()
+        self.assertIn("label=data-mozaic.owner=bc15-http-e2e", calls[0])
+
 
 if __name__ == "__main__":
     unittest.main()

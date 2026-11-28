@@ -1,0 +1,60 @@
+{
+  "template": true,
+  "artifact": {
+    "bundle_manifest": "manifest.json",
+    "manifest_sha256": "VERIFY_AGAINST_INDEPENDENT_RELEASE_RECORD",
+    "target_platform": "linux/amd64-or-linux/arm64",
+    "python": "3.12",
+    "worker_image_identity": "sha256-value-from-verified-manifest"
+  },
+  "broker": {
+    "unit_template": "data-mozaic-scout-broker.service",
+    "unit_name": "data-mozaic-scout-broker.service",
+    "service_user": "scout-broker",
+    "service_group": "scout-broker",
+    "docker_group": "docker",
+    "review_evidence_group": "scout-evidence-reviewers",
+    "executable": "/opt/data-mozaic/scout-broker/current/venv/bin/python",
+    "arguments": ["-I", "-m", "scout.tool_host"],
+    "environment_file": "/etc/data-mozaic/scout/broker.env",
+    "listen": "127.0.0.1:8765",
+    "mcp_path": "/mcp",
+    "health_path": "/healthz"
+  },
+  "worker": {
+    "uid_gid": "65532:65532",
+    "network": "none",
+    "host_bind_mounts": []
+  },
+  "reviewer": {
+    "account": "scout-reviewer",
+    "primary_group": "scout-reviewer",
+    "supplementary_groups": ["scout-evidence-reviewers"],
+    "identity_policy": "/etc/data-mozaic/scout/reviewer-identities.json",
+    "environment_file": "/etc/data-mozaic/scout/reviewer.env",
+    "promotion_command": "systemd-run --wait --pipe --collect --uid=scout-reviewer --gid=scout-reviewer --property=EnvironmentFile=/etc/data-mozaic/scout/reviewer.env",
+    "docker_group_member": false
+  },
+  "agent": {
+    "docker_group_member": false,
+    "reviewer_credentials": false,
+    "mcp_endpoint": "http://127.0.0.1:8765/mcp",
+    "required_managed_tools": [
+      "scout_preflight",
+      "scout_start",
+      "scout_fetch",
+      "scout_record_finding",
+      "scout_propose",
+      "scout_status",
+      "scout_export_transcript",
+      "scout_proposal_history",
+      "scout_validate_proposal",
+      "scout_prepare_promotion"
+    ]
+  },
+  "source_approval": {
+    "request_file": "docs/operations/requests/scout-controlled-discovery-approval.json",
+    "installation_policy": "/etc/data-mozaic/scout/authoring-policy.json",
+    "installation_requires_authorized_human": true
+  }
+}

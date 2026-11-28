@@ -9,6 +9,8 @@ description = "Internal BC14 Scout application module"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.11,<4",
+    "mozaic-acquisition-lifecycle",
+    "mozaic-collector-engineering==0.3.0",
     "jsonschema[format]>=4.23,<5",
     "mcp>=1.30,<2",
     "mozaic-observability",
@@ -16,8 +18,12 @@ dependencies = [
     "uvicorn>=0.34,<1",
 ]
 
+[project.scripts]
+scout-review = "scout.reviewer_cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["scout"]
 
 [tool.uv.sources]
+mozaic-acquisition-lifecycle = { workspace = true }
 mozaic-observability = { workspace = true }

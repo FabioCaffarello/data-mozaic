@@ -7,6 +7,7 @@ import logging
 import os
 import stat
 import tempfile
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -23,9 +24,42 @@ from ..tools.policy import LocalAuthorizationStore, ReloadingAuthorizationStore
 from ..tools.ports import TrustedToolContext
 from ..tools.transport import AiohttpSquidTransport
 from .protected_replay import DockerProtectedReplayExecutor
-from .server import create_server
+from .server import PROTECTED_AUTHORING_TOOL_NAMES, create_server
 
 _LOG = logging.getLogger(__name__)
+
+
+def _trusted_proposal_workflow(application: ScoutApplication):
+    """Wire agent-safe validation while keeping promotion reviewer-only.
+
+    The protected authoring host may validate through BC15 and prepare a
+    reviewer handoff. It deliberately has no promotion authorization or M4
+    registration adapter; those remain separate operator composition.
+    """
+    from collector_engineering.playbook_v2 import validate_playbook_v2
+
+    from ..proposal_workflow import ProposalDiagnostic, ProposalWorkflow
+
+    class CandidateValidator:
+        def validate(self, candidate):
+            result = validate_playbook_v2(candidate)
+            return tuple(
+                ProposalDiagnostic(item.code, item.path, item.message)
+                for item in result.diagnostics
+            )
+
+    class NoAgentPromotion:
+        def authorize(self, *_args):
+            raise AuthorizationError(
+                "promotion requires the trusted reviewer interface"
+            )
+
+        def register(self, *_args, **_kwargs):
+            raise AuthorizationError("agent host cannot register Playbooks")
+
+    return ProposalWorkflow(
+        application, CandidateValidator(), NoAgentPromotion(), NoAgentPromotion()
+    )
 
 
 def _private_policy_snapshot(source: Path, destination: Path) -> Path:
@@ -114,6 +148,7 @@ def build_server(
     *,
     trusted_http: bool = False,
     protected_replay_executor: DockerProtectedReplayExecutor | None = None,
+    proposal_workflow_factory: Callable[[ScoutApplication], object] | None = None,
 ):
     """Compose the existing Scout application with local or operator-owned config."""
     trusted_http = trusted_http or os.environ.get("SCOUT_TRUSTED_HTTP") == "1"
@@ -151,6 +186,7 @@ def build_server(
             raise RuntimeError(
                 "trusted broker policy must use a protected absolute path"
             )
+        _validate_trusted_file_path(policy_path)
         private_state_root = Path(
             os.environ.get("SCOUT_RUNTIME_STATE_DIR", "/var/lib/data-mozaic/scout")
         )
@@ -163,9 +199,11 @@ def build_server(
                 "trusted broker state must be private to its service identity"
             )
         policy_metadata = policy_path.stat()
-        if policy_metadata.st_uid != os.geteuid() or policy_metadata.st_mode & 0o077:
+        if not _trusted_config_file(policy_metadata, os.geteuid()) or not os.access(
+            policy_path, os.R_OK
+        ):
             raise RuntimeError(
-                "trusted broker policy must be service-owned and private"
+                "trusted broker policy must be root- or service-owned, readable, and not group/world writable"
             )
         if not os.environ.get("SCOUT_EVIDENCE_ROOT") or not os.environ.get(
             "SCOUT_ARTIFACT_ROOT"
@@ -192,7 +230,18 @@ def build_server(
         raise RuntimeError(
             "SCOUT_ARTIFACT_ROOT must be absolute and outside the checkout"
         )
-    custody = LocalFileEvidenceCustody(evidence_root)
+    reviewer_gid = None
+    if trusted_http:
+        configured_reviewer_gid = os.environ.get("SCOUT_EVIDENCE_REVIEWER_GID", "")
+        if not configured_reviewer_gid:
+            raise RuntimeError("trusted broker reviewer evidence group is required")
+        try:
+            reviewer_gid = int(configured_reviewer_gid)
+        except ValueError as error:
+            raise RuntimeError("reviewer evidence group ID must be numeric") from error
+        if reviewer_gid < 1:
+            raise RuntimeError("reviewer evidence group ID must be positive")
+    custody = LocalFileEvidenceCustody(evidence_root, reviewer_read_gid=reviewer_gid)
     repository = PostgresScoutSessionRepository(dsn)
 
     def http_discovery_factory(caller: str, session_id: str, call_id: str):
@@ -250,8 +299,11 @@ def build_server(
             expectation_file = Path(configured_expectations)
             if not expectation_file.is_absolute() or expectation_file.is_symlink():
                 raise RuntimeError("trusted acceptance oracle path is invalid")
+            _validate_trusted_file_path(expectation_file)
             metadata = expectation_file.stat()
-            if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+            if not _trusted_config_file(metadata, os.geteuid()) or not os.access(
+                expectation_file, os.R_OK
+            ):
                 raise RuntimeError(
                     "trusted acceptance oracle must be service-owned and private"
                 )
@@ -292,6 +344,12 @@ def build_server(
                 "SCOUT_DOCKER_ENDPOINT", "unix:///var/run/docker.sock"
             ),
         )
+    if proposal_workflow_factory is not None:
+        proposal_workflow = proposal_workflow_factory(app)
+    elif trusted_http:
+        proposal_workflow = _trusted_proposal_workflow(app)
+    else:
+        proposal_workflow = None
     return create_server(
         app,
         principal,
@@ -299,6 +357,8 @@ def build_server(
         protected_replay_executor=executor,
         acceptance_expectations=acceptance_expectations,
         single_use_approval_source=("e2e-catalog-single", "single-resource-v1"),
+        proposal_workflow=proposal_workflow,
+        allowed_tools=(PROTECTED_AUTHORING_TOOL_NAMES if trusted_http else None),
     )
 
 
@@ -307,3 +367,23 @@ def build_trusted_http_server():
     if os.environ.get("SCOUT_TRUSTED_HTTP") != "1":
         raise RuntimeError("trusted HTTP mode is not enabled by the service manager")
     return build_server(trusted_http=True)
+
+
+def _validate_trusted_file_path(config_path: Path) -> None:
+    """Require every trusted-file path component to resist agent writes."""
+    for directory in (config_path.parent, *config_path.parent.parents):
+        if directory.is_symlink():
+            raise RuntimeError(
+                "trusted broker configuration parent cannot be a symlink"
+            )
+        metadata = directory.stat()
+        shared_sticky_root = metadata.st_uid == 0 and metadata.st_mode & stat.S_ISVTX
+        if metadata.st_uid not in {0, os.geteuid()} or (
+            metadata.st_mode & 0o022 and not shared_sticky_root
+        ):
+            raise RuntimeError("trusted broker configuration parent is not protected")
+
+
+def _trusted_config_file(metadata, effective_uid: int) -> bool:
+    """Accept root-owned managed files or private service-owned test files."""
+    return metadata.st_uid in {0, effective_uid} and not metadata.st_mode & 0o022

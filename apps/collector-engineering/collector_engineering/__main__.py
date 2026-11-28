@@ -30,8 +30,14 @@ from .backend_scrapy_live import (
 from .backend_scrapy_live import (
     verify_build as verify_scrapy_live_build,
 )
+from .capabilities import capability_catalog
 from .playbook_v2 import build_typed_ir, load_playbook_v2, validate_playbook_v2
-from .playbooks import build_draft, dump_yaml, validate_file
+from .playbooks import (
+    build_draft,
+    build_raw_artifact_v4_draft,
+    dump_yaml,
+    validate_file,
+)
 from .reference_runtime import RuntimeFailure
 from .syntax import PlaybookError
 
@@ -520,11 +526,21 @@ sys.exit(1)
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="collector-engineering")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser(
+        "capabilities",
+        help="show the declared BC15 authoring capabilities and profile bounds",
+    )
     draft_parser = subparsers.add_parser(
-        "draft", help="create a v1 YAML draft from a BC14 transcript"
+        "draft", help="create a versioned YAML draft from a BC14 transcript"
     )
     draft_parser.add_argument("transcript", type=Path)
     draft_parser.add_argument("--output", type=Path, required=True)
+    draft_parser.add_argument(
+        "--profile",
+        choices=("legacy-raw-v1", "raw-artifact-v4"),
+        default="legacy-raw-v1",
+        help="explicit draft profile; legacy-raw-v1 preserves the historical default",
+    )
     validate_parser = subparsers.add_parser(
         "validate", help="validate a v1 or v2 playbook"
     )
@@ -581,9 +597,16 @@ def main(argv: list[str] | None = None) -> int:
     compare_parser.add_argument("actual", type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.command == "capabilities":
+            _json(capability_catalog())
+            return 0
         if args.command == "draft":
             transcript = json.loads(args.transcript.read_text(encoding="utf-8"))
-            candidate = build_draft(transcript)
+            candidate = (
+                build_raw_artifact_v4_draft(transcript)
+                if args.profile == "raw-artifact-v4"
+                else build_draft(transcript)
+            )
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(dump_yaml(candidate), encoding="utf-8")
             print(f"wrote draft {candidate['playbook_id']} to {args.output}")
@@ -591,7 +614,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "validate":
             if args.playbook.suffix.lower() in {".yaml", ".yml"}:
                 parsed = load_playbook_v2(args.playbook)
-                if parsed.document.get("dsl_version") != "capture-playbook-draft/v2":
+                if parsed.document.get("dsl_version") == "capture-playbook-draft/v1":
                     errors = validate_file(args.playbook)
                     if errors:
                         for error in errors:
@@ -629,7 +652,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if result.get("valid_selector") else 1
         if args.command == "compile":
             parsed = load_playbook_v2(args.playbook)
-            result = validate_playbook_v2(parsed, fixture_root=args.fixtures)
+            # Fixture evidence is an additional oracle for offline fixture
+            # builds. Live HTTP plans are validated against their declared
+            # evidence and compiler capabilities; Scout-custodied evidence is
+            # not a local fixture index and must not be reinterpreted as one.
+            validation_fixtures = (
+                args.fixtures if args.backend != "scrapy-live-http" else None
+            )
+            result = validate_playbook_v2(parsed, fixture_root=validation_fixtures)
             if not result.valid:
                 _json(
                     {
@@ -662,7 +692,7 @@ def main(argv: list[str] | None = None) -> int:
                     target_platform=args.target_platform,
                 )
             else:
-                ir = build_typed_ir(parsed, fixture_root=args.fixtures)
+                ir = build_typed_ir(parsed, fixture_root=None)
                 manifest = compile_scrapy_live_build(
                     ir,
                     output=args.output,

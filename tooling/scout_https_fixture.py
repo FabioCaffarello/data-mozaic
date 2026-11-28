@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ssl
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 BODY = (
     b"<!doctype html><html><head><title>Controlled catalog</title></head>"
@@ -22,6 +23,9 @@ NEXT_BODY = (
 SINGLE_RESOURCE_BODY = (
     b'{"records":[{"id":"s-200","label":"Standalone catalog record"}]}\n'
 )
+JSON_ITEMS_BODY = b'{"items":[{"id":"controlled-1","quantity":2,"unit_price":1.25,"enabled":true},{"id":"controlled-2","quantity":5,"unit_price":3.5,"enabled":false}]}'
+# Byte-for-byte equal to the independent M6 controlled acquisition oracle.
+PDF_DOCUMENT_BODY = b"%PDF-1.1\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -33,25 +37,48 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        if self.path not in {
+        request = urlsplit(self.path)
+        if request.path not in {
             "/docs/page",
             "/docs/next",
+            "/docs/document.pdf",
             "/api/catalog",
+            "/v1/artifacts/pdf",
+            "/v1/items",
         } and not self.path.startswith("/dns/"):
             self.send_error(404)
             return
-        body = (
-            NEXT_BODY
-            if self.path == "/docs/next"
-            else SINGLE_RESOURCE_BODY
-            if self.path == "/api/catalog"
-            else BODY
-        )
+        if request.path == "/docs/next":
+            body = NEXT_BODY
+        elif request.path == "/api/catalog":
+            body = SINGLE_RESOURCE_BODY
+        elif request.path == "/v1/items":
+            query = parse_qs(request.query, keep_blank_values=True)
+            if not query:
+                body = JSON_ITEMS_BODY
+            elif (
+                set(query) == {"limit"}
+                and len(query["limit"]) == 1
+                and query["limit"][0] in {"1", "2", "3"}
+            ):
+                limit = query["limit"][0]
+                body = (
+                    f'{{"items":[{{"id":"parameter-{limit}","quantity":{limit},"unit_price":{limit}.25,"enabled":true}}]}}'
+                ).encode()
+            else:
+                self.send_error(400)
+                return
+        elif request.path in {"/docs/document.pdf", "/v1/artifacts/pdf"}:
+            body = PDF_DOCUMENT_BODY
+        else:
+            body = BODY
         self.send_response(200)
         self.send_header(
             "Content-Type",
-            "text/plain; charset=utf-8"
-            if self.path == "/api/catalog"
+            "application/pdf"
+            if request.path in {"/docs/document.pdf", "/v1/artifacts/pdf"}
+            else "application/json"
+            if request.path in {"/api/catalog", "/v1/items"}
             else "text/html; charset=utf-8",
         )
         self.send_header("Content-Length", str(len(body)))

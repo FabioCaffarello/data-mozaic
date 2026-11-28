@@ -24,5 +24,13 @@ uv pip install --python "$prefix/venv/bin/python" --no-index \
   --requirement "$bundle/requirements.txt"
 uv pip install --python "$prefix/venv/bin/python" --no-deps "$bundle"/wheels/*.whl
 install -m 0644 "$bundle/manifest.json" "$prefix/manifest.json"
+# Keep the exact reviewer contract documents and operator templates alongside
+# the immutable release. The systemd service and secret policy are still
+# installed separately by an administrator; this copy is not activation.
+for resource in contracts config deployments; do
+  if [ -d "$bundle/$resource" ]; then
+    cp -R "$bundle/$resource" "$prefix/$resource"
+  fi
+done
 chmod -R go-w "$prefix"
 echo "Installed unprivileged staging tree: $prefix"

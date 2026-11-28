@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import ipaddress
 import json
@@ -26,12 +27,21 @@ SCHEMA = json.loads(_SCHEMAS.joinpath("CapturePlaybook.schema.json").read_text()
 PROPOSAL_SCHEMA = json.loads(
     _SCHEMAS.joinpath("PlaybookProposal.schema.json").read_text()
 )
+PROPOSAL_SCHEMA_V2 = json.loads(
+    _SCHEMAS.joinpath("PlaybookProposal.v2.schema.json").read_text()
+)
 TRANSCRIPT_SCHEMAS = {
     "scout-transcript-draft/v1": json.loads(
         _SCHEMAS.joinpath("ScoutSessionTranscript.v1.schema.json").read_text()
     ),
     "scout-transcript-draft/v2": json.loads(
         _SCHEMAS.joinpath("ScoutSessionTranscript.v2.schema.json").read_text()
+    ),
+    "scout-transcript-draft/v3": json.loads(
+        _SCHEMAS.joinpath("ScoutSessionTranscript.v3.schema.json").read_text()
+    ),
+    "scout-transcript-draft/v4": json.loads(
+        _SCHEMAS.joinpath("ScoutSessionTranscript.v4.schema.json").read_text()
     ),
 }
 
@@ -314,7 +324,7 @@ def build_draft(transcript: dict) -> dict:
         ) from error
     if transcript_version == "scout-transcript-draft/v1":
         raise PlaybookError(
-            "Scout transcript draft v1 has no explicit starting URL or exploration order; re-export with BC14 transcript draft v2"
+            "Scout transcript draft v1 has no explicit starting URL or exploration order; re-export with BC14 transcript draft v2 or later"
         )
     if transcript.get("navigation", {}).get("sequence_complete") is not True:
         raise PlaybookError("incomplete transcript cannot produce an acquisition draft")
@@ -322,6 +332,8 @@ def build_draft(transcript: dict) -> dict:
     proposal = transcript.get("proposal", {})
     if not isinstance(approval, dict) or not isinstance(proposal, dict):
         raise PlaybookError("approved scope and proposal must be JSON objects")
+    if proposal.get("contract_version") == "2.0.0":
+        return candidate_from_proposal_transcript(transcript)
     objective = transcript.get("objective")
     pages = transcript.get("pages", [])
     if not isinstance(pages, list):
@@ -381,9 +393,14 @@ def build_draft(transcript: dict) -> dict:
         raise PlaybookError("approval receipt differs from the approved scope snapshot")
     if not objective or not pages or not proposal.get("proposal_id"):
         raise PlaybookError("transcript needs objective, pages, and a BC14 proposal")
-    proposal_errors = list(Draft202012Validator(PROPOSAL_SCHEMA).iter_errors(proposal))
+    proposal_schema = (
+        PROPOSAL_SCHEMA_V2
+        if proposal.get("contract_version") == "2.0.0"
+        else PROPOSAL_SCHEMA
+    )
+    proposal_errors = list(Draft202012Validator(proposal_schema).iter_errors(proposal))
     if proposal_errors:
-        raise PlaybookError("BC14 proposal is invalid under Scout v1 contract")
+        raise PlaybookError("BC14 proposal is invalid under its declared contract")
     if proposal.get("source") != {
         "source_id": approval.get("source_id"),
         "revision": approval.get("revision"),
@@ -554,6 +571,202 @@ def build_draft(transcript: dict) -> dict:
     if errors:
         raise PlaybookError("generated draft is invalid: " + "; ".join(errors))
     return draft
+
+
+def candidate_from_proposal_transcript(transcript: dict) -> dict:
+    """Validate and return the exact declarative candidate embedded by BC14.
+
+    BC15 checks proposal shape and all source/evidence identity bindings before
+    its own semantic validator accepts the candidate. This does not grant
+    execution or release authority.
+    """
+    if not isinstance(transcript, dict):
+        raise PlaybookError("transcript root must be an object")
+    if transcript.get("transcript_schema") != "scout-transcript-draft/v4":
+        raise PlaybookError("declarative proposal requires transcript draft v4")
+    proposal = transcript.get("proposal")
+    if not isinstance(proposal, dict):
+        raise PlaybookError("transcript proposal must be an object")
+    errors = list(Draft202012Validator(PROPOSAL_SCHEMA_V2).iter_errors(proposal))
+    if errors:
+        raise PlaybookError("BC14 proposal v2 contract is invalid")
+    candidate = proposal["candidate_specification"]
+    canonical = (
+        json.dumps(candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
+    if hashlib.sha256(canonical).hexdigest() != proposal["candidate_sha256"]:
+        raise PlaybookError("proposal candidate digest mismatch")
+    session = transcript.get("session", {})
+    source = session.get("source", {})
+    approved = transcript.get("approved_scope", {})
+    if (
+        proposal.get("session_id") != session.get("session_id")
+        or proposal.get("source") != source
+        or source.get("source_id") != approved.get("source_id")
+        or source.get("revision") != approved.get("revision")
+        or candidate.get("source", {}).get("source_id") != source.get("source_id")
+        or candidate.get("source", {}).get("revision") != source.get("revision")
+        or candidate.get("proposal_ref") != proposal.get("proposal_id")
+    ):
+        raise PlaybookError("proposal, candidate and approved source identity differ")
+    evidence_ids = set(proposal.get("evidence_manifest_ids", []))
+    transcript_evidence = {
+        item.get("manifest_id"): item for item in transcript.get("evidence", [])
+    }
+    transcript_evidence_ids = set(transcript_evidence)
+    if not evidence_ids or not evidence_ids <= transcript_evidence_ids:
+        raise PlaybookError("proposal evidence references are absent from transcript")
+    finding_ids = set(proposal.get("finding_ids", []))
+    transcript_findings = {
+        item.get("finding_id"): item for item in transcript.get("findings", [])
+    }
+    candidate_findings = candidate.get("findings", [])
+    if not finding_ids or not finding_ids <= transcript_findings.keys():
+        raise PlaybookError("proposal finding references are absent from transcript")
+    candidate_refs = {
+        ref
+        for finding in candidate_findings
+        if isinstance(finding, dict)
+        for ref in finding.get("evidence_refs", [])
+    }
+    if not candidate_refs or not candidate_refs <= evidence_ids:
+        raise PlaybookError("candidate finding evidence is outside proposal scope")
+    candidate_evidence = candidate.get("evidence", [])
+    if not candidate_evidence or any(
+        item.get("evidence_ref") not in evidence_ids
+        or item.get("sha256")
+        not in {
+            artifact.get("sha256")
+            for artifact in transcript.get("evidence", [])
+            if artifact.get("manifest_id") == item.get("evidence_ref")
+        }
+        for item in candidate_evidence
+    ):
+        raise PlaybookError(
+            "candidate evidence digest differs from BC14 custody metadata"
+        )
+    approved_origin = approved.get("origin")
+    candidate_source = candidate.get("source", {})
+    approved_prefixes = approved.get("path_prefixes", [])
+    candidate_prefixes = candidate_source.get("path_prefixes", [])
+    if (
+        candidate_source.get("origin") != approved_origin
+        or not candidate_prefixes
+        or any(
+            not any(_within_path(prefix, approved) for approved in approved_prefixes)
+            for prefix in candidate_prefixes
+        )
+    ):
+        raise PlaybookError("candidate source scope exceeds Scout approval")
+    from .playbook_v2 import validate_playbook_v2
+
+    validation = validate_playbook_v2(candidate)
+    if not validation.valid:
+        rendered = "; ".join(
+            f"{item.code} {item.path}: {item.message}"
+            for item in validation.diagnostics
+        )
+        raise PlaybookError("candidate failed BC15 validation: " + rendered)
+    return copy.deepcopy(candidate)
+
+
+def build_raw_artifact_v4_draft(transcript: dict) -> dict:
+    """Project one v3 Scout observation into the current raw-only BC15 profile.
+
+    This deterministic adapter does not infer authorization from the proposal:
+    it binds the exact approved source scope and evidence metadata already
+    checked by ``build_draft``. Human release approval remains a later step.
+    """
+    if not isinstance(transcript, dict) or transcript.get("transcript_schema") != (
+        "scout-transcript-draft/v3"
+    ):
+        raise PlaybookError("raw artifact authoring requires Scout transcript draft v3")
+    pages = transcript.get("pages")
+    if not isinstance(pages, list) or len(pages) != 1:
+        raise PlaybookError("raw artifact profile requires exactly one discovered page")
+    page = pages[0]
+    if page.get("requested_url") != page.get("url") or page.get("sequence") != 1:
+        raise PlaybookError(
+            "raw artifact profile does not support redirects or continuation"
+        )
+    media_type = page.get("content_type")
+    if not isinstance(media_type, str):
+        raise PlaybookError("discovery evidence lacks its declared media type")
+    media_type = media_type.split(";", 1)[0].strip().lower()
+    if not re.fullmatch(
+        r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*",
+        media_type,
+    ):
+        raise PlaybookError("discovery media type is not a valid exact declaration")
+    approved = transcript.get("approved_scope", {}).get("budgets", {})
+    max_bytes = min(2_000_000, approved.get("max_response_bytes", 0))
+    if (
+        not isinstance(max_bytes, int)
+        or max_bytes <= 0
+        or not isinstance(page.get("size_bytes"), int)
+        or page["size_bytes"] > max_bytes
+    ):
+        raise PlaybookError("discovered artifact exceeds the approved raw byte bound")
+
+    # Reuse the v1 evidence graph and source-scope checks without changing the
+    # persisted BC14 proposal or reinterpreting its v1 contract.
+    projected = copy.deepcopy(transcript)
+    projected["proposal"]["required_capabilities"] = ["http.fetch", "output.raw"]
+    base = build_draft(projected)
+    raw = {
+        "dsl_version": "capture-playbook-draft/v4",
+        "playbook_id": base["playbook_id"],
+        "status": "draft",
+        "source": base["source"],
+        "objective": base["objective"],
+        "proposal_ref": base["proposal_ref"],
+        "findings": base["findings"],
+        "evidence": [{"evidence_ref": page["evidence_ref"], "sha256": page["sha256"]}],
+        "capabilities": ["http.fetch.fixture", "output.artifact.reference"],
+        "budgets": {
+            "max_requests": 1,
+            "max_pages": 1,
+            "max_response_bytes": max_bytes,
+            "max_records": 1,
+            "max_output_bytes": max_bytes,
+        },
+        "failure_policy": {
+            "missing_fixture": "fail",
+            "invalid_record": "fail",
+            "missing_required_field": "fail",
+            "conversion_error": "fail",
+        },
+        "output_contract": {
+            "mode": "artifact",
+            "media_types": [media_type],
+            "max_bytes": max_bytes,
+        },
+        "operations": [
+            {
+                "id": "fetch_document",
+                "op": "http.fetch/v1",
+                "url": page["url"],
+                "content_type": media_type,
+                "evidence_refs": [page["evidence_ref"]],
+            },
+            {
+                "id": "artifact",
+                "op": "output.artifact/v1",
+                "document": {"operation": "fetch_document", "port": "document"},
+            },
+        ],
+    }
+    from .playbook_v2 import validate_playbook_v2
+
+    validation = validate_playbook_v2(raw)
+    if not validation.valid:
+        diagnostics = "; ".join(
+            f"{item.code} {item.path}: {item.message}"
+            for item in validation.diagnostics
+        )
+        raise PlaybookError("generated raw v4 proposal is invalid: " + diagnostics)
+    return raw
 
 
 def dump_yaml(value: dict) -> str:
@@ -1251,8 +1464,11 @@ def accept_acquisition(
     failures = []
     if expectations.get("expectation_schema") != "capture-acquisition-expectations/v1":
         failures.append("unsupported independent expectation schema")
-    if transcript.get("transcript_schema") != "scout-transcript-draft/v2":
-        failures.append("acquisition acceptance requires transcript draft v2")
+    if transcript.get("transcript_schema") not in {
+        "scout-transcript-draft/v2",
+        "scout-transcript-draft/v3",
+    }:
+        failures.append("acquisition acceptance requires transcript draft v2 or v3")
     if not transcript.get("navigation", {}).get("sequence_complete"):
         failures.append("transcript exploration sequence is incomplete")
     expected_source = expectations.get("source", {})

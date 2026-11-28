@@ -62,6 +62,15 @@ def _fetch_trusted_evidence(
 ) -> tuple[dict[str, object], bytes | Path, int, str]:
     if re.fullmatch(r"[0-9a-f]{32}", fetch_id) is None:
         raise FixtureImportError("gateway fetch identity is invalid")
+    body_target: bytes | Path = b""
+
+    def discard_temporary_body() -> None:
+        if artifact_spool_dir is not None and isinstance(body_target, Path):
+            try:
+                body_target.unlink()
+            except FileNotFoundError:
+                pass
+
     request = Request(
         endpoint.rstrip("/") + "/internal/v1/evidence/" + fetch_id,
         headers={
@@ -111,81 +120,95 @@ def _fetch_trusted_evidence(
             if artifact_spool_dir is None:
                 body_target = bytes(body_buffer)
     except (HTTPError, URLError, TimeoutError, OSError) as error:
+        discard_temporary_body()
         raise FixtureImportError("trusted gateway evidence is unavailable") from error
-    if not encoded or len(encoded) > 12_000:
-        raise FixtureImportError("gateway evidence metadata is invalid")
+    except BaseException:
+        discard_temporary_body()
+        raise
     try:
-        metadata_bytes = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
-    except (ValueError, TypeError) as error:
-        raise FixtureImportError(
-            "gateway evidence metadata encoding is invalid"
-        ) from error
-    metadata = _strict_json(metadata_bytes, "trusted gateway evidence")
-    if not isinstance(metadata, dict):
-        raise FixtureImportError("trusted gateway evidence must be an object")
-    expected_fields = {
-        "contract_version",
-        "fetch_id",
-        "tenant_id",
-        "run_id",
-        "attempt_id",
-        "generation",
-        "source_id",
-        "source_revision_id",
-        "policy_digest",
-        "release_id",
-        "build_manifest_digest",
-        "request_target_digest",
-        "effective_target_digest",
-        "request_origin",
-        "effective_origin",
-        "request_path_digest",
-        "effective_path_digest",
-        "query_parameter_names",
-        "redirect_count",
-        "status",
-        "acquired_at",
-        "media_type",
-        "body_representation",
-        "body_size",
-        "body_digest",
-        "body_ref",
-    }
-    body_digest = "sha256:" + digest.hexdigest()
-    if (
-        set(metadata) != expected_fields
-        or metadata.get("contract_version") != "fetch-evidence/v1"
-        or metadata.get("fetch_id") != fetch_id
-        or metadata.get("tenant_id") != tenant_id
-        or metadata.get("run_id") != run_id
-        or metadata.get("attempt_id") != attempt_id
-        or metadata.get("generation") != generation
-        or metadata.get("body_ref") != fetch_id + ".body"
-        or metadata.get("body_size") != body_size
-        or isinstance(metadata.get("body_size"), bool)
-        or metadata.get("body_digest") != body_digest
-        or metadata.get("body_representation") != "decoded-http-entity"
-        or not isinstance(metadata.get("query_parameter_names"), list)
-        or any(not isinstance(name, str) for name in metadata["query_parameter_names"])
-        or not isinstance(metadata.get("redirect_count"), int)
-        or isinstance(metadata.get("redirect_count"), bool)
-        or metadata.get("redirect_count", -1) < 0
-        or not isinstance(metadata.get("status"), int)
-        or isinstance(metadata.get("status"), bool)
-        or not isinstance(metadata.get("source_id"), str)
-        or not isinstance(metadata.get("source_revision_id"), str)
-        or not isinstance(metadata.get("policy_digest"), str)
-        or not isinstance(metadata.get("release_id"), str)
-        or not isinstance(metadata.get("build_manifest_digest"), str)
-        or not isinstance(metadata.get("request_target_digest"), str)
-        or not isinstance(metadata.get("effective_target_digest"), str)
-        or not isinstance(metadata.get("request_origin"), str)
-        or not isinstance(metadata.get("effective_origin"), str)
-        or not isinstance(metadata.get("request_path_digest"), str)
-        or not isinstance(metadata.get("effective_path_digest"), str)
-        or not isinstance(metadata.get("media_type"), str)
-    ):
-        raise FixtureImportError("gateway evidence bytes or execution binding diverged")
+        if not encoded or len(encoded) > 12_000:
+            raise FixtureImportError("gateway evidence metadata is invalid")
+        try:
+            metadata_bytes = base64.urlsafe_b64decode(
+                encoded + "=" * (-len(encoded) % 4)
+            )
+        except (ValueError, TypeError) as error:
+            raise FixtureImportError(
+                "gateway evidence metadata encoding is invalid"
+            ) from error
+        metadata = _strict_json(metadata_bytes, "trusted gateway evidence")
+        if not isinstance(metadata, dict):
+            raise FixtureImportError("trusted gateway evidence must be an object")
+        expected_fields = {
+            "contract_version",
+            "fetch_id",
+            "tenant_id",
+            "run_id",
+            "attempt_id",
+            "generation",
+            "source_id",
+            "source_revision_id",
+            "policy_digest",
+            "release_id",
+            "build_manifest_digest",
+            "request_target_digest",
+            "effective_target_digest",
+            "request_origin",
+            "effective_origin",
+            "request_path_digest",
+            "effective_path_digest",
+            "query_parameter_names",
+            "redirect_count",
+            "status",
+            "acquired_at",
+            "media_type",
+            "body_representation",
+            "body_size",
+            "body_digest",
+            "body_ref",
+        }
+        body_digest = "sha256:" + digest.hexdigest()
+        if (
+            set(metadata) != expected_fields
+            or metadata.get("contract_version") != "fetch-evidence/v1"
+            or metadata.get("fetch_id") != fetch_id
+            or metadata.get("tenant_id") != tenant_id
+            or metadata.get("run_id") != run_id
+            or metadata.get("attempt_id") != attempt_id
+            or metadata.get("generation") != generation
+            or metadata.get("body_ref") != fetch_id + ".body"
+            or metadata.get("body_size") != body_size
+            or isinstance(metadata.get("body_size"), bool)
+            or metadata.get("body_digest") != body_digest
+            or metadata.get("body_representation") != "decoded-http-entity"
+            or not isinstance(metadata.get("query_parameter_names"), list)
+            or any(
+                not isinstance(name, str) for name in metadata["query_parameter_names"]
+            )
+            or not isinstance(metadata.get("redirect_count"), int)
+            or isinstance(metadata.get("redirect_count"), bool)
+            or metadata.get("redirect_count", -1) < 0
+            or not isinstance(metadata.get("status"), int)
+            or isinstance(metadata.get("status"), bool)
+            or not isinstance(metadata.get("source_id"), str)
+            or not isinstance(metadata.get("source_revision_id"), str)
+            or not isinstance(metadata.get("policy_digest"), str)
+            or not isinstance(metadata.get("release_id"), str)
+            or not isinstance(metadata.get("build_manifest_digest"), str)
+            or not isinstance(metadata.get("request_target_digest"), str)
+            or not isinstance(metadata.get("effective_target_digest"), str)
+            or not isinstance(metadata.get("request_origin"), str)
+            or not isinstance(metadata.get("effective_origin"), str)
+            or not isinstance(metadata.get("request_path_digest"), str)
+            or not isinstance(metadata.get("effective_path_digest"), str)
+            or not isinstance(metadata.get("media_type"), str)
+        ):
+            raise FixtureImportError(
+                "gateway evidence bytes or execution binding diverged"
+            )
+    except BaseException:
+        discard_temporary_body()
+        raise
     return metadata, body_target, body_size, body_digest
 
 
@@ -389,6 +412,72 @@ def verify_live_result_bundle(
     artifact_media_types: tuple[str, ...] = (),
     max_artifact_bytes: int | None = None,
 ) -> VerifiedResultBundle:
+    """Verify a worker bundle and clean a failed raw-evidence spool eagerly."""
+    artifact_tempdir = (
+        tempfile.TemporaryDirectory(prefix="mozaic-evidence-")
+        if compiled_plan.get("artifact_output") is not None
+        else None
+    )
+    try:
+        return _verify_live_result_bundle(
+            result_dir,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            generation=generation,
+            source_id=source_id,
+            source_revision_id=source_revision_id,
+            policy_digest=policy_digest,
+            release_id=release_id,
+            build_manifest_digest=build_manifest_digest,
+            gateway_evidence_url=gateway_evidence_url,
+            gateway_evidence_token=gateway_evidence_token,
+            compiled_plan=compiled_plan,
+            trusted_bot_id=trusted_bot_id,
+            max_response_bytes=max_response_bytes,
+            maximum_total_response_bytes=maximum_total_response_bytes,
+            maximum_requests=maximum_requests,
+            execution_deadline=execution_deadline,
+            input_parameters_json=input_parameters_json,
+            input_parameters_digest=input_parameters_digest,
+            output_modality=output_modality,
+            artifact_media_types=artifact_media_types,
+            max_artifact_bytes=max_artifact_bytes,
+            _artifact_tempdir=artifact_tempdir,
+        )
+    except BaseException:
+        if artifact_tempdir is not None:
+            artifact_tempdir.cleanup()
+        raise
+
+
+def _verify_live_result_bundle(
+    result_dir: Path,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    generation: int,
+    source_id: str,
+    source_revision_id: str,
+    policy_digest: str,
+    release_id: str,
+    build_manifest_digest: str,
+    gateway_evidence_url: str,
+    gateway_evidence_token: str,
+    compiled_plan: dict[str, object],
+    trusted_bot_id: str | None = None,
+    max_response_bytes: int,
+    maximum_total_response_bytes: int,
+    maximum_requests: int = 50,
+    execution_deadline: datetime | None = None,
+    input_parameters_json: str | None = None,
+    input_parameters_digest: str | None = None,
+    output_modality: str = "record",
+    artifact_media_types: tuple[str, ...] = (),
+    max_artifact_bytes: int | None = None,
+    _artifact_tempdir=None,
+) -> VerifiedResultBundle:
     """Validate worker declarations against current gateway evidence and plan."""
     from collector_engineering import reference_runtime
 
@@ -472,11 +561,7 @@ def verify_live_result_bundle(
     select = plan.get("select")
     artifact_only = plan.get("artifact_output") is not None
     artifact_contract = plan.get("output_contract") if artifact_only else None
-    artifact_tempdir = (
-        tempfile.TemporaryDirectory(prefix="mozaic-evidence-")
-        if artifact_only
-        else None
-    )
+    artifact_tempdir = _artifact_tempdir if artifact_only else None
     if (
         plan.get("profile") != "scrapy-live-http-v1"
         or not isinstance(source, dict)

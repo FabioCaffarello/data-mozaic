@@ -69,6 +69,9 @@ class ScoutMCPStdioTests(unittest.TestCase):
                         "scout_propose",
                         "scout_status",
                         "scout_export_transcript",
+                        "scout_proposal_history",
+                        "scout_validate_proposal",
+                        "scout_prepare_promotion",
                         "scout_export_replay_fixtures",
                     },
                 )
@@ -80,6 +83,7 @@ class ScoutMCPStdioTests(unittest.TestCase):
                     {"principal", "call_id", "approval", "budget", "path"}
                     & set(schema["properties"])
                 )
+                self.assertNotIn("scout_promote_proposal", by_name)
 
                 bad_args = await client.call_tool(
                     "scout_start",

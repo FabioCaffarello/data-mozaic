@@ -41,6 +41,7 @@ class DockerProtectedReplayExecutor:
         docker_context: str = "default",
         docker_endpoint: str = "unix:///var/run/docker.sock",
         allow_unprivileged_test_cli: bool = False,
+        volume_owner_label: str = "bc15",
     ):
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", worker_image_digest):
             raise ProtectedReplayError("protected BC15 image digest is invalid")
@@ -50,12 +51,19 @@ class DockerProtectedReplayExecutor:
             raise ProtectedReplayError(
                 "protected Docker endpoint must be a local socket"
             )
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", volume_owner_label):
+            raise ProtectedReplayError("protected BC15 volume owner is invalid")
+        if volume_owner_label != "bc15" and not allow_unprivileged_test_cli:
+            raise ProtectedReplayError(
+                "alternate BC15 volume ownership is restricted to tests"
+            )
         self._docker = self._validate_docker_executable(
             docker_executable, allow_unprivileged_test_cli=allow_unprivileged_test_cli
         )
         self._context = docker_context
         self._endpoint = docker_endpoint
         self._image = worker_image_digest
+        self._volume_owner_label = volume_owner_label
         self._verify_runtime()
         self._lock = threading.Lock()
         self._volume_lock = threading.Lock()
@@ -212,9 +220,14 @@ class DockerProtectedReplayExecutor:
         ]
 
     def _reconcile_runs(self) -> None:
+        owner_label = getattr(self, "_volume_owner_label", "bc15")
         listed = self._run(
             self._docker_args(
-                "volume", "ls", "--quiet", "--filter", "label=data-mozaic.owner=bc15"
+                "volume",
+                "ls",
+                "--quiet",
+                "--filter",
+                f"label=data-mozaic.owner={owner_label}",
             )
         )
         if listed.returncode:
@@ -237,7 +250,7 @@ class DockerProtectedReplayExecutor:
                 continue
             run_id = volume.removeprefix("dm-bc15-")
             labels = inspected.stdout.decode("ascii", errors="ignore").strip().split()
-            if labels != [run_id, "bc15"]:
+            if labels != [run_id, owner_label]:
                 continue
             present.add(volume)
             entry = known.get(volume)
@@ -252,6 +265,7 @@ class DockerProtectedReplayExecutor:
         self._expire_runs()
 
     def _remove_owned_volume(self, entry: dict) -> bool:
+        owner_label = getattr(self, "_volume_owner_label", "bc15")
         volume = entry["volume"]
         if not re.fullmatch(r"dm-bc15-[a-f0-9]{32}", volume):
             return False
@@ -266,7 +280,7 @@ class DockerProtectedReplayExecutor:
         )
         if inspect.returncode:
             return True
-        expected = f"{volume} {entry['run_id']} bc15"
+        expected = f"{volume} {entry['run_id']} {owner_label}"
         if inspect.stdout.decode("ascii", errors="ignore").strip() != expected:
             return False
         return self._run(self._docker_args("volume", "rm", volume)).returncode == 0
@@ -292,9 +306,14 @@ class DockerProtectedReplayExecutor:
                 continue
 
     def _ensure_capacity(self) -> None:
+        owner_label = getattr(self, "_volume_owner_label", "bc15")
         listed = self._run(
             self._docker_args(
-                "volume", "ls", "--quiet", "--filter", "label=data-mozaic.owner=bc15"
+                "volume",
+                "ls",
+                "--quiet",
+                "--filter",
+                f"label=data-mozaic.owner={owner_label}",
             )
         )
         if listed.returncode:
@@ -395,7 +414,7 @@ class DockerProtectedReplayExecutor:
                         "volume",
                         "create",
                         "--label",
-                        "data-mozaic.owner=bc15",
+                        f"data-mozaic.owner={self._volume_owner_label}",
                         "--label",
                         f"data-mozaic.run_id={run_id}",
                         volume,

@@ -1,6 +1,6 @@
 # Arquitetura Data Mozaic
 
-Status das decisões: **Proposed**, salvo indicação explícita; nenhuma ADR foi homologada. Os assessments registram evidências de incrementos implementados. Scout S1.6 é um fluxo offline com fixtures, doubles e relay durável. PR #4 adicionou um adapter HTTP experimental; PR #6 prova uma topologia opcional de egress isolado. O host MCP de autoria oferece Streamable HTTP com autenticação e limites; o pacote pode ser produzido fora do checkout. O deployment confiável ainda depende de provisionamento administrativo, allowlist Codex efetiva e verificação de identidade/permissões, conforme ADR 017. Não há navegação pública pelo host, integração produtiva de custody, sandbox global do agente nem runtime/deployment de agente operado pelo Scout. O runtime Scrapy de aquisição e seu acceptance controlado são capacidades separadas de BC15/worker e não demonstram uma fleet ou serviço de captura produtivo.
+Status das decisões: **Proposed**, salvo indicação explícita; nenhuma ADR foi homologada. Os assessments registram evidências de incrementos implementados. Scout S1.6 é um fluxo offline com fixtures, doubles e relay durável. PR #4 adicionou um adapter HTTP experimental; PR #6 prova uma topologia opcional de egress isolado. O host MCP de autoria oferece Streamable HTTP com autenticação e limites; o pacote pode ser produzido fora do checkout. O deployment confiável ainda depende de provisionamento administrativo, allowlist Codex efetiva e verificação de identidade/permissões, conforme ADR 017; esse deployment não é requisito da conformance funcional M8. M8 demonstra deterministicamente authoring e acquisition de ponta a ponta, enquanto autoria real por agente protegido permanece em um gate operacional futuro. Não há navegação pública pelo host, integração produtiva de custody, sandbox global do agente nem runtime/deployment de agente operado pelo Scout. O runtime Scrapy e seu acceptance controlado não demonstram uma fleet ou serviço de captura produtivo.
 
 1. [Baseline](assessments/repository-baseline.md)
 2. [Visão, planos e requisitos não funcionais](platform.md)
@@ -75,5 +75,7 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 66. [Controlled raw artifact acquisition — M6 implementation evidence](assessments/raw-artifact-acquisition-2026-11-26.md)
 67. [ADR 032 — bounded raw artifact transfer](decisions/032-bounded-raw-artifact-transfer.md)
 68. [M7 acquisition resource maturity — implementation evidence](assessments/acquisition-resource-maturity-2026-11-27.md)
+69. [ADR 033 — Scout transcript and current Playbook authoring handoff](decisions/033-scout-current-playbook-authoring-handoff.md)
+70. [M8 Agent-to-Raw conformance — implementation evidence](assessments/agent-to-raw-conformance-2026-11-27.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.

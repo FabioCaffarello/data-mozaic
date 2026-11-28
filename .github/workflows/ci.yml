@@ -140,6 +140,8 @@ jobs:
         run: make work-intake-acceptance
       - name: Execute controlled raw artifact acquisition through BC13, BC04, gateway, BC06, and BC05
         run: make raw-artifact-acquisition-acceptance
+      - name: Execute controlled Scout proposal through raw, structured, and parameterized publication
+        run: make agent-to-raw-acceptance
       - name: Reject and reconcile raw-only v4 controlled faults through BC13, BC04, gateway, BC06, and BC05
         run: make raw-artifact-negative-acceptance
       - name: Execute authorized controlled live Scrapy HTML through BC04/BC05/BC06

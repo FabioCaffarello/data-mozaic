@@ -23,6 +23,20 @@ from ..domain import SourceRef
 from ..edge import validate_transcript
 
 _LOG = logging.getLogger(__name__)
+PROTECTED_AUTHORING_TOOL_NAMES = frozenset(
+    {
+        "scout_preflight",
+        "scout_start",
+        "scout_fetch",
+        "scout_record_finding",
+        "scout_propose",
+        "scout_status",
+        "scout_export_transcript",
+        "scout_proposal_history",
+        "scout_validate_proposal",
+        "scout_prepare_promotion",
+    }
+)
 
 
 def command_identity(
@@ -329,6 +343,8 @@ def create_server(
     protected_replay_executor=None,
     acceptance_expectations: dict[tuple[str, str], dict] | None = None,
     single_use_approval_source: tuple[str, str] | None = None,
+    proposal_workflow=None,
+    allowed_tools: frozenset[str] | None = None,
 ) -> Server:
     """Create a tool server bound to launcher-owned local identity and adapters."""
     if not principal:
@@ -512,6 +528,10 @@ def create_server(
                         "maxItems": 10,
                         "uniqueItems": True,
                     },
+                    "candidate_specification": {
+                        "type": "object",
+                        "description": "Optional declarative BC15 CapturePlaybook candidate. It conveys no authorization and is validated separately.",
+                    },
                 },
                 "required": [
                     "session_id",
@@ -548,7 +568,56 @@ def create_server(
                 "additionalProperties": False,
             },
         ),
+        Tool(
+            name="scout_proposal_history",
+            description="Read the authorized proposal and immutable revision history for a Scout session.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string", "minLength": 1, "maxLength": 128}
+                },
+                "required": ["session_id"],
+                "additionalProperties": False,
+            },
+        ),
     ]
+    if proposal_workflow is not None:
+        tools.extend(
+            [
+                Tool(
+                    name="scout_validate_proposal",
+                    description="Validate the current evidence-bound candidate through BC14 and BC15; validation does not promote or authorize execution.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            }
+                        },
+                        "required": ["session_id"],
+                        "additionalProperties": False,
+                    },
+                ),
+                Tool(
+                    name="scout_prepare_promotion",
+                    description="Prepare a reviewer handoff for a valid proposal. This agent operation cannot promote, approve, sign, or install a release.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            }
+                        },
+                        "required": ["session_id"],
+                        "additionalProperties": False,
+                    },
+                ),
+            ]
+        )
     if protected_replay_executor is None:
         # Test-only/legacy composition. The production launcher fails closed
         # unless its protected executor is initialized before exposing tools.
@@ -672,11 +741,15 @@ def create_server(
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
-        return tools
+        if allowed_tools is None:
+            return tools
+        return [tool for tool in tools if tool.name in allowed_tools]
 
     @server.call_tool(validate_input=True)
     async def call_tool(name: str, arguments: dict) -> dict:
         try:
+            if allowed_tools is not None and name not in allowed_tools:
+                return {"ok": False, "error": {"code": "unknown_tool"}}
             if (
                 len(
                     json.dumps(
@@ -838,10 +911,13 @@ def create_server(
                     risks=tuple(arguments["risks"]),
                     required_capabilities=tuple(arguments["required_capabilities"]),
                     now=now(),
+                    candidate_specification=arguments.get("candidate_specification"),
                 )
                 return {
                     "ok": True,
                     "proposal_id": session.proposal.proposal_id,
+                    "proposal_revision": session.proposal.proposal_revision,
+                    "candidate_sha256": session.proposal.candidate_sha256,
                     "version": session.version,
                     "handoff": "delivery_pending",
                 }
@@ -874,6 +950,44 @@ def create_server(
                     "transcript_json": rendered,
                     "sha256": hashlib.sha256(encoded).hexdigest(),
                 }
+            if name == "scout_proposal_history":
+                transcript = application.export_transcript(
+                    arguments["session_id"], principal, now()
+                )
+                validate_transcript(transcript)
+                value = {
+                    "ok": True,
+                    "session_id": arguments["session_id"],
+                    "proposal": transcript.get("proposal"),
+                    "history": transcript.get("proposal_history", []),
+                }
+                if len(json.dumps(value, separators=(",", ":")).encode()) > 256_000:
+                    raise ValueError("proposal history exceeds the MCP output limit")
+                return value
+            if name in {"scout_validate_proposal", "scout_prepare_promotion"}:
+                if proposal_workflow is None:
+                    raise ValueError(
+                        "proposal validation is not configured on this host"
+                    )
+                result = proposal_workflow.validate(
+                    arguments["session_id"], principal, now()
+                )
+                diagnostics = [
+                    {"code": item.code, "path": item.path, "message": item.message}
+                    for item in result.diagnostics
+                ]
+                response = {
+                    "ok": True,
+                    "proposal_id": result.proposal_id,
+                    "proposal_revision": result.proposal_revision,
+                    "candidate_sha256": result.candidate_sha256,
+                    "valid": result.valid,
+                    "diagnostics": diagnostics,
+                }
+                if name == "scout_prepare_promotion":
+                    response["review_required"] = True
+                    response["promotion_authority_exposed"] = False
+                return response
             if name == "scout_export_replay_fixtures":
                 if protected_replay_executor is not None or artifact_root is None:
                     raise ValueError(

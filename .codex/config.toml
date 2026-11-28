@@ -11,11 +11,9 @@ enabled_tools = [
   "scout_propose",
   "scout_status",
   "scout_export_transcript",
-  "scout_bc15_replay",
-  "scout_bc15_accept",
-  "scout_bc15_status",
-  "scout_bc15_get_manifest",
-  "scout_bc15_get_report",
+  "scout_proposal_history",
+  "scout_validate_proposal",
+  "scout_prepare_promotion",
 ]
 default_tools_approval_mode = "prompt"
 startup_timeout_sec = 30

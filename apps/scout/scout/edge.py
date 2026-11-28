@@ -1,5 +1,6 @@
 """JSON Schema boundary; never imported by the domain."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -9,8 +10,13 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def validate(name: str, payload: dict):
+    version = (
+        "v2"
+        if name == "PlaybookProposal" and payload.get("contract_version") == "2.0.0"
+        else "v1"
+    )
     schema = json.loads(
-        (ROOT / "contracts" / "scout" / "v1" / f"{name}.schema.json").read_text()
+        (ROOT / "contracts" / "scout" / version / f"{name}.schema.json").read_text()
     )
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(payload)
 
@@ -27,6 +33,8 @@ def validate_transcript(transcript: dict) -> None:
     versions = {
         "scout-transcript-draft/v1": "v1",
         "scout-transcript-draft/v2": "v2",
+        "scout-transcript-draft/v3": "v3",
+        "scout-transcript-draft/v4": "v4",
     }
     version = versions.get(transcript.get("transcript_schema"))
     if version is None:
@@ -39,8 +47,48 @@ def validate_transcript(transcript: dict) -> None:
     )
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(transcript)
     validate("PlaybookProposal", transcript["proposal"])
-    session = transcript["session"]
     proposal = transcript["proposal"]
+    if proposal.get("contract_version") == "2.0.0":
+        candidate = proposal["candidate_specification"]
+        canonical = (
+            json.dumps(candidate, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+        if hashlib.sha256(canonical).hexdigest() != proposal["candidate_sha256"]:
+            raise ValueError("proposal candidate digest mismatch")
+    if version == "v4":
+        history = transcript.get("proposal_history")
+        if not isinstance(history, list) or not history:
+            raise ValueError("transcript v4 requires proposal revision history")
+        for index, item in enumerate(history, start=1):
+            if not isinstance(item, dict) or item.get("revision") != index:
+                raise ValueError("proposal revision history sequence is inconsistent")
+            revision = item.get("proposal")
+            if not isinstance(revision, dict):
+                raise TypeError("proposal revision history item is invalid")
+            validate("PlaybookProposal", revision)
+            if (
+                revision.get("proposal_id") != proposal.get("proposal_id")
+                or revision.get("session_id") != proposal.get("session_id")
+                or revision.get("source") != proposal.get("source")
+            ):
+                raise ValueError("proposal revision history identity is inconsistent")
+            if revision.get("contract_version") == "2.0.0":
+                revision_bytes = (
+                    json.dumps(
+                        revision["candidate_specification"],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode()
+                if hashlib.sha256(revision_bytes).hexdigest() != revision.get(
+                    "candidate_sha256"
+                ):
+                    raise ValueError("proposal history candidate digest mismatch")
+        if history[-1]["proposal"] != proposal:
+            raise ValueError("current proposal differs from final history revision")
+    session = transcript["session"]
     approval = transcript["approved_scope"]
     approval_record = transcript["approval_record"]
     if (
@@ -83,7 +131,7 @@ def validate_transcript(transcript: dict) -> None:
         page_artifacts.add(page["artifact_id"])
     if page_artifacts != set(evidence_by_id):
         raise ValueError("transcript evidence is not linked to captured pages")
-    if version == "v2":
+    if version in {"v2", "v3", "v4"}:
         pages = transcript["pages"]
         navigation = transcript["navigation"]
         ordered = sorted(pages, key=lambda page: page["sequence"])

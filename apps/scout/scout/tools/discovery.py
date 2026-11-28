@@ -11,6 +11,7 @@ from urllib.parse import urljoin
 
 import aiohttp
 
+from ..discovery_content import SUPPORTED_DISCOVERY_CONTENT_TYPES
 from ..domain import AuthorizationError, SourceRef
 from .ports import (
     AuthorizationPort,
@@ -46,14 +47,14 @@ class DiscoveryCustodyError(DiscoveryError):
 
 
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(password|passwd|secret|access[_-]?token|api[_-]?key)\b"
-    r"(\s*[:=]\s*)([^\s,;\"'<>]+)"
+    r"(?i)(\b(?:password|passwd|secret|access[_-]?token|api[_-]?key)\b"
+    r"[\"']?\s*[:=]\s*[\"']?)([^\s,;\"'<>}\]]+)"
 )
 _BEARER_VALUE = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/-]+=*")
 
 
 def _redact_page_text(value: str) -> str:
-    value = _SECRET_ASSIGNMENT.sub(r"\1\2[REDACTED]", value)
+    value = _SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", value)
     return _BEARER_VALUE.sub(r"\1[REDACTED]", value)
 
 
@@ -75,6 +76,8 @@ class DiscoveryResult:
 
 
 TEXT_EXTRACTION_VERSION = "scout-text-v1"
+JSON_TEXT_EXTRACTION_VERSION = "scout-json-text-v1"
+OPAQUE_EXTRACTION_VERSION = "scout-opaque-v1"
 
 
 class _PageParser(HTMLParser):
@@ -316,9 +319,9 @@ class HTTPDiscoveryTool:
     ) -> DiscoveryResult:
         now = self.clock.now()
         content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
-        if content_type not in {"text/html", "text/plain"}:
+        if content_type not in SUPPORTED_DISCOVERY_CONTENT_TYPES:
             raise DiscoveryStructureError(
-                "only HTML and plain text responses are accepted"
+                "response media type is not supported for governed discovery"
             )
         evidence = (
             self._store_evidence(session_id, source, target, response, content_type)
@@ -331,10 +334,21 @@ class HTTPDiscoveryTool:
             )
         )
         current_scope = scope.intersect(self._scope_for(session_id, source))
-        raw_text, title, links = _extract_content(
-            response.body, content_type, target, current_scope, now
-        )
-        text, truncated = _bounded_redacted_text(raw_text)
+        if content_type == "application/pdf":
+            # Discovery records only the declaration and custody reference.
+            # PDF bytes stay opaque; no parser or text extractor is invoked.
+            text, title, links, truncated = "", None, (), False
+            extraction_version = OPAQUE_EXTRACTION_VERSION
+        else:
+            raw_text, title, links = _extract_content(
+                response.body, content_type, target, current_scope, now
+            )
+            text, truncated = _bounded_redacted_text(raw_text)
+            extraction_version = (
+                JSON_TEXT_EXTRACTION_VERSION
+                if content_type == "application/json"
+                else TEXT_EXTRACTION_VERSION
+            )
         if title:
             title = _redact_page_text(title)[:512]
         self.trace.append(
@@ -362,7 +376,7 @@ class HTTPDiscoveryTool:
             request_count,
             target.url,
             now,
-            TEXT_EXTRACTION_VERSION,
+            extraction_version,
         )
 
     @staticmethod
@@ -401,7 +415,7 @@ class HTTPDiscoveryTool:
 
 def _extract_content(body: bytes, content_type: str, target: NormalizedURL, scope, now):
     decoded = body.decode("utf-8", errors="replace")
-    if content_type == "text/plain":
+    if content_type in {"text/plain", "application/json"}:
         return " ".join(decoded.split()), None, ()
     parser = _PageParser()
     parser.feed(decoded)
@@ -423,10 +437,17 @@ def reconstruct_text_projection(
     body: bytes, content_type: str, extraction_version: str
 ) -> tuple[str, bool]:
     """Rebuild the stable, redacted text response from BC06 bytes."""
-    if extraction_version != TEXT_EXTRACTION_VERSION:
+    if extraction_version == OPAQUE_EXTRACTION_VERSION:
+        if content_type != "application/pdf":
+            raise DiscoveryStructureError("opaque replay media type changed")
+        return "", False
+    if extraction_version not in {
+        TEXT_EXTRACTION_VERSION,
+        JSON_TEXT_EXTRACTION_VERSION,
+    }:
         raise DiscoveryStructureError("unsupported HTTP text extraction version")
     decoded = body.decode("utf-8", errors="replace")
-    if content_type == "text/plain":
+    if content_type in {"text/plain", "application/json"}:
         text = " ".join(decoded.split())
     elif content_type == "text/html":
         parser = _PageParser()

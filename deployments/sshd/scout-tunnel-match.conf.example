@@ -1,0 +1,10 @@
+# Install as an operator-reviewed Match block in the Linux sshd configuration.
+# Validate the complete sshd configuration before reloading the daemon.
+Match User scout-mcp-tunnel
+    AuthorizedKeysFile /etc/ssh/authorized_keys/%u
+    AllowTcpForwarding local
+    PermitOpen 127.0.0.1:8765
+    AllowAgentForwarding no
+    X11Forwarding no
+    PermitTTY no
+    PermitUserRC no
