@@ -1,8 +1,11 @@
 # M9 Acquisition Operational Baseline — implementation evidence
 
-Status: **ready for human review**. ADR 034 remains Proposed. The final local
-M9 acceptance and required focused checks passed; this assessment does not
-claim remote CI for unpublished code or production readiness.
+Status: **implementation complete; final pull-request validation pending**.
+ADR 034 remains Proposed. Final local M9 acceptance and focused checks passed,
+but the first remote integration run exposed a Linux temporary-result cleanup
+permission failure. The correction passes locally; a new exact-head CI run is
+required before M9 is ready for integration. No production readiness is
+claimed.
 
 ## Initial repository state
 
@@ -99,8 +102,18 @@ Commands and results:
 - `make artifact-custody-go-race`, `make artifact-custody-go-build` and
   `make artifact-custody-go-vuln` passed; vulnerability scan found none.
 - `make acquisition-operator-acceptance` passed in the integrated target with
-  actual operator subprocesses. `make authorized-live-readiness-acceptance`
-  passed valid and negative owner-backed readiness scenarios.
+  actual operator subprocesses and was rerun after correcting the Linux
+  container-UID cleanup mismatch discovered by the first PR CI run.
+  `make authorized-live-readiness-acceptance` passed valid and negative
+  owner-backed readiness scenarios.
+- First PR CI attempt: Quality Gate, Integration Security Gate, BC05 MongoDB,
+  BC05/BC06 Go gates and Gateway network-boundary gate passed. The
+  BC05/BC06 interoperability job failed in O12 cleanup because the non-root
+  container-created temporary result directory was not removable by the Linux
+  runner user. `live_worker.py` now makes only the validated result directory
+  removable inside its owner-only temporary parent. Local O12 acceptance and
+  `make check` pass after the correction; the follow-up remote result is
+  pending.
 - `actionlint`, Ruff, format, py_compile, docs, architecture, naming and both
   diff whitespace checks passed. Custody-interruption first exposed a missing
   starting-snapshot measurement for structured profiles; after fixing that

@@ -70,6 +70,12 @@ def _execute(bot: Path, output: Path) -> None:
         total += entry.stat().st_size
         if total > 16_777_216:
             raise ValueError("worker result exceeds the bounded output profile")
+    # The operator owns the private TemporaryDirectory containing the bind
+    # mount, while the container may use a distinct non-root UID on Linux.
+    # Permit that owner to remove this validated temporary result after import.
+    # The host parent remains mode 0700, so this does not expose result files to
+    # other host users.
+    output.chmod(0o777)
 
 
 def main() -> int:
