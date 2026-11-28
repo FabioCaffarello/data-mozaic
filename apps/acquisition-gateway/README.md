@@ -32,9 +32,25 @@ entry bound before dialing; a unique reservation identity prevents duplicate
 release from reducing another operation's reservation. Capacity is local to a
 single gateway process and rebuilt from completed files at startup. Interrupted
 and unpaired temporary files are removed after safe-file checks. Completed
-evidence is retained; no TTL is applied while recovery dependencies remain
-unknown. Authenticated `GET /internal/v1/resources` exposes only component-wide
-used/reserved bytes, entry counts, configured bounds, active source fetches and
+evidence is retained until a trusted lifecycle operation proves release
+eligibility; no TTL is applied. After successful BC04 completion, exact BC05
+publication receipt verification, and confirmation that every FetchEvidence
+maps to its published BC06 custody reference, the trusted operator may call
+authenticated `DELETE /internal/v1/evidence/{fetch_id}` to remove only the body
+bytes. The operation requires the separate `GATEWAY_EVIDENCE_RELEASE_TOKEN`,
+exact tenant/run/attempt/generation and body digest; it does not accept a
+caller-supplied completion flag. The Gateway serializes release against active
+evidence readers, verifies the body digest, archives bounded metadata before
+unlink, fsyncs the archive and evidence directories, and treats an already
+removed body as an idempotent success. Released metadata no longer consumes an
+active evidence entry; it consumes the separately bounded archive (default
+16 MiB, configurable by `GATEWAY_MAX_EVIDENCE_ARCHIVE_BYTES`). Historical
+metadata remains resolvable through the authenticated exact-identity metadata
+route. Archive exhaustion fails closed and preserves active accounting. Startup
+reconciles interrupted transitions and rebuilds active bytes, entries and
+archive use. If eligibility cannot be established, the body remains retained. Authenticated
+`GET /internal/v1/resources` exposes only component-wide
+used/reserved bytes, active entry counts, archive use and configured bounds, active source fetches and
 active evidence transfers. Evidence retrieval admits at most four concurrent
 transfers and rejects excess work with `429`; it does not queue requests. It
 exposes no tenant or evidence identifiers.
@@ -44,6 +60,8 @@ still acquires and verifies the full authorized response and stores authoritativ
 FetchEvidence; only the bounded metadata/reference is returned to that worker.
 Structured profiles still receive the complete bounded body for extraction.
 The trusted importer independently retrieves the exact attempt-bound evidence.
+The release credential is reserved for trusted lifecycle operations and is not
+mounted into workers.
 See the [M7 resource evidence](../../docs/architecture/assessments/acquisition-resource-maturity-2026-11-27.md)
 for limits and controlled measurements.
 

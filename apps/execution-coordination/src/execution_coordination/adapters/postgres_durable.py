@@ -228,6 +228,27 @@ class PostgresDurableRunRepository:
             ).fetchone()
         return (int(row["generation"]), str(row["snapshot_digest"])) if row else None
 
+    def current_authority_envelope(self, authority_id: str) -> dict[str, object] | None:
+        """Resolve BC04's exact installed signed authority envelope for a consumer."""
+        if not authority_id or len(authority_id) > 128:
+            raise CoordinationError("authority identity is invalid")
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT version.signed_envelope
+                   FROM execution_coordination.authority_snapshot_heads AS head
+                   JOIN execution_coordination.authority_snapshot_versions AS version
+                     ON version.authority_id=head.authority_id
+                    AND version.generation=head.generation
+                    AND version.snapshot_digest=head.snapshot_digest
+                   WHERE head.authority_id=%s
+                     AND head.expires_at > clock_timestamp()""",
+                (authority_id,),
+            ).fetchone()
+        envelope = None if row is None else row["signed_envelope"]
+        if envelope is not None and not isinstance(envelope, dict):
+            raise CoordinationError("installed authority envelope is malformed")
+        return envelope
+
     def create(self, intent: DurableRunIntent) -> DurableRunSnapshot:
         digest = _canonical_digest(
             {

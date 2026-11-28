@@ -139,9 +139,11 @@ M8 implementa PlaybookProposal v2 com revisões imutáveis e digest canônico, v
 
 Os templates de bundle Linux, systemd, identidade/reviewer, SSH, LaunchDaemon e configuração MDM são materiais operacionais opcionais e não requisitos para desenvolvimento ou conformance M8; nenhum ambiente protegido está provisionado. Linux continua referência aceitável para deployment protegido, mas suporte a múltiplos sistemas operacionais não é meta corrente. Ver [assessment M8](../architecture/assessments/agent-to-raw-conformance-2026-11-27.md), [runbook opcional de deployment](../operations/scout-trusted-broker-deployment.md) e ADR 033 (Proposed).
 
-## M9 — Acquisition Operational Baseline (planejado; não iniciado)
+## M9 — Acquisition Operational Baseline (em implementação)
 
-Priorizar retenção sustentável de evidence do Gateway, recuperação segura e inspeção de efeitos residuais, startup reproduzível para desenvolvimento/operação, envelopes de recursos explícitos, interfaces operacionais de aquisição, consumo independente dos dados raw, e onboarding/desenvolvedor. Não implementar neste incremento M8.
+Uma branch `feat/acquisition-operational-baseline` está implementando M9.1–M9.5 no checkout principal. A liberação reutilizável verifica fatos públicos BC04/BC05/BC06; a CLI de operador cobre inspeção e release explícito de raw-only v4. O Gateway move metadados liberados para arquivo histórico bounded, separando bytes e entradas ativas do limite de armazenamento histórico; readers ativos bloqueiam unlink e startup reconcilia transições parciais. A aceitação controlada repete aquisições sobre um Gateway isolado de três entradas e também avalia release structured, HTML e paginação. Work Intake ainda não tem uma CLI de configuração completa para executar o fluxo protegido sem o harness. ADR 034 permanece Proposed. A implementação e a aceitação integrada seguem em progresso; não declare M9 pronto antes de completar a matriz O1–O22 e as validações finais.
+
+Comando finito integrado: `make acquisition-operational-acceptance`, que executa as aceitações raw controladas, structured/HTML/paginação, ciclos de reutilização e a regressão determinística Agent-to-Raw. Não contata fontes reais, não requer uma sessão LLM e não altera o gate A6 deferido. Veja o [assessment M9](../architecture/assessments/acquisition-operational-baseline-2026-11-27.md) para evidências e limitações após validação.
 
 ## Future Protected Agent Operational Acceptance (planejado; não iniciado)
 

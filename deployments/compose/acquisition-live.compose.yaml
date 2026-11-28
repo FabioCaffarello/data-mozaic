@@ -11,13 +11,15 @@ services:
       GATEWAY_STATE_PATH: /var/lib/mozaic/quota/state.json
       GATEWAY_EVIDENCE_DIRECTORY: /var/lib/mozaic/evidence
       GATEWAY_GLOBAL_CONCURRENCY: "8"
-      GATEWAY_MAX_SPOOL_BYTES: "67108864"
-      GATEWAY_MAX_EVIDENCE_FILES: "500"
+      GATEWAY_MAX_SPOOL_BYTES: ${GATEWAY_MAX_SPOOL_BYTES:-67108864}
+      GATEWAY_MAX_EVIDENCE_FILES: ${GATEWAY_MAX_EVIDENCE_FILES:-500}
+      GATEWAY_MAX_EVIDENCE_ARCHIVE_BYTES: ${GATEWAY_MAX_EVIDENCE_ARCHIVE_BYTES:-16777216}
       GATEWAY_TEST_ROOTS_FILE: /run/mozaic/controlled-source.crt
       GATEWAY_TEST_STATIC_AUTHORIZATION: ${GATEWAY_TEST_STATIC_AUTHORIZATION:-1}
       GATEWAY_BC04_AUTHORIZATION_URL: ${GATEWAY_BC04_AUTHORIZATION_URL:-}
       GATEWAY_BC04_AUTHORIZATION_TOKEN: ${GATEWAY_BC04_AUTHORIZATION_TOKEN:-}
       GATEWAY_EVIDENCE_IMPORT_TOKEN: ${GATEWAY_EVIDENCE_IMPORT_TOKEN:-}
+      GATEWAY_EVIDENCE_RELEASE_TOKEN: ${GATEWAY_EVIDENCE_RELEASE_TOKEN:-}
     volumes:
       - ${MOZAIC_LIVE_TRUSTED_CONFIG:?set MOZAIC_LIVE_TRUSTED_CONFIG}:/run/mozaic:ro
       - acquisition-live-state:/var/lib/mozaic
@@ -89,6 +91,35 @@ services:
       MOZAIC_ACQUISITION_GATEWAY_URL: http://acquisition-gateway:8090
       MOZAIC_RESULT_DIRECTORY: /result-parent/result
       MOZAIC_BC04_TEST_PORT: ${MOZAIC_BC04_TEST_PORT:-}
+    entrypoint: ["python", "-B", "/workspace/tooling/scrapy_live_gateway_smoke.py"]
+    volumes:
+      - ${MOZAIC_LIVE_CAPABILITY_FILE:?set MOZAIC_LIVE_CAPABILITY_FILE}:/run/mozaic/capability:ro
+      - ${MOZAIC_LIVE_INPUT_PARAMETERS_FILE:-/dev/null}:/run/mozaic/input-parameters:ro
+      - ${MOZAIC_LIVE_RESULT_PARENT:?set MOZAIC_LIVE_RESULT_PARENT}:/result-parent
+    networks: [worker-gateway]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=1m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 64m
+    cpus: 0.25
+    pids_limit: 32
+
+  operator-worker-scrapy-live:
+    profiles: [operator]
+    build:
+      context: ../..
+      dockerfile: apps/collector-engineering/Dockerfile.scrapy-live
+      args:
+        MOZAIC_LIVE_PLAYBOOK: ${MOZAIC_LIVE_PLAYBOOK:-examples/use-cases/controlled-live-json/capture-playbook.yaml}
+        MOZAIC_LIVE_FIXTURES: ${MOZAIC_LIVE_FIXTURES:-examples/use-cases/controlled-live-json/fixtures}
+    environment:
+      MOZAIC_EXECUTION_CAPABILITY_FILE: /run/mozaic/capability
+      MOZAIC_INPUT_PARAMETERS_FILE: ${MOZAIC_ENABLE_INPUT_PARAMETERS:-}
+      MOZAIC_ACQUISITION_GATEWAY_URL: http://acquisition-gateway:8090
+      MOZAIC_RESULT_DIRECTORY: /result-parent/result
+      MOZAIC_LIVE_BUILD_DIRECTORY: /opt/live-bot
     volumes:
       - ${MOZAIC_LIVE_CAPABILITY_FILE:?set MOZAIC_LIVE_CAPABILITY_FILE}:/run/mozaic/capability:ro
       - ${MOZAIC_LIVE_INPUT_PARAMETERS_FILE:-/dev/null}:/run/mozaic/input-parameters:ro

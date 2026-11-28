@@ -16,7 +16,7 @@ from acquisition_output.domain import ArtifactRef, SourceRevisionRef
 
 from ..result_bundle import FixtureImportError, _strict_json
 
-_MAX_RESPONSE_BYTES = 64_000
+_MAX_RESPONSE_BYTES = 256_000
 _MAX_UPLOAD_BYTES = 2_000_000
 
 
@@ -117,6 +117,62 @@ class ArtifactCustodyHTTPClient:
         ):
             raise FixtureImportError("BC06 did not confirm the exact artifact bytes")
         return artifact
+
+    def verify_existing_artifact(
+        self, *, tenant_id: str, artifact: ArtifactRef, source: SourceRevisionRef
+    ) -> bool:
+        """Ask BC06 to confirm the exact logical identity and durable receipt."""
+        query = urlencode(
+            {
+                "digest": artifact.digest,
+                "size_bytes": artifact.size_bytes,
+                "source_id": source.source_id,
+                "source_revision": source.revision,
+            }
+        )
+        result = self._request(
+            f"/draft/v1/artifacts/{artifact.artifact_id}/verification?{query}",
+            method="GET",
+            tenant_id=tenant_id,
+            body=b"",
+        )
+        receipt = result.get("receipt")
+        if result.get("status") != "confirmed" or not isinstance(receipt, dict):
+            return False
+        value = receipt.get("artifact")
+        return (
+            receipt.get("tenant_id") == tenant_id
+            and receipt.get("source")
+            == {"source_id": source.source_id, "revision": source.revision}
+            and isinstance(value, dict)
+            and value.get("artifact_id") == artifact.artifact_id
+            and value.get("digest") == artifact.digest
+            and value.get("size_bytes") == artifact.size_bytes
+            and value.get("media_type", artifact.media_type) == artifact.media_type
+        )
+
+    def list_inventory(
+        self, *, tenant_id: str, cursor: str | None = None, limit: int = 50
+    ) -> dict[str, object]:
+        if not 1 <= limit <= 100:
+            raise FixtureImportError("BC06 inventory page size exceeds its bound")
+        query = urlencode({"limit": limit, **({"cursor": cursor} if cursor else {})})
+        result = self._request(
+            "/draft/v1/artifacts?" + query, method="GET", tenant_id=tenant_id, body=b""
+        )
+        items = result.get("artifacts")
+        if (
+            result.get("contract_version") != "artifact-custody.v1"
+            or result.get("scope") != "tenant"
+            or not isinstance(items, list)
+            or len(items) > limit
+            or (
+                result.get("next_cursor") is not None
+                and not isinstance(result.get("next_cursor"), str)
+            )
+        ):
+            raise FixtureImportError("BC06 inventory response is invalid")
+        return result
 
     def _request(self, path: str, *, method: str, tenant_id: str, body: bytes | Path):
         if isinstance(body, Path):

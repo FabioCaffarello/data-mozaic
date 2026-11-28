@@ -32,18 +32,20 @@ const maxRequestBytes = 8192
 const maxRedirects = 3
 
 type Options struct {
-	Audience            string
-	Keys                map[string]ed25519.PublicKey
-	Policies            []Policy
-	Started             time.Time
-	GlobalConcurrency   int
-	StatePath           string
-	EvidenceDirectory   string
-	MaxSpoolBytes       int64
-	MaxEvidenceFiles    int
-	TestRoots           *x509.CertPool
-	OperationAuthorizer OperationAuthorizer
-	EvidenceToken       string
+	Audience                string
+	Keys                    map[string]ed25519.PublicKey
+	Policies                []Policy
+	Started                 time.Time
+	GlobalConcurrency       int
+	StatePath               string
+	EvidenceDirectory       string
+	MaxSpoolBytes           int64
+	MaxEvidenceFiles        int
+	MaxEvidenceArchiveBytes int64
+	TestRoots               *x509.CertPool
+	OperationAuthorizer     OperationAuthorizer
+	EvidenceToken           string
+	EvidenceReleaseToken    string
 }
 
 // OperationAuthorizer must durably admit each upstream hop against BC04's
@@ -65,27 +67,31 @@ type budget struct {
 }
 
 type Gateway struct {
-	mu                  sync.Mutex
-	started             time.Time
-	audience            string
-	keys                map[string]ed25519.PublicKey
-	policies            map[string]Policy
-	budgets             map[string]*budget
-	global              chan struct{}
-	evidenceTransfers   chan struct{}
-	statePath           string
-	evidenceDirectory   string
-	maxSpoolBytes       int64
-	maxEvidenceFiles    int
-	testRoots           *x509.CertPool
-	operationAuthorizer OperationAuthorizer
-	evidenceToken       string
-	spoolBytes          int64
-	spoolFiles          int
-	spoolReservedBytes  int64
-	spoolReservedFiles  int
-	spoolReservationSeq uint64
-	spoolReservations   map[uint64]int64
+	mu                      sync.Mutex
+	started                 time.Time
+	audience                string
+	keys                    map[string]ed25519.PublicKey
+	policies                map[string]Policy
+	budgets                 map[string]*budget
+	global                  chan struct{}
+	evidenceTransfers       chan struct{}
+	statePath               string
+	evidenceDirectory       string
+	maxSpoolBytes           int64
+	maxEvidenceFiles        int
+	maxEvidenceArchiveBytes int64
+	spoolArchiveBytes       int64
+	testRoots               *x509.CertPool
+	operationAuthorizer     OperationAuthorizer
+	evidenceToken           string
+	evidenceReleaseToken    string
+	spoolBytes              int64
+	spoolFiles              int
+	spoolReservedBytes      int64
+	spoolReservedFiles      int
+	spoolReservationSeq     uint64
+	spoolReservations       map[uint64]int64
+	activeEvidenceByID      map[string]int
 }
 
 type spoolReservation struct {
@@ -130,6 +136,9 @@ func New(options Options) (*Gateway, error) {
 	if options.Audience == "" || len(options.Keys) == 0 || options.GlobalConcurrency < 1 || options.GlobalConcurrency > 128 || options.StatePath == "" || options.EvidenceDirectory == "" || options.MaxSpoolBytes < 1 || options.MaxEvidenceFiles < 1 {
 		return nil, errors.New("gateway_configuration_invalid")
 	}
+	if options.EvidenceReleaseToken != "" && len(options.EvidenceReleaseToken) < 32 {
+		return nil, errors.New("evidence_release_credential_invalid")
+	}
 	if options.Started.IsZero() {
 		options.Started = time.Now().UTC()
 	}
@@ -137,11 +146,25 @@ func New(options Options) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	spoolBytes, spoolFiles, err := prepareSpool(options.EvidenceDirectory, options.MaxSpoolBytes, options.MaxEvidenceFiles)
+	archiveLimit := options.MaxEvidenceArchiveBytes
+	if archiveLimit == 0 {
+		archiveLimit = defaultEvidenceArchiveBytes
+	}
+	if archiveLimit < 1 {
+		return nil, errors.New("evidence_archive_capacity_exhausted")
+	}
+	spoolBytes, spoolFiles, err := prepareSpoolWithArchive(options.EvidenceDirectory, options.MaxSpoolBytes, options.MaxEvidenceFiles, archiveLimit)
 	if err != nil {
 		return nil, err
 	}
-	g := &Gateway{started: options.Started.UTC(), audience: options.Audience, keys: options.Keys, policies: map[string]Policy{}, budgets: map[string]*budget{}, global: make(chan struct{}, options.GlobalConcurrency), evidenceTransfers: make(chan struct{}, maxEvidenceTransfers), statePath: options.StatePath, evidenceDirectory: options.EvidenceDirectory, maxSpoolBytes: options.MaxSpoolBytes, maxEvidenceFiles: options.MaxEvidenceFiles, testRoots: options.TestRoots, operationAuthorizer: options.OperationAuthorizer, evidenceToken: options.EvidenceToken, spoolBytes: spoolBytes, spoolFiles: spoolFiles, spoolReservations: map[uint64]int64{}}
+	archiveBytes, err := evidenceArchiveUsage(options.EvidenceDirectory)
+	if err != nil {
+		return nil, err
+	}
+	if archiveLimit < 1 || archiveBytes > archiveLimit {
+		return nil, errors.New("evidence_archive_capacity_exhausted")
+	}
+	g := &Gateway{started: options.Started.UTC(), audience: options.Audience, keys: options.Keys, policies: map[string]Policy{}, budgets: map[string]*budget{}, global: make(chan struct{}, options.GlobalConcurrency), evidenceTransfers: make(chan struct{}, maxEvidenceTransfers), statePath: options.StatePath, evidenceDirectory: options.EvidenceDirectory, maxSpoolBytes: options.MaxSpoolBytes, maxEvidenceFiles: options.MaxEvidenceFiles, maxEvidenceArchiveBytes: archiveLimit, spoolArchiveBytes: archiveBytes, testRoots: options.TestRoots, operationAuthorizer: options.OperationAuthorizer, evidenceToken: options.EvidenceToken, evidenceReleaseToken: options.EvidenceReleaseToken, spoolBytes: spoolBytes, spoolFiles: spoolFiles, spoolReservations: map[uint64]int64{}, activeEvidenceByID: map[string]int{}}
 	for key, saved := range state {
 		g.budgets[key] = &saved
 	}
@@ -176,7 +199,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.serveResourceSnapshot(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/internal/v1/evidence/") && strings.HasSuffix(r.URL.Path, "/metadata") && r.Method == http.MethodGet {
+		g.serveEvidenceMetadata(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/internal/v1/evidence/") {
+		if r.Method == http.MethodDelete {
+			g.serveEvidenceRelease(w, r)
+			return
+		}
 		g.serveEvidence(w, r)
 		return
 	}
@@ -256,6 +287,40 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (g *Gateway) serveEvidenceMetadata(w http.ResponseWriter, r *http.Request) {
+	if r.URL.RawQuery != "" || g.evidenceToken == "" || !constantTimeBearer(r.Header.Get("Authorization"), g.evidenceToken) {
+		writeError(w, http.StatusUnauthorized, "evidence_importer_authentication_required")
+		return
+	}
+	path := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/internal/v1/evidence/"), "/metadata")
+	if !validEvidenceID(path) {
+		writeError(w, http.StatusBadRequest, "evidence_id_invalid")
+		return
+	}
+	generation, err := strconv.ParseInt(r.Header.Get("X-DM-Generation"), 10, 64)
+	if err != nil || generation < 1 {
+		writeError(w, http.StatusBadRequest, "evidence_binding_invalid")
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	evidence, err := readEvidenceMetadata(g.evidenceDirectory, path)
+	if err != nil || evidence.TenantID != r.Header.Get("X-DM-Tenant-ID") || evidence.RunID != r.Header.Get("X-DM-Run-ID") || evidence.AttemptID != r.Header.Get("X-DM-Attempt-ID") || evidence.Generation != generation {
+		writeError(w, http.StatusNotFound, "evidence_metadata_unavailable")
+		return
+	}
+	bodyState := "retained"
+	if _, err := os.Lstat(filepath.Join(g.evidenceDirectory, evidence.BodyRef)); errors.Is(err, os.ErrNotExist) {
+		bodyState = "released"
+	} else if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "evidence_metadata_unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]any{"contract_version": evidence.ContractVersion, "fetch_id": evidence.FetchID, "tenant_id": evidence.TenantID, "run_id": evidence.RunID, "attempt_id": evidence.AttemptID, "generation": evidence.Generation, "source_id": evidence.SourceID, "source_revision_id": evidence.SourceRevisionID, "policy_digest": evidence.PolicyDigest, "release_id": evidence.ReleaseID, "build_manifest_digest": evidence.BuildManifestDigest, "request_target_digest": evidence.RequestTargetDigest, "effective_target_digest": evidence.EffectiveTargetDigest, "request_origin": evidence.RequestOrigin, "effective_origin": evidence.EffectiveOrigin, "request_path_digest": evidence.RequestPathDigest, "effective_path_digest": evidence.EffectivePathDigest, "query_parameter_names": evidence.QueryParameterNames, "redirect_count": evidence.RedirectCount, "status": evidence.Status, "acquired_at": evidence.AcquiredAt, "media_type": evidence.MediaType, "representation": evidence.BodyRepresentation, "body_size": evidence.BodySize, "body_digest": evidence.BodyDigest, "body_state": bodyState})
+}
+
 // serveResourceSnapshot exposes component-wide capacity only; it contains no
 // tenant, run, fetch, URL, or artifact identifiers.
 func (g *Gateway) serveResourceSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -268,20 +333,33 @@ func (g *Gateway) serveResourceSnapshot(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	g.mu.Lock()
-	snapshot := map[string]int64{
-		"spool_bytes_used":          g.spoolBytes,
-		"spool_bytes_reserved":      g.spoolReservedBytes,
-		"spool_entries":             int64(g.spoolFiles / 2),
-		"spool_entry_reservations":  int64(g.spoolReservedFiles / 2),
-		"spool_max_bytes":           g.maxSpoolBytes,
-		"spool_max_entries":         int64(g.maxEvidenceFiles),
-		"active_fetches":            int64(len(g.global)),
-		"active_evidence_transfers": int64(len(g.evidenceTransfers)),
+	archiveAvailable := g.maxEvidenceArchiveBytes - g.spoolArchiveBytes
+	if archiveAvailable < 0 {
+		archiveAvailable = 0
 	}
+	snapshot := map[string]int64{
+		"spool_bytes_used":              g.spoolBytes,
+		"spool_bytes_reserved":          g.spoolReservedBytes,
+		"spool_entries":                 int64(g.spoolFiles / 2),
+		"spool_entry_reservations":      int64(g.spoolReservedFiles / 2),
+		"spool_max_bytes":               g.maxSpoolBytes,
+		"spool_max_entries":             int64(g.maxEvidenceFiles),
+		"spool_archive_bytes_used":      g.spoolArchiveBytes,
+		"spool_archive_bytes_max":       g.maxEvidenceArchiveBytes,
+		"spool_archive_bytes_available": archiveAvailable,
+		"active_fetches":                int64(len(g.global)),
+		"active_evidence_transfers":     int64(len(g.evidenceTransfers)),
+	}
+	archiveExhausted := archiveAvailable == 0
 	g.mu.Unlock()
+	snapshotResponse := make(map[string]any, len(snapshot)+1)
+	for key, value := range snapshot {
+		snapshotResponse[key] = value
+	}
+	snapshotResponse["spool_archive_exhausted"] = archiveExhausted
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	if err := json.NewEncoder(w).Encode(snapshot); err != nil {
+	if err := json.NewEncoder(w).Encode(snapshotResponse); err != nil {
 		return
 	}
 }
@@ -296,7 +374,7 @@ func (g *Gateway) serveEvidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fetchID := strings.TrimPrefix(r.URL.Path, "/internal/v1/evidence/")
-	if len(fetchID) != 32 {
+	if !validEvidenceID(fetchID) {
 		writeError(w, http.StatusBadRequest, "evidence_id_invalid")
 		return
 	}
@@ -305,10 +383,22 @@ func (g *Gateway) serveEvidence(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "evidence_binding_invalid")
 		return
 	}
+	g.mu.Lock()
 	select {
 	case g.evidenceTransfers <- struct{}{}:
-		defer func() { <-g.evidenceTransfers }()
+		g.activeEvidenceByID[fetchID]++
+		g.mu.Unlock()
+		defer func() {
+			g.mu.Lock()
+			g.activeEvidenceByID[fetchID]--
+			if g.activeEvidenceByID[fetchID] == 0 {
+				delete(g.activeEvidenceByID, fetchID)
+			}
+			<-g.evidenceTransfers
+			g.mu.Unlock()
+		}()
 	default:
+		g.mu.Unlock()
 		writeError(w, http.StatusTooManyRequests, "evidence_concurrency_exhausted")
 		return
 	}
@@ -336,6 +426,78 @@ func (g *Gateway) serveEvidence(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.CopyN(w, body, evidence.BodySize); err != nil {
 		return
 	}
+}
+
+// serveEvidenceRelease removes only temporary body bytes. The release credential
+// is held by the trusted lifecycle operator, never by an execution worker.
+// Eligibility is established by that caller through BC04/BC05/BC06 public
+// interfaces; this owner-local operation binds the request to immutable
+// FetchEvidence identity and refuses active readers.
+func (g *Gateway) serveEvidenceRelease(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete || r.URL.RawQuery != "" || g.evidenceReleaseToken == "" {
+		writeError(w, http.StatusNotFound, "route_not_found")
+		return
+	}
+	if !constantTimeBearer(r.Header.Get("Authorization"), g.evidenceReleaseToken) {
+		writeError(w, http.StatusUnauthorized, "evidence_release_authentication_required")
+		return
+	}
+	fetchID := strings.TrimPrefix(r.URL.Path, "/internal/v1/evidence/")
+	generation, err := strconv.ParseInt(r.Header.Get("X-DM-Generation"), 10, 64)
+	if !validEvidenceID(fetchID) || generation < 1 || r.Header.Get("X-DM-Tenant-ID") == "" || r.Header.Get("X-DM-Run-ID") == "" || r.Header.Get("X-DM-Attempt-ID") == "" || r.Header.Get("X-DM-Body-SHA256") == "" {
+		writeError(w, http.StatusBadRequest, "evidence_release_binding_invalid")
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.activeEvidenceByID[fetchID] != 0 {
+		writeError(w, http.StatusConflict, "evidence_read_active")
+		return
+	}
+	evidence, err := readEvidenceMetadata(g.evidenceDirectory, fetchID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "evidence_unavailable")
+		return
+	}
+	if evidence.TenantID != r.Header.Get("X-DM-Tenant-ID") || evidence.RunID != r.Header.Get("X-DM-Run-ID") || evidence.AttemptID != r.Header.Get("X-DM-Attempt-ID") || evidence.Generation != generation || evidence.BodyDigest != r.Header.Get("X-DM-Body-SHA256") {
+		writeError(w, http.StatusForbidden, "evidence_release_binding_denied")
+		return
+	}
+	_, activeMetadataErr := os.Lstat(filepath.Join(g.evidenceDirectory, fetchID+".json"))
+	hadActiveMetadata := activeMetadataErr == nil
+	removed, archived, err := releaseEvidenceBodyBounded(g.evidenceDirectory, fetchID, g.maxEvidenceArchiveBytes)
+	if removed {
+		g.spoolBytes -= evidence.BodySize
+		if g.spoolBytes < 0 {
+			// Fail closed on accounting divergence. Restart reconstructs from disk.
+			g.spoolBytes = 0
+		}
+	}
+	// Derive both capacity dimensions from durable directory state after the
+	// transition, including errors between fsync/unlink boundaries.
+	if _, statErr := os.Lstat(filepath.Join(g.evidenceDirectory, fetchID+".json")); hadActiveMetadata && errors.Is(statErr, os.ErrNotExist) {
+		g.spoolFiles -= 2
+		if g.spoolFiles < 0 {
+			g.spoolFiles = 0
+		}
+	}
+	if usage, usageErr := evidenceArchiveUsage(g.evidenceDirectory); usageErr == nil {
+		g.spoolArchiveBytes = usage
+	} else if err == nil {
+		err = usageErr
+	}
+	_ = archived
+	if err != nil {
+		if err.Error() == "evidence_archive_capacity_exhausted" {
+			writeError(w, http.StatusInsufficientStorage, "evidence_archive_capacity_exhausted")
+			return
+		}
+		writeError(w, http.StatusServiceUnavailable, "evidence_release_incomplete")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]string{"contract_version": "fetch-evidence/v1", "fetch_id": fetchID, "body_state": "released", "body_digest": evidence.BodyDigest})
 }
 
 func constantTimeBearer(header, token string) bool {
@@ -769,7 +931,7 @@ func errorCode(err error) string {
 	if errors.Is(err, ErrOperationDenied) {
 		return "current_attempt_denied"
 	}
-	known := map[string]bool{"capability_missing": true, "capability_invalid": true, "capability_key_unknown": true, "capability_signature_invalid": true, "capability_scope_invalid": true, "capability_expired_or_stale": true, "capability_time_invalid": true, "policy_binding_denied": true, "url_invalid": true, "origin_denied": true, "scheme_denied": true, "test_destination_denied": true, "path_invalid": true, "path_denied": true, "path_traversal_denied": true, "path_separator_denied": true, "path_ambiguous": true, "query_invalid": true, "query_denied": true, "redirect_denied": true, "redirect_invalid": true, "redirect_location_missing": true, "destination_address_denied": true, "destination_resolution_failed": true, "upstream_request_failed": true, "response_too_large": true, "content_encoding_denied": true, "request_budget_exhausted": true, "aggregate_byte_budget_exhausted": true, "attempt_concurrency_exhausted": true, "gateway_concurrency_exhausted": true, "response_interrupted": true, "response_headers_too_large": true, "request_rate_limited": true, "current_attempt_authorizer_unavailable": true, "current_attempt_authorization_unavailable": true, "current_attempt_authorization_failed": true, "operation_target_invalid": true, "operation_identity_failed": true}
+	known := map[string]bool{"capability_missing": true, "capability_invalid": true, "capability_key_unknown": true, "capability_signature_invalid": true, "capability_scope_invalid": true, "capability_expired_or_stale": true, "capability_time_invalid": true, "policy_binding_denied": true, "url_invalid": true, "origin_denied": true, "scheme_denied": true, "test_destination_denied": true, "path_invalid": true, "path_denied": true, "path_traversal_denied": true, "path_separator_denied": true, "path_ambiguous": true, "query_invalid": true, "query_denied": true, "redirect_denied": true, "redirect_invalid": true, "redirect_location_missing": true, "destination_address_denied": true, "destination_resolution_failed": true, "upstream_request_failed": true, "response_too_large": true, "content_encoding_denied": true, "evidence_spool_capacity_exhausted": true, "request_budget_exhausted": true, "aggregate_byte_budget_exhausted": true, "attempt_concurrency_exhausted": true, "gateway_concurrency_exhausted": true, "response_interrupted": true, "response_headers_too_large": true, "request_rate_limited": true, "current_attempt_authorizer_unavailable": true, "current_attempt_authorization_unavailable": true, "current_attempt_authorization_failed": true, "operation_target_invalid": true, "operation_identity_failed": true}
 	if known[message] {
 		return message
 	}
@@ -790,7 +952,7 @@ func errorStatus(err error) int {
 	if code == "origin_denied" || code == "path_denied" || code == "query_denied" || code == "test_destination_denied" || code == "destination_address_denied" {
 		return http.StatusForbidden
 	}
-	if strings.Contains(code, "budget") || strings.Contains(code, "concurrency") || strings.Contains(code, "rate_limited") {
+	if strings.Contains(code, "budget") || strings.Contains(code, "concurrency") || strings.Contains(code, "rate_limited") || code == "evidence_spool_capacity_exhausted" {
 		return http.StatusTooManyRequests
 	}
 	return http.StatusBadGateway

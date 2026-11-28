@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-mozaic.example/contracts/fetch-evidence/draft/v1/EvidenceBodyReleaseResponse.schema.json",
+  "title": "EvidenceBodyReleaseResponseDraftV1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {"const": "fetch-evidence/v1"},
+    "fetch_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "body_state": {"const": "released"},
+    "body_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "required": ["contract_version", "fetch_id", "body_state", "body_digest"]
+}

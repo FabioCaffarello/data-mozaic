@@ -10,12 +10,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/FabioCaffarello/data-mozaic/apps/artifact-custody/internal/adapters/httpapi"
 	"github.com/FabioCaffarello/data-mozaic/apps/artifact-custody/internal/adapters/s3store"
 	"github.com/FabioCaffarello/data-mozaic/apps/artifact-custody/internal/application"
 	"github.com/FabioCaffarello/data-mozaic/apps/artifact-custody/internal/domain"
@@ -52,7 +56,7 @@ func TestRecoveryAfterObjectCommitBeforeInventoryConfirmation(t *testing.T) {
 	suffix := randomSuffix(t)
 	intent := domain.WriteIntent{
 		ContractVersion: domain.ContractVersion, OperationID: "recovery-op-" + suffix,
-		TenantID: "recovery-tenant", ArtifactID: "recovery-artifact-" + suffix,
+		TenantID: "recovery-tenant-" + suffix, ArtifactID: "recovery-artifact-" + suffix,
 		Source:         domain.SourceRef{SourceID: "synthetic", Revision: "recovery-v1"},
 		Artifact:       domain.ArtifactRef{ArtifactID: "recovery-artifact-" + suffix, Digest: sha, SizeBytes: int64(len(payload)), MediaType: "application/octet-stream", MediaTypePresent: true},
 		Representation: domain.RepresentationDownloadedFile, Classification: domain.ClassificationInternal,
@@ -117,6 +121,38 @@ func TestRecoveryAfterObjectCommitBeforeInventoryConfirmation(t *testing.T) {
 	}
 	if !foundCustodyEvent {
 		t.Fatalf("durable custody event missing for operation %s", intent.OperationID)
+	}
+	api, err := httpapi.NewServer(service, "test", "integration-token-at-least-32-bytes-long", domain.DefaultMaxBytes, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/draft/v1/artifacts?limit=10", nil)
+	request.Header.Set("Authorization", "Bearer integration-token-at-least-32-bytes-long")
+	request.Header.Set("X-DM-Tenant-ID", intent.TenantID)
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, request)
+	var inventory map[string]any
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &inventory) != nil {
+		t.Fatalf("tenant inventory response status=%d body=%s", response.Code, response.Body.String())
+	}
+	items, ok := inventory["artifacts"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("tenant inventory count unexpected: %#v", inventory)
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok || item["operation_id"] != intent.OperationID || item["state"] != "available" {
+		t.Fatalf("inventory did not expose owner state: %#v", item)
+	}
+	if _, exposesPhysical := item["location"]; exposesPhysical {
+		t.Fatal("inventory exposed private physical storage location")
+	}
+	request = httptest.NewRequest(http.MethodGet, "/draft/v1/artifacts?limit=10", nil)
+	request.Header.Set("Authorization", "Bearer integration-token-at-least-32-bytes-long")
+	request.Header.Set("X-DM-Tenant-ID", "other-tenant-"+suffix)
+	response = httptest.NewRecorder()
+	api.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"artifacts":[]`) {
+		t.Fatalf("tenant inventory crossed scope: status=%d body=%s", response.Code, response.Body.String())
 	}
 	otherTenantEvents, err := db.ListPendingEvents(ctx, "other-"+suffix, 100)
 	if err != nil {

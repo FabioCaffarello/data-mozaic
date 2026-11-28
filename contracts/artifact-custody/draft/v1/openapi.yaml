@@ -8,6 +8,28 @@ servers:
 security:
   - LocalBearer: []
 paths:
+  /draft/v1/artifacts:
+    get:
+      summary: Read one bounded tenant-scoped custody inventory page
+      description: Physical storage location details are never returned. Unreferenced artifact disposition remains unknown; this operation does not authorize deletion.
+      parameters:
+        - in: header
+          name: X-DM-Tenant-ID
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - in: query
+          name: cursor
+          schema: { type: string, maxLength: 1024 }
+      responses:
+        '200':
+          description: Tenant-scoped inventory page with operation, state and timestamps
+        '400':
+          description: Invalid cursor, scope or page bound
+        '401':
+          description: Authentication required
   /draft/v1/artifact-intents:
     post:
       operationId: createArtifactWriteIntent

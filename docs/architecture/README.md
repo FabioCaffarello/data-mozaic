@@ -77,5 +77,9 @@ O [roadmap pós-S1](../roadmap/implementation.md) descreve o estado atual e os p
 68. [M7 acquisition resource maturity — implementation evidence](assessments/acquisition-resource-maturity-2026-11-27.md)
 69. [ADR 033 — Scout transcript and current Playbook authoring handoff](decisions/033-scout-current-playbook-authoring-handoff.md)
 70. [M8 Agent-to-Raw conformance — implementation evidence](assessments/agent-to-raw-conformance-2026-11-27.md)
+71. [ADR 034 — Gateway evidence body release](decisions/034-gateway-evidence-body-release.md)
+72. [M9 Acquisition Operational Baseline — implementation evidence](assessments/acquisition-operational-baseline-2026-11-27.md)
 
 O [runbook das ferramentas HTTP](../operations/scout-authoring-tools.md) documenta a policy local e os limites do adapter experimental. O [runbook de CapturePlaybook drafts](../operations/capture-playbook-drafts.md) descreve o gerador BC15 e replay offline.
+
+O [runbook operacional de aquisição](../operations/acquisition-operational-baseline.md) documenta o desenvolvimento controlado, limites atuais, recovery e checklist futuro de onboarding de source.

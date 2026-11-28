@@ -14,7 +14,13 @@ dependencies = [
     "mozaic-collector-engineering==0.3.0",
     "mozaic-contract-resolution==0.1.0",
     "mozaic-execution-coordination==0.1.0",
+    "mozaic-acquisition-lifecycle==0.1.0",
+    "mozaic-work-intake==0.1.0",
+    "pymongo>=4.10,<5",
 ]
+
+[project.scripts]
+acquisition-operator = "acquisition_application.operational_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/acquisition_application"]

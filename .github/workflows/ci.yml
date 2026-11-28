@@ -138,34 +138,16 @@ jobs:
         run: make acquisition-lifecycle-acceptance
       - name: Execute durable three-input BC13 parameterized acquisition
         run: make work-intake-acceptance
-      - name: Execute controlled raw artifact acquisition through BC13, BC04, gateway, BC06, and BC05
-        run: make raw-artifact-acquisition-acceptance
-      - name: Execute controlled Scout proposal through raw, structured, and parameterized publication
-        run: make agent-to-raw-acceptance
-      - name: Reject and reconcile raw-only v4 controlled faults through BC13, BC04, gateway, BC06, and BC05
-        run: make raw-artifact-negative-acceptance
-      - name: Execute authorized controlled live Scrapy HTML through BC04/BC05/BC06
-        run: make authorized-live-html-acquisition
-      - name: Execute authorized controlled live paginated Scrapy through BC04/BC05/BC06
-        run: make authorized-live-pagination-acquisition
-      - name: Execute authorized controlled planned-window pagination through BC04/BC05/BC06
-        run: make authorized-live-pagination-planned-acquisition
+      - name: Execute M9 controlled acquisition, release, raw consumption, and regression acceptance
+        run: make acquisition-operational-acceptance
       - name: Execute authorized controlled redirect through BC04/BC05/BC06
         run: make authorized-live-redirect-acquisition
       - name: Reject unauthorized controlled redirect without publication
         run: make authorized-live-redirect-denial
       - name: Reject redirect chain after the bounded gateway hop budget
         run: make authorized-live-redirect-budget-exhaustion
-      - name: Reconcile controlled live publication after acknowledgment loss
-        run: make authorized-live-publication-ack-loss
-      - name: Cancel an active controlled paginated run after first admitted request
-        run: make authorized-live-pagination-cancellation
       - name: Restart gateway during live acquisition and reject the stale capability
         run: make authorized-live-scenario CASE=gateway-restart
-      - name: Verify live custody retained after interruption before BC05 staging
-        run: make authorized-live-custody-interruption
-      - name: Verify partial live staging remains unpublished after interruption
-        run: make authorized-live-partial-stage-interruption
       - name: Reject oversized live response before publication
         run: make authorized-live-scenario CASE=oversized
       - name: Reject a live response that exceeds the execution deadline

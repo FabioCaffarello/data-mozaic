@@ -41,6 +41,7 @@ Default sizes are 1, 10 and 100 MiB with two samples each, followed by four conc
 - The local bearer policy is test-only. Startup rejects modes other than `local` and `test`; this is not production authorization, TLS, HA, or a legal-retention implementation.
 - PostgreSQL and object storage do not share a transaction. A durable intent and generation-bound upload lease plus bounded reconciliation recover incomplete writes. Custody is confirmed only after the object is verified and receipt/inventory/outbox commit together.
 - The outbox is durable and inspectable; no relay or delivery guarantee is implemented.
+- `GET /draft/v1/artifacts?limit=50&cursor=…` exposes a bounded, authenticated tenant inventory for operational residual inspection. It returns logical ArtifactID, operation ID, source, custody/reconciliation state and timestamps; physical provider, bucket, key and version fields stay private. A page cursor is tenant-bound and pagination is keyset ordered. Unreferenced or incomplete artifacts have unknown disposition and the inventory grants no deletion authority.
 - BC06-local leases do not authorize BC05 publication against PostgreSQL-owned BC04 attempts. ADR 022 remains Proposed and unresolved.
 
 ## Maintenance

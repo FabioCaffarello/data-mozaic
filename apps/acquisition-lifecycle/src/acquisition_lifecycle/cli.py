@@ -135,6 +135,11 @@ def _application(
     return application, store
 
 
+def compose_for_operations() -> tuple[AcquisitionLifecycle, PostgresLifecycleStore]:
+    """Compose lifecycle resolution for consuming applications without approval keys."""
+    return _application(require_signer=False)
+
+
 class _NoopSigner:
     key_id = "unavailable"
 
