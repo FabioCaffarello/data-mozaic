@@ -52,6 +52,10 @@ type CustodyStore interface {
 	ListPendingEvents(context.Context, string, int) ([]OutboxEvent, error)
 }
 
+type InventoryStore interface {
+	ListInventory(context.Context, string, string, time.Time, int) ([]InventoryItem, error)
+}
+
 type ObjectStorage interface {
 	PutVerified(context.Context, string, int64, string, string, io.Reader) (ObjectLocation, error)
 	Head(context.Context, ObjectLocation) (ObjectMetadata, error)
@@ -66,6 +70,23 @@ type AccessPolicy interface {
 type Principal struct {
 	TenantID string
 	Scopes   []string
+}
+
+type InventoryItem struct {
+	OperationID         string                     `json:"operation_id"`
+	Artifact            domain.ArtifactRef         `json:"artifact"`
+	Source              domain.SourceRef           `json:"source"`
+	State               domain.ArtifactState       `json:"state"`
+	CreatedAt           string                     `json:"created_at"`
+	UpdatedAt           string                     `json:"updated_at"`
+	ConfirmedAt         string                     `json:"confirmed_at,omitempty"`
+	ReconciliationState domain.ReconciliationState `json:"reconciliation_state"`
+}
+
+type InventoryPage struct {
+	Items      []InventoryItem `json:"items"`
+	NextCursor string          `json:"next_cursor,omitempty"`
+	HasMore    bool            `json:"-"`
 }
 
 type OutboxEvent struct {

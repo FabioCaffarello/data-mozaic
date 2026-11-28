@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -50,10 +51,69 @@ func NewServer(service *application.Service, mode, token string, maxBytes int64,
 	mux.HandleFunc("POST /draft/v1/artifact-intents", s.createIntent)
 	mux.HandleFunc("PUT /draft/v1/artifact-intents/{operation_id}/content", s.upload)
 	mux.HandleFunc("GET /draft/v1/artifacts/{artifact_id}/verification", s.verify)
+	mux.HandleFunc("GET /draft/v1/artifacts", s.inventory)
 	mux.HandleFunc("GET /draft/v1/artifacts/{artifact_id}", s.metadata)
 	mux.HandleFunc("GET /draft/v1/artifacts/{artifact_id}/content", s.download)
 	mux.HandleFunc("GET /draft/v1/outbox/pending", s.pendingEvents)
 	return s.auth(mux), nil
+}
+
+type inventoryCursor struct {
+	TenantID   string `json:"tenant_id"`
+	CreatedAt  string `json:"created_at"`
+	ArtifactID string `json:"artifact_id"`
+}
+
+func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	for key := range query {
+		if key != "limit" && key != "cursor" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "unsupported inventory query")
+			return
+		}
+	}
+	limit := 50
+	if raw := query.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "limit must be an integer")
+			return
+		}
+		limit = n
+	}
+	afterArtifact := ""
+	var afterCreated time.Time
+	if cursor := query.Get("cursor"); cursor != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(cursor)
+		if err != nil || len(raw) > 1024 {
+			writeError(w, http.StatusBadRequest, "invalid_request", "inventory cursor is invalid")
+			return
+		}
+		var value inventoryCursor
+		decoder := json.NewDecoder(strings.NewReader(string(raw)))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&value) != nil || value.TenantID != r.Context().Value(tenantKey{}).(string) || value.ArtifactID == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "inventory cursor scope is invalid")
+			return
+		}
+		afterCreated, err = time.Parse(time.RFC3339Nano, value.CreatedAt)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "inventory cursor time is invalid")
+			return
+		}
+		afterArtifact = value.ArtifactID
+	}
+	page, err := s.service.Inventory(r.Context(), s.principal(r), r.Context().Value(tenantKey{}).(string), afterArtifact, afterCreated, limit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "inventory request is unavailable or outside its bounds")
+		return
+	}
+	if page.HasMore && len(page.Items) > 0 {
+		last := page.Items[len(page.Items)-1]
+		raw, _ := json.Marshal(inventoryCursor{TenantID: r.Context().Value(tenantKey{}).(string), CreatedAt: last.CreatedAt, ArtifactID: last.Artifact.ArtifactID})
+		page.NextCursor = base64.RawURLEncoding.EncodeToString(raw)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"contract_version": domain.ContractVersion, "artifacts": page.Items, "next_cursor": page.NextCursor, "scope": "tenant", "disposition": "unknown_without_published_reference"})
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {

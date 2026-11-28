@@ -110,6 +110,32 @@ func (s *Service) Metadata(ctx context.Context, principal Principal, tenantID, a
 	return s.store.ReadArtifact(ctx, tenantID, artifactID)
 }
 
+func (s *Service) Inventory(ctx context.Context, principal Principal, tenantID, afterArtifact string, afterCreated time.Time, limit int) (InventoryPage, error) {
+	if principal.TenantID != tenantID || tenantID == "" {
+		return InventoryPage{}, errors.New("tenant scope mismatch")
+	}
+	if limit < 1 || limit > 100 {
+		return InventoryPage{}, errors.New("inventory page size must be between 1 and 100")
+	}
+	if err := s.access.Authorize(ctx, principal, "artifact:read", domain.WriteIntent{TenantID: tenantID}); err != nil {
+		return InventoryPage{}, err
+	}
+	store, ok := s.store.(InventoryStore)
+	if !ok {
+		return InventoryPage{}, errors.New("tenant inventory is unsupported by the configured store")
+	}
+	items, err := store.ListInventory(ctx, tenantID, afterArtifact, afterCreated, limit+1)
+	if err != nil {
+		return InventoryPage{}, err
+	}
+	page := InventoryPage{Items: items}
+	if len(items) > limit {
+		page.Items = items[:limit]
+		page.HasMore = true
+	}
+	return page, nil
+}
+
 func (s *Service) Download(ctx context.Context, principal Principal, tenantID, artifactID string) (domain.ArtifactMetadata, io.ReadCloser, error) {
 	metadata, err := s.Metadata(ctx, principal, tenantID, artifactID)
 	if err != nil {

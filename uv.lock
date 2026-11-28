@@ -1377,21 +1377,27 @@ version = "0.1.0"
 source = { editable = "apps/acquisition-application" }
 dependencies = [
     { name = "jsonschema" },
+    { name = "mozaic-acquisition-lifecycle" },
     { name = "mozaic-acquisition-output" },
     { name = "mozaic-bot-build" },
     { name = "mozaic-collector-engineering" },
     { name = "mozaic-contract-resolution" },
     { name = "mozaic-execution-coordination" },
+    { name = "mozaic-work-intake" },
+    { name = "pymongo" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "jsonschema", specifier = ">=4.23,<5" },
+    { name = "mozaic-acquisition-lifecycle", editable = "apps/acquisition-lifecycle" },
     { name = "mozaic-acquisition-output", editable = "apps/acquisition-output" },
     { name = "mozaic-bot-build", editable = "libs/python/bot-build" },
     { name = "mozaic-collector-engineering", editable = "apps/collector-engineering" },
     { name = "mozaic-contract-resolution", editable = "libs/python/contract-resolution" },
     { name = "mozaic-execution-coordination", editable = "apps/execution-coordination" },
+    { name = "mozaic-work-intake", editable = "apps/work-intake" },
+    { name = "pymongo", specifier = ">=4.10,<5" },
 ]
 
 [[package]]

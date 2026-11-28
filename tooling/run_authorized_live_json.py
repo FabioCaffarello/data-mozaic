@@ -12,6 +12,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import uuid
@@ -37,6 +38,10 @@ from acquisition_application import (
     stable_identifier,
 )
 from acquisition_application.adapters.artifact_custody import ArtifactCustodyHTTPClient
+from acquisition_application.adapters.gateway_evidence import (
+    GatewayEvidenceMetadataHTTPClient,
+    GatewayEvidenceReleaseHTTPClient,
+)
 from acquisition_output.adapters.http_custody import ArtifactCustodyHTTPAdapter
 from acquisition_output.adapters.mongodb import MongoOutputStore, MongoResources
 from acquisition_output.adapters.mongodb.config import MongoSettings
@@ -69,6 +74,16 @@ from mozaic_bot_build import canonical_json, verify_bot_build
 from mozaic_contract_resolution import ContractReference, ImmutableContractRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class _ControlledEvidenceReleaseAuthorization:
+    """Test-scoped operator allowlist; never used by production packages."""
+
+    def assert_can_release(self, operator_identity: str, tenant_id: str, run_id: str):
+        if operator_identity != "controlled-acceptance-operator":
+            raise PermissionError("operator is not authorized for evidence release")
+
+
 COMPOSE = ROOT / "deployments/compose/acquisition-live.compose.yaml"
 TENANT = "tenant-controlled-live-json"
 SOURCE_ID = "controlled-http"
@@ -379,6 +394,443 @@ def _run(
     return result
 
 
+def _readiness_cli(
+    env: dict[str, str], *, release_id: str | None = None
+) -> tuple[int, dict[str, object]]:
+    command = [sys.executable, str(ROOT / "tooling/acquisition_preflight.py")]
+    if release_id is not None:
+        command.extend(("--release-id", release_id))
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=env,
+        check=False,
+        timeout=20,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        document = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("acquisition preflight returned invalid JSON") from error
+    if not isinstance(document, dict):
+        raise TypeError("acquisition preflight returned a non-object result")
+    return result.returncode, document
+
+
+def _assert_preflight_negative(
+    label: str,
+    env: dict[str, str],
+    *,
+    release_id: str,
+    expected_check: str,
+) -> dict[str, object]:
+    status, report = _readiness_cli(env, release_id=release_id)
+    checks = report.get("checks")
+    check = checks.get(expected_check) if isinstance(checks, dict) else None
+    if (
+        status != 1
+        or report.get("state") != "not_ready"
+        or not isinstance(check, dict)
+        or check.get("state") != "blocked"
+    ):
+        raise RuntimeError(
+            f"readiness negative {label} did not block {expected_check}: {report}"
+        )
+    return {"case": label, "check": expected_check, "detail": check}
+
+
+def _run_readiness_acceptance(
+    env: dict[str, str], *, release_id: str, temporary: Path
+) -> dict[str, object]:
+    status, valid = _readiness_cli(env, release_id=release_id)
+    if status != 0 or valid.get("state") != "ready":
+        raise RuntimeError(
+            f"valid controlled acquisition preflight was not ready: {valid}"
+        )
+    negatives = []
+    negatives.append(
+        _assert_preflight_negative(
+            "gateway-unavailable",
+            env | {"GATEWAY_HTTP_URL": "http://127.0.0.1:1"},
+            release_id=release_id,
+            expected_check="gateway_connectivity",
+        )
+    )
+    negatives.append(
+        _assert_preflight_negative(
+            "operator-identity-missing",
+            env | {"MOZAIC_OPERATOR_ID": ""},
+            release_id=release_id,
+            expected_check="operator_identity",
+        )
+    )
+    missing_contracts = temporary / "missing-contracts"
+    missing_contracts.mkdir(mode=0o700, exist_ok=True)
+    negatives.append(
+        _assert_preflight_negative(
+            "exact-contract-unavailable",
+            env | {"MOZAIC_PREFLIGHT_CONTRACT_ROOT": str(missing_contracts)},
+            release_id=release_id,
+            expected_check="contract_availability",
+        )
+    )
+    negatives.append(
+        _assert_preflight_negative(
+            "release-unavailable",
+            env,
+            release_id="preflight-release-does-not-exist",
+            expected_check="requested_release",
+        )
+    )
+    return {"valid": valid, "negative": negatives}
+
+
+def _run_operator_workflow(
+    *,
+    env: dict[str, str],
+    compose: list[str],
+    project: str,
+    release_id: str,
+    build_digest: str,
+    runtime_digest: str,
+    policy_path: Path,
+    fixture_path: Path,
+    trusted_keys: dict[str, bytes],
+    cap_seed: bytes,
+    input_contract: ContractReference,
+    coordinator: DurableExecutionCoordinator,
+    app: AcquisitionOutputApplication,
+    contract: PayloadContractRef,
+    operation_token: str,
+    api_port: int,
+    gateway_port: int,
+    temporary: Path,
+) -> None:
+    """Exercise the installed operator CLI as a fresh-process consumer."""
+    if len(trusted_keys) != 1:
+        raise RuntimeError("controlled authority trust set is not exact")
+    key_id, trusted_public = next(iter(trusted_keys.items()))
+    authority_public = temporary / "operator-authority-public.key"
+    authority_public.write_bytes(trusted_public)
+    authority_public.chmod(0o444)
+    capability_seed_path = temporary / "operator-capability.key"
+    capability_seed_path.write_bytes(cap_seed)
+    capability_seed_path.chmod(0o600)
+
+    operator_env = env | {
+        "MOZAIC_AUTHORITY_ID": AUTHORITY_ID,
+        "MOZAIC_AUTHORITY_TRUSTED_PUBLIC_KEY_FILE": str(authority_public),
+        "MOZAIC_EXECUTION_CAPABILITY_SIGNING_KEY_FILE": str(capability_seed_path),
+        "MOZAIC_EXECUTION_CAPABILITY_KEY_ID": "gateway-test-key",
+        "MOZAIC_LIVE_COMPOSE_PROJECT": project,
+        "MOZAIC_PAYLOAD_CONTRACT_ROOT": str(ROOT / "contracts/payload/draft/v1"),
+        "MOZAIC_LIVE_PLAYBOOK": str(policy_path.resolve().relative_to(ROOT.resolve())),
+        "MOZAIC_LIVE_FIXTURES": str(fixture_path.resolve().relative_to(ROOT.resolve())),
+        "MOZAIC_LIVE_CAPABILITY_FILE": str(temporary / "operator-unused-capability"),
+        "MOZAIC_LIVE_RESULT_PARENT": str(temporary / "operator-unused-results"),
+        "GATEWAY_HTTP_URL": f"http://127.0.0.1:{gateway_port}",
+        "GATEWAY_EVIDENCE_IMPORT_TOKEN": env["GATEWAY_EVIDENCE_IMPORT_TOKEN"],
+        "MOZAIC_OPERATOR_ID": "controlled-acceptance-operator",
+    }
+    if key_id != "controlled-m4-test-authority":
+        raise RuntimeError("operator workflow received unexpected test authority")
+
+    image = f"{project}-operator-worker-scrapy-live:latest"
+    built = _run(
+        ["docker", "image", "inspect", image, "--format", "{{.Id}}"],
+        env=operator_env,
+        capture=True,
+    ).stdout.strip()
+    if built != runtime_digest:
+        raise RuntimeError(
+            "operator worker image differs from the approved BotBuild runtime"
+        )
+
+    api_server = ThreadingHTTPServer(
+        ("0.0.0.0", api_port),
+        acquisition_authorization_handler(coordinator, bearer_token=operation_token),
+    )
+    api_server.daemon_threads = True
+    threading.Thread(target=api_server.serve_forever, daemon=True).start()
+    try:
+        _run(
+            compose
+            + [
+                "up",
+                "--build",
+                "--wait",
+                "-d",
+                "acquisition-gateway",
+                "controlled-source",
+            ],
+            env=operator_env,
+            timeout=300,
+        )
+
+        def command(*arguments: str) -> object:
+            result = subprocess.run(
+                [
+                    "uv",
+                    "run",
+                    "--locked",
+                    "--all-packages",
+                    "acquisition-operator",
+                    *arguments,
+                ],
+                cwd=ROOT,
+                env=operator_env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=420,
+            )
+            if result.returncode:
+                detail = (result.stderr + "\n" + result.stdout)[-5000:]
+                raise RuntimeError(
+                    f"acquisition-operator {' '.join(arguments[:1])} failed ({result.returncode}): {detail}"
+                )
+            try:
+                return json.loads(result.stdout)
+            except json.JSONDecodeError as error:
+                raise RuntimeError(
+                    "acquisition-operator returned invalid JSON"
+                ) from error
+
+        tenant = "tenant-m9-operator-" + uuid.uuid4().hex[:12]
+        contract_doc = {
+            "contract_id": input_contract.contract_id,
+            "version": input_contract.version,
+            "digest": input_contract.digest,
+        }
+        documents: list[tuple[int, dict[str, object], Path]] = []
+        for label, limit in (("first", 1), ("second", 2)):
+            doc: dict[str, object] = {
+                "tenant_id": tenant,
+                "input_id": "operator-" + label,
+                "source_id": SOURCE_ID,
+                "source_revision_id": REVISION_ID,
+                "input_contract": contract_doc,
+                "idempotency_scope": "m9-operator-acceptance",
+                "idempotency_key": label + "-" + uuid.uuid4().hex,
+                "release_id": release_id,
+                "parameters": {"limit": limit},
+            }
+            path = temporary / f"operator-input-{label}.json"
+            path.write_text(json.dumps(doc, separators=(",", ":")), encoding="utf-8")
+            path.chmod(0o600)
+            documents.append((limit, doc, path))
+
+        submissions = []
+        for _limit, _doc, path in documents:
+            submissions.append(command("submit", "--document", str(path)))
+        if len(submissions) != 2 or any(
+            not isinstance(item, dict) or item.get("state") != "pending"
+            for item in submissions
+        ):
+            raise RuntimeError("operator submit did not persist both controlled Inputs")
+        replay = command("submit", "--document", str(documents[0][2]))
+        if replay.get("submission_id") != submissions[0].get("submission_id"):
+            raise RuntimeError(
+                "operator submission replay changed its durable identity"
+            )
+        if submissions[0].get("parameters_digest") == submissions[1].get(
+            "parameters_digest"
+        ):
+            raise RuntimeError(
+                "parameterized Inputs did not retain distinct canonical digests"
+            )
+
+        admitted = command("dispatch", "--tenant-id", tenant, "--limit", "2")
+        if (
+            not isinstance(admitted, list)
+            or len(admitted) != 2
+            or any(
+                item.get("state") != "admitted" or not item.get("run_id")
+                for item in admitted
+            )
+        ):
+            raise RuntimeError("operator dispatch did not receive two BC04 admissions")
+        run_results = []
+        for limit, document, _path in documents:
+            submission = next(
+                item for item in submissions if item["input_id"] == document["input_id"]
+            )
+            result = command(
+                "execute",
+                "--tenant-id",
+                tenant,
+                "--submission-id",
+                str(submission["submission_id"]),
+            )
+            if result.get("state") != "succeeded" or not result.get(
+                "publication_receipt"
+            ):
+                raise RuntimeError(
+                    "protected operator execution did not publish successfully"
+                )
+            run_id = str(result["run_id"])
+            run = coordinator.inspect(tenant, run_id)
+            if (
+                run.state.value != "succeeded"
+                or run.intent.binding.release_id != release_id
+                or run.intent.binding.build_manifest_digest != build_digest
+                or run.intent.binding.runtime_image_digest != runtime_digest
+            ):
+                raise RuntimeError(
+                    "BC04 terminal identity differs from approved release/build/runtime"
+                )
+            output_set_id = run.reservation.output_set_id if run.reservation else None
+            if not output_set_id:
+                raise RuntimeError(
+                    "BC04 completed run has no durable publication reservation"
+                )
+            expected = [
+                {
+                    "enabled": True,
+                    "id": f"parameter-{limit}",
+                    "quantity": limit,
+                    "unit_price": f"{limit}.25",
+                }
+            ]
+            refs, _digests, _outputs, _observations = _verify_outputs(
+                tenant,
+                run_id,
+                output_set_id,
+                1,
+                contract,
+                expected_payloads=expected,
+            )
+            page = app.read_published_outputs(tenant, output_set_id, limit=10)
+            target = f"https://api.fixture.test/v1/items?limit={limit}"
+            if any(
+                output.payload.get("_provenance", {}).get("source_url") != target
+                for output in page.outputs
+            ):
+                raise RuntimeError(
+                    "published provenance differs from the authorized parameter target"
+                )
+            inspected = command(
+                "inspect",
+                "--tenant-id",
+                tenant,
+                "--submission-id",
+                str(submission["submission_id"]),
+            )
+            if (
+                inspected.get("execution_state") != "succeeded"
+                or inspected.get("publication_receipt") != result["publication_receipt"]
+            ):
+                raise RuntimeError(
+                    "fresh-process operator inspection differs from BC04 result"
+                )
+            replayed = command(
+                "execute",
+                "--tenant-id",
+                tenant,
+                "--submission-id",
+                str(submission["submission_id"]),
+            )
+            if not replayed.get("replayed") or replayed.get("run_id") != run_id:
+                raise RuntimeError(
+                    "completed-result operator replay changed the run identity"
+                )
+            reconciled = command(
+                "reconcile",
+                "--tenant-id",
+                tenant,
+                "--submission-id",
+                str(submission["submission_id"]),
+            )
+            if reconciled.get("submission", {}).get("run_id") != run_id:
+                raise RuntimeError(
+                    "operator reconciliation did not resolve the existing admission"
+                )
+            run_results.append(
+                {
+                    "input_id": document["input_id"],
+                    "limit": limit,
+                    "submission_id": submission["submission_id"],
+                    "parameters_digest": submission["parameters_digest"],
+                    "run_id": run_id,
+                    "output_set_id": output_set_id,
+                    "publication_receipt": result["publication_receipt"],
+                    "artifact_ids": refs,
+                    "independent_publication_read": True,
+                    "fresh_process_inspection": True,
+                    "completed_result_replay": True,
+                }
+            )
+        if run_results[0]["run_id"] == run_results[1]["run_id"]:
+            raise RuntimeError("distinct parameterized Inputs shared a CaptureRun")
+
+        reacquire_doc = dict(documents[0][1])
+        reacquire_doc["input_id"] = "operator-reacquisition"
+        reacquire_doc["idempotency_key"] = "reacquire-" + uuid.uuid4().hex
+        reacquire_path = temporary / "operator-input-reacquire.json"
+        reacquire_path.write_text(
+            json.dumps(reacquire_doc, separators=(",", ":")), encoding="utf-8"
+        )
+        reacquire_path.chmod(0o600)
+        reacquired = command("submit", "--document", str(reacquire_path))
+        command("dispatch", "--tenant-id", tenant, "--limit", "1")
+        reacquired_result = command(
+            "execute",
+            "--tenant-id",
+            tenant,
+            "--submission-id",
+            str(reacquired["submission_id"]),
+        )
+        if reacquired_result.get("run_id") in {item["run_id"] for item in run_results}:
+            raise RuntimeError(
+                "intentional reacquisition reused a historical CaptureRun"
+            )
+
+        cancel_doc = dict(documents[0][1])
+        cancel_doc["input_id"] = "operator-cancel-pending"
+        cancel_doc["idempotency_key"] = "cancel-" + uuid.uuid4().hex
+        cancel_path = temporary / "operator-input-cancel.json"
+        cancel_path.write_text(
+            json.dumps(cancel_doc, separators=(",", ":")), encoding="utf-8"
+        )
+        cancel_path.chmod(0o600)
+        pending = command("submit", "--document", str(cancel_path))
+        cancelled = command(
+            "cancel",
+            "--tenant-id",
+            tenant,
+            "--submission-id",
+            str(pending["submission_id"]),
+        )
+        if cancelled.get("state") != "cancelled":
+            raise RuntimeError(
+                "operator cancellation did not preserve BC13 pending semantics"
+            )
+
+        print(
+            "OPERATOR_ACQUISITION_ACCEPTED "
+            + json.dumps(
+                {
+                    "tenant_id": tenant,
+                    "release_id": release_id,
+                    "build_manifest_digest": build_digest,
+                    "runtime_image_digest": runtime_digest,
+                    "parameterized_runs": run_results,
+                    "idempotent_submit": True,
+                    "intentional_reacquisition_run_id": reacquired_result["run_id"],
+                    "pending_cancellation": True,
+                    "fresh_process_commands": True,
+                    "trusted_import_and_publication": True,
+                },
+                sort_keys=True,
+            )
+        )
+    finally:
+        api_server.shutdown()
+        api_server.server_close()
+        _run(compose + ["down", "--remove-orphans"], env=operator_env, timeout=90)
+
+
 def _worker_failure_diagnostic(error: RuntimeError) -> str | None:
     """Read the generated worker's final status record from captured output."""
     detail = str(error)
@@ -413,7 +865,7 @@ def _port() -> int:
         return int(listener.getsockname()[1])
 
 
-def _gateway_resource_snapshot(port: int, token: str) -> dict[str, int]:
+def _gateway_resource_snapshot(port: int, token: str) -> dict[str, int | bool]:
     request = Request(
         f"http://127.0.0.1:{port}/internal/v1/resources",
         headers={"Authorization": "Bearer " + token},
@@ -424,11 +876,166 @@ def _gateway_resource_snapshot(port: int, token: str) -> dict[str, int]:
             raise RuntimeError("gateway resource snapshot exceeded its bound")
     result = json.loads(payload)
     if not isinstance(result, dict) or any(
-        not isinstance(value, int) or isinstance(value, bool) or value < 0
-        for value in result.values()
+        (
+            not isinstance(value, bool)
+            if key == "spool_archive_exhausted"
+            else not isinstance(value, int) or isinstance(value, bool) or value < 0
+        )
+        for key, value in result.items()
     ):
         raise RuntimeError("gateway resource snapshot is invalid")
     return result
+
+
+def _release_published_gateway_evidence(
+    *,
+    importer: TrustedAcquisitionApplication,
+    app: AcquisitionOutputApplication,
+    gateway_port: int,
+    import_token: str,
+    release_token: str,
+    tenant_id: str,
+    run_id: str,
+    bundle: object,
+) -> dict[str, int]:
+    """Harness measures effects; reusable acquisition application decides eligibility."""
+    before = _gateway_resource_snapshot(gateway_port, import_token)
+    eligibility = importer.inspect_evidence_release(tenant_id, run_id, bundle)
+    if getattr(bundle, "artifact_only", False):
+        operator_env = os.environ.copy()
+        operator_env.update(
+            {
+                "GATEWAY_HTTP_URL": f"http://127.0.0.1:{gateway_port}",
+                "GATEWAY_EVIDENCE_IMPORT_TOKEN": import_token,
+                "GATEWAY_EVIDENCE_RELEASE_TOKEN": release_token,
+                "MOZAIC_OPERATOR_ID": "controlled-acceptance-operator",
+                "MOZAIC_EVIDENCE_RELEASE_OPERATORS": "controlled-acceptance-operator",
+            }
+        )
+        command = [
+            sys.executable,
+            str(ROOT / "tooling/acquisition_release_evidence.py"),
+            "--tenant-id",
+            tenant_id,
+            "--run-id",
+            run_id,
+            *[
+                argument
+                for page in bundle.pages
+                for argument in ("--fetch-id", page.evidence_ref)
+            ],
+            "--release",
+        ]
+        operation = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=operator_env,
+            timeout=45,
+        )
+        if operation.returncode:
+            raise RuntimeError(
+                "operator evidence-release command failed: "
+                + operation.stdout[-2048:]
+                + operation.stderr[-2048:]
+            )
+        result = json.loads(operation.stdout)
+        if result.get("state") != "released":
+            raise RuntimeError("operator evidence-release command did not release")
+        repeated = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=operator_env,
+            timeout=45,
+        )
+        if repeated.returncode:
+            raise RuntimeError("idempotent operator evidence release failed")
+        repeated_result = json.loads(repeated.stdout)
+        if repeated_result.get("released") != result.get("released"):
+            raise RuntimeError("repeated evidence release changed its outcome")
+    else:
+        result = importer.release_published_evidence(
+            tenant_id,
+            run_id,
+            bundle,
+            operator_identity="controlled-acceptance-operator",
+        )
+    released_bytes = sum(int(item["size_bytes"]) for item in result["released"])
+    after = _gateway_resource_snapshot(gateway_port, import_token)
+    if before["spool_bytes_used"] - after["spool_bytes_used"] != released_bytes:
+        raise RuntimeError("Gateway release did not reclaim the expected spool bytes")
+    if before["spool_entries"] - after["spool_entries"] != len(result["released"]):
+        raise RuntimeError(
+            "Gateway release did not reclaim the expected active evidence entries"
+        )
+    metadata_client = GatewayEvidenceMetadataHTTPClient(
+        f"http://127.0.0.1:{gateway_port}", import_token
+    )
+    for page in bundle.pages:
+        historical = metadata_client.get(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=eligibility["attempt_id"],
+            generation=eligibility["generation"],
+            fetch_id=page.evidence_ref,
+        )
+        if (
+            historical.get("body_state") != "released"
+            or historical.get("body_digest") != page.digest
+            or historical.get("body_size") != page.acquired_size
+        ):
+            raise RuntimeError("Gateway archived evidence provenance diverged")
+
+    # Verify the public result remains available after temporary body removal.
+    post_release = app.read_published_outputs(
+        tenant_id, eligibility["output_set_id"], limit=100
+    )
+    if (
+        not post_release.outputs
+        or post_release.outputs[0].output_set_id != eligibility["output_set_id"]
+    ):
+        raise RuntimeError("published result became unavailable after evidence release")
+    expected_artifacts = {}
+    for page in bundle.pages:
+        identity = (
+            {
+                "tenant": tenant_id,
+                "run": run_id,
+                "attempt": eligibility["attempt_id"],
+                "fetch": page.evidence_ref,
+                "digest": page.digest,
+            }
+            if eligibility["profile"] == "artifact"
+            else {
+                "tenant": tenant_id,
+                "run": run_id,
+                "attempt": eligibility["attempt_id"],
+                "url": page.url,
+                "page": page.evidence_ref,
+                "digest": page.digest,
+            }
+        )
+        expected_artifacts[stable_identifier("artifact-", identity)] = (
+            page.acquired_size,
+            page.digest,
+        )
+    for artifact_id, expected_identity in expected_artifacts.items():
+        stored_size, stored_digest = artifact_request_identity(tenant_id, artifact_id)
+        if (stored_size, stored_digest) != expected_identity:
+            raise RuntimeError(
+                "BC06 artifact changed or became unavailable after Gateway body release"
+            )
+    return {
+        "released_bytes": released_bytes,
+        "spool_bytes_before": before["spool_bytes_used"],
+        "spool_bytes_after": after["spool_bytes_used"],
+        "retained_entries": after["spool_entries"],
+        "entries_before_release": before["spool_entries"],
+        "archive_bytes_used": after["spool_archive_bytes_used"],
+    }
 
 
 def _expected_artifact_identity() -> tuple[int, str]:
@@ -800,11 +1407,39 @@ def main() -> int:
         help="controlled deterministic body size for raw-only v4 resource experiments",
     )
     parser.add_argument(
+        "--max-evidence-entries",
+        type=int,
+        default=500,
+        help="controlled Gateway active-entry capacity (normally 500)",
+    )
+    parser.add_argument(
+        "--max-spool-bytes",
+        type=int,
+        help="controlled Gateway byte capacity for isolated resource acceptance",
+    )
+    parser.add_argument(
+        "--readiness-conformance",
+        action="store_true",
+        help="exercise the operational preflight against this controlled journey",
+    )
+    parser.add_argument(
+        "--operator-workflow",
+        action="store_true",
+        help="exercise the configuration-backed acquisition-operator CLI end to end",
+    )
+    parser.add_argument(
         "--playbook",
         type=Path,
         help="use an explicitly supplied immutable controlled candidate for vertical acceptance",
     )
     args = parser.parse_args()
+    if not 1 <= args.max_evidence_entries <= 500:
+        parser.error("--max-evidence-entries must be from 1 through 500")
+    if (
+        args.max_spool_bytes is not None
+        and not 2_000_000 <= args.max_spool_bytes <= 67_108_864
+    ):
+        parser.error("--max-spool-bytes must be from 2000000 through 67108864")
     raw_fault = args.raw_fault
     if args.isolation_id is not None and not re.fullmatch(
         r"[a-z0-9]{1,12}", args.isolation_id
@@ -814,7 +1449,17 @@ def main() -> int:
         )
     if args.isolation_id is not None and args.case not in RAW_ARTIFACT_CASES:
         parser.error("--isolation-id requires a raw-only v4 --case")
+    if args.operator_workflow and args.case != "work-intake":
+        parser.error("--operator-workflow requires --case work-intake")
     RUN_ISOLATION_ID = args.isolation_id
+    if (
+        RUN_ISOLATION_ID is None
+        and args.case == "raw-json"
+        and args.max_evidence_entries < 500
+    ):
+        # Keep controlled small-capacity experiments on a dedicated preserved
+        # Gateway volume instead of inheriting unrelated historical fixtures.
+        RUN_ISOLATION_ID = "m9reuse"
     if RUN_ISOLATION_ID is not None:
         AUTHORITY_ID = "local-live-" + RUN_ISOLATION_ID
     if raw_fault is not None and args.case not in RAW_ARTIFACT_CASES:
@@ -836,6 +1481,8 @@ def main() -> int:
         parser.error("--playbook override is restricted to controlled profile journeys")
     ARTIFACT_SIZE = args.artifact_size
     _configure_case(args.case)
+    if RUN_ISOLATION_ID is not None:
+        POLICY_ID = POLICY_ID + "-" + RUN_ISOLATION_ID
     playbook_path = PLAYBOOK
     if args.playbook is not None:
         import yaml
@@ -905,10 +1552,15 @@ def main() -> int:
         )
     operation_token = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
     evidence_token = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
+    evidence_release_token = (
+        base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
+    )
     api_port, gateway_port = _port(), _port()
     project = (
         "data-mozaic-authorized-live-"
         + CASE_KIND
+        + ("-m9-release" if CASE_KIND == "raw-json" else "")
+        + ("-operator-" + uuid.uuid4().hex[:8] if args.operator_workflow else "")
         + ("-" + raw_fault if raw_fault else "")
         + ("-" + RUN_ISOLATION_ID if RUN_ISOLATION_ID else "")
     )
@@ -951,6 +1603,7 @@ def main() -> int:
             "MOZAIC_LIVE_CAPABILITY_FILE": str(capability_file),
             "MOZAIC_LIVE_RESULT_PARENT": str(results),
             "MOZAIC_GATEWAY_HOST_PORT": str(gateway_port),
+            "GATEWAY_HTTP_URL": f"http://127.0.0.1:{gateway_port}",
             "MOZAIC_BC04_TEST_PORT": str(api_port),
             "MOZAIC_TEST_TLS_DIRECTORY": str(root / "tls"),
             "MOZAIC_TEST_SOURCE_UID": str(os.getuid()),
@@ -958,6 +1611,17 @@ def main() -> int:
             "GATEWAY_BC04_AUTHORIZATION_URL": f"http://host.docker.internal:{api_port}/internal/v1/acquisition-operations/admit",
             "GATEWAY_BC04_AUTHORIZATION_TOKEN": operation_token,
             "GATEWAY_EVIDENCE_IMPORT_TOKEN": evidence_token,
+            "GATEWAY_EVIDENCE_RELEASE_TOKEN": evidence_release_token,
+            "MOZAIC_OPERATOR_ID": "controlled-acceptance-operator",
+            "MOZAIC_EVIDENCE_RELEASE_OPERATORS": "controlled-acceptance-operator",
+            "GATEWAY_MAX_EVIDENCE_FILES": str(args.max_evidence_entries),
+            "GATEWAY_MAX_SPOOL_BYTES": str(
+                args.max_spool_bytes
+                if args.max_spool_bytes is not None
+                else int(_policy()["max_response_bytes"])
+                if CASE_KIND == "raw-json"
+                else 67_108_864
+            ),
             "CONTROLLED_SOURCE_ARTIFACT_SIZE": (
                 str(ARTIFACT_SIZE) if ARTIFACT_SIZE is not None else ""
             ),
@@ -1015,8 +1679,17 @@ def main() -> int:
             "--file",
             str(COMPOSE),
         ]
-        _run(compose + ["--profile", "test", "build", "worker-scrapy-live"], env=env)
-        image = f"{project}-worker-scrapy-live:latest"
+        worker_service = (
+            "operator-worker-scrapy-live"
+            if args.operator_workflow
+            else "worker-scrapy-live"
+        )
+        worker_profile = "operator" if args.operator_workflow else "test"
+        _run(
+            compose + ["--profile", worker_profile, "build", worker_service],
+            env=env,
+        )
+        image = f"{project}-{worker_service}:latest"
         inspected = json.loads(
             _run(["docker", "image", "inspect", image], env=env, capture=True).stdout
         )[0]
@@ -1106,7 +1779,33 @@ def main() -> int:
                     os.environ["ARTIFACT_CUSTODY_LOCAL_TOKEN"],
                 ),
                 finalization=coordinator,
+                evidence_release=GatewayEvidenceReleaseHTTPClient(
+                    f"http://127.0.0.1:{gateway_port}", evidence_release_token
+                ),
+                evidence_release_authorizer=_ControlledEvidenceReleaseAuthorization(),
             )
+            if args.operator_workflow:
+                _run_operator_workflow(
+                    env=env,
+                    compose=compose,
+                    project=project,
+                    release_id=release_id,
+                    build_digest=build_digest,
+                    runtime_digest=runtime_digest,
+                    policy_path=playbook_path,
+                    fixture_path=FIXTURES,
+                    trusted_keys=trusted_keys,
+                    cap_seed=cap_seed,
+                    input_contract=input_contract,
+                    coordinator=coordinator,
+                    app=app,
+                    contract=contract,
+                    operation_token=operation_token,
+                    api_port=api_port,
+                    gateway_port=gateway_port,
+                    temporary=root,
+                )
+                return 0
             if CASE_KIND == "json-work-intake":
                 from acquisition_lifecycle_acceptance_support import active_lifecycle
                 from work_intake.adapters.composition import compose_work_intake
@@ -1620,9 +2319,13 @@ def main() -> int:
                         ),
                         timeout=300,
                     )
-                    if CASE_KIND in RAW_ARTIFACT_CASES and raw_fault is None:
-                        resource_start_snapshot = _gateway_resource_snapshot(
-                            gateway_port, evidence_token
+                    resource_start_snapshot = _gateway_resource_snapshot(
+                        gateway_port, evidence_token
+                    )
+                    readiness_observation = None
+                    if args.readiness_conformance:
+                        readiness_observation = _run_readiness_acceptance(
+                            env, release_id=release_id, temporary=root
                         )
                     # Capability issuance follows gateway startup because gateway
                     # restart invalidates capabilities issued before its epoch.
@@ -1866,6 +2569,30 @@ def main() -> int:
                             raise RuntimeError(
                                 f"raw v4 fault unexpectedly completed successfully: {raw_fault}"
                             )
+                    readiness_capacity_exhausted = False
+                    if args.readiness_conformance:
+                        status, capacity_report = _readiness_cli(
+                            env, release_id=release_id
+                        )
+                        checks = capacity_report.get("checks")
+                        capacity_check = (
+                            checks.get("gateway_capacity")
+                            if isinstance(checks, dict)
+                            else None
+                        )
+                        if (
+                            status != 1
+                            or capacity_report.get("state") != "not_ready"
+                            or not isinstance(capacity_check, dict)
+                            or capacity_check.get("state") != "blocked"
+                            or "exhausted" not in str(capacity_check.get("detail", ""))
+                        ):
+                            raise RuntimeError(
+                                "Gateway full active entry capacity was not reported blocked: "
+                                + json.dumps(capacity_report, sort_keys=True)
+                            )
+                        readiness_capacity_exhausted = True
+
                     result_dir = Path(env["MOZAIC_LIVE_RESULT_PARENT"]) / "result"
 
                     def verify_result(
@@ -2117,6 +2844,21 @@ def main() -> int:
                             raise RuntimeError(
                                 "interrupted live import exposed output or terminal success"
                             )
+                        retained_snapshot = _gateway_resource_snapshot(
+                            gateway_port, evidence_token
+                        )
+                        retained_body_bytes = sum(
+                            page.acquired_size for page in verified.pages
+                        )
+                        if (
+                            resource_start_snapshot is None
+                            or retained_snapshot["spool_bytes_used"]
+                            - resource_start_snapshot["spool_bytes_used"]
+                            < retained_body_bytes
+                        ):
+                            raise RuntimeError(
+                                "pending or partial import released required Gateway body bytes"
+                            )
                         print(
                             "AUTHORIZED_CONTROLLED_LIVE_IMPORT_INTERRUPTION "
                             + json.dumps(
@@ -2129,6 +2871,10 @@ def main() -> int:
                                     "staged_outputs": importer_app.staged,
                                     "published_outputs_visible": len(visible_outputs),
                                     "publication_receipt": failed.publication_receipt,
+                                    "gateway_body_bytes_retained": retained_body_bytes,
+                                    "gateway_spool_bytes_after": retained_snapshot[
+                                        "spool_bytes_used"
+                                    ],
                                 },
                                 sort_keys=True,
                             )
@@ -2346,6 +3092,54 @@ def main() -> int:
                             contract,
                             expected_payloads=expected_records,
                         )
+                    release_evidence = _release_published_gateway_evidence(
+                        importer=importer,
+                        app=app,
+                        gateway_port=gateway_port,
+                        import_token=evidence_token,
+                        release_token=evidence_release_token,
+                        tenant_id=TENANT,
+                        run_id=run_id,
+                        bundle=verified,
+                    )
+                    replay_after_release = (
+                        importer.import_verified_artifact_result(
+                            TENANT,
+                            run_id,
+                            bundle=verified,
+                            producer=producer,
+                            retention_policy_ref=str(
+                                policy["evidence_retention_policy_ref"]
+                            ),
+                        )
+                        if CASE_KIND in RAW_ARTIFACT_CASES
+                        else importer.import_verified_result(
+                            TENANT,
+                            run_id,
+                            bundle=verified,
+                            payload_contract=contract,
+                            producer=producer,
+                        )
+                    )
+                    if replay_after_release != (output_set_id, manifest_digest):
+                        raise RuntimeError(
+                            "completed-result replay changed after safe Gateway body release"
+                        )
+                    print(
+                        "GATEWAY_EVIDENCE_BODY_RELEASED "
+                        + json.dumps(
+                            {
+                                "tenant_id": TENANT,
+                                "run_id": run_id,
+                                "attempt_id": lease.attempt_id,
+                                "output_set_id": output_set_id,
+                                **release_evidence,
+                                "provenance_retained": True,
+                                "completed_result_replay_after_release": True,
+                            },
+                            sort_keys=True,
+                        )
+                    )
                     evidence_ids = [page.evidence_ref for page in verified.pages]
                     correlation: dict[str, object] = {}
                     if intake_submission is not None:
@@ -2491,6 +3285,48 @@ def main() -> int:
                                 "artifact_digests"
                             ][0],
                             "previous_output_immutable": True,
+                        },
+                        sort_keys=True,
+                    )
+                )
+            if args.readiness_conformance:
+                from acquisition_lifecycle_acceptance_support import active_lifecycle
+
+                active_lifecycle().revoke_release(
+                    release_id, actor_id="controlled-test-operator"
+                )
+                revoked_status, revoked_report = _readiness_cli(
+                    env, release_id=release_id
+                )
+                revoked_checks = revoked_report.get("checks")
+                revoked_check = (
+                    revoked_checks.get("requested_release")
+                    if isinstance(revoked_checks, dict)
+                    else None
+                )
+                if (
+                    revoked_status != 1
+                    or revoked_report.get("state") != "not_ready"
+                    or not isinstance(revoked_check, dict)
+                    or revoked_check.get("state") != "blocked"
+                ):
+                    raise RuntimeError(
+                        "revoked release did not block acquisition preflight"
+                    )
+                readiness_observation["negative"].append(
+                    {
+                        "case": "release-revoked",
+                        "check": "requested_release",
+                        "detail": revoked_check,
+                    }
+                )
+                print(
+                    "ACQUISITION_PREFLIGHT_ACCEPTED "
+                    + json.dumps(
+                        {
+                            "valid": readiness_observation["valid"],
+                            "negative": readiness_observation["negative"],
+                            "gateway_capacity_exhausted": readiness_capacity_exhausted,
                         },
                         sort_keys=True,
                     )

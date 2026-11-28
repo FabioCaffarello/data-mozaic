@@ -18,6 +18,19 @@ The application validates one protected result bundle against a verified immutab
 
 `VerifiedResultBundle` is a bounded application result, not a public cross-context DTO or proof of authorization. `trusted_bot_id` is populated only after exact BotBuild verification. Worker-declared identities, evidence references, records and body digests are checked against BC04, BC15, fixture or gateway authority before import.
 
+`OperationalAcquisition` is the reusable operator-triggered composition over
+the BC13 `WorkIntakeOperations` facade, BC04 durable coordinator, a fixed
+Compose protected-worker adapter and `TrustedAcquisitionApplication`. The
+installed `acquisition-operator` entrypoint composes those owner adapters from
+the protected process environment. Its `submit`, `dispatch`, `execute`,
+`inspect`, `cancel` and `reconcile` commands accept no caller-supplied lease,
+admission receipt, capability or publication receipt. BC04 issues the current
+attempt capability; the worker image ID is checked against the exact runtime
+digest bound to the admitted release; verified results are imported, staged
+and finalized through the existing BC04/BC05/BC06 applications. See
+[`docs/operations/acquisition-operational-baseline.md`](../../docs/operations/acquisition-operational-baseline.md)
+for configuration and command usage.
+
 Fixture import requires a verified fixture bundle and network-none execution binding. Live import requires gateway evidence scoped to the current tenant, run, attempt, generation, source, policy, release and build. The two evidence sources use separate adapters and cannot be substituted for each other.
 
 ## Replay and failure
@@ -37,9 +50,18 @@ counting and hashing, then streams that file with a known Content-Length through
 the existing public BC06 custody contract. BC06 independently verifies the
 body. Temporary importer files are removed after the import operation. This
 does not apply to structured profiles, whose extractors consume bounded response
-bodies. The raw-only v4 capability remains capped at 2,000,000 bytes. Completed
-gateway evidence remains retained because current cross-context contracts do
-not prove that no recovery path still needs it. See the [M7 resource evidence](../../docs/architecture/assessments/acquisition-resource-maturity-2026-11-27.md)
-for measurements and remaining bounds.
+bodies. The raw-only v4 capability remains capped at 2,000,000 bytes. A
+completed Gateway body may be released only after BC04 records reconciled
+success with the exact attempt, finalization reservation and BC05 publication
+receipt; the published OutputSet must expose the deterministic artifact
+reference whose BC06 custody was confirmed during staging. The reusable
+`inspect_evidence_release` and `release_published_evidence` operations perform
+these owner-interface checks before calling the Gateway's separate release
+endpoint. The operation requires an injected operator authorization port;
+`EvidenceReleaseOperatorAllowlist` provides a local configured allowlist
+adapter. Gateway moves retained historical metadata into a separately bounded
+archive when the body is released. Pending imports, unresolved reservations,
+failed attempts, partial staging and unpublished OutputSets retain their
+bodies. See ADR 034 for the exact limits and recovery semantics.
 
 Run `make acquisition-application-tests` for focused tests and `make execution-coordination-fixture-acquisition` / `make authorized-live-json-acquisition` for the local integrated profiles. The acceptance composition and expected records remain in `tooling/`; production validation does not import test oracles.

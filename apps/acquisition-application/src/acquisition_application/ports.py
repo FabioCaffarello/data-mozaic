@@ -28,6 +28,31 @@ class ArtifactCustodyPort(Protocol):
         evidence_ref: str,
     ) -> ArtifactRef: ...
 
+    def verify_existing_artifact(
+        self, *, tenant_id: str, artifact: ArtifactRef, source: SourceRevisionRef
+    ) -> bool: ...
+
+
+class EvidenceReleasePort(Protocol):
+    def release(
+        self,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+        generation: int,
+        fetch_id: str,
+        digest: str,
+    ) -> dict[str, object]: ...
+
+
+class EvidenceReleaseAuthorizationPort(Protocol):
+    """Authorize a human operator before durable evidence release."""
+
+    def assert_can_release(
+        self, operator_identity: str, tenant_id: str, run_id: str
+    ) -> None: ...
+
 
 class ExecutionFinalizationPort(Protocol):
     def reserve_and_publish(

@@ -270,6 +270,48 @@ func (s *Store) ReadArtifact(ctx context.Context, tenant, artifact string) (doma
 	}
 	return domain.ArtifactMetadata{Artifact: intent.Artifact, Source: intent.Source, Representation: intent.Representation, Classification: intent.Classification, RetentionPolicyRef: intent.RetentionPolicyRef, Location: domain.ArtifactLocation{Provider: loc.Provider, Bucket: loc.Bucket, Key: loc.Key, VersionID: loc.VersionID}, State: state, CreatedAt: created.UTC().Format(time.RFC3339Nano), ConfirmedAt: confirmedText}, nil
 }
+
+func (s *Store) ListInventory(ctx context.Context, tenant, afterArtifact string, afterCreated time.Time, limit int) ([]application.InventoryItem, error) {
+	if tenant == "" || limit < 1 || limit > 101 {
+		return nil, errors.New("inventory bounds invalid")
+	}
+	query := `SELECT operation_id,intent,state,created_at,updated_at,confirmed_at,reconciliation_state
+	          FROM artifact_custody.artifact_inventory WHERE tenant_id=$1 ORDER BY created_at,artifact_id LIMIT $2`
+	args := []any{tenant, limit}
+	if afterArtifact != "" {
+		query = `SELECT operation_id,intent,state,created_at,updated_at,confirmed_at,reconciliation_state
+		         FROM artifact_custody.artifact_inventory WHERE tenant_id=$1 AND (created_at,artifact_id)>($2,$3)
+		         ORDER BY created_at,artifact_id LIMIT $4`
+		args = []any{tenant, afterCreated, afterArtifact, limit}
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]application.InventoryItem, 0, limit)
+	for rows.Next() {
+		var operation string
+		var raw []byte
+		var state domain.ArtifactState
+		var created, updated time.Time
+		var confirmed sql.NullTime
+		var reconciliation domain.ReconciliationState
+		if err := rows.Scan(&operation, &raw, &state, &created, &updated, &confirmed, &reconciliation); err != nil {
+			return nil, err
+		}
+		var intent domain.WriteIntent
+		if err := json.Unmarshal(raw, &intent); err != nil {
+			return nil, err
+		}
+		item := application.InventoryItem{OperationID: operation, Artifact: intent.Artifact, Source: intent.Source, State: state, CreatedAt: created.UTC().Format(time.RFC3339Nano), UpdatedAt: updated.UTC().Format(time.RFC3339Nano), ReconciliationState: reconciliation}
+		if confirmed.Valid {
+			item.ConfirmedAt = confirmed.Time.UTC().Format(time.RFC3339Nano)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
 func (s *Store) ClaimReconciliation(ctx context.Context, limit int, lease time.Duration) ([]application.UploadClaim, error) {
 	if limit < 1 || limit > 100 || lease < time.Second || lease > time.Hour {
 		return nil, errors.New("reconciliation bounds invalid")

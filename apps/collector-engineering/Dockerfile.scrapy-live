@@ -13,6 +13,7 @@ ENV PATH=/opt/venv/bin:$PATH PYTHONUNBUFFERED=1
 WORKDIR /workspace
 COPY --from=build /opt/venv /opt/venv
 COPY --from=build --chown=65532:65532 /opt/live-bot /opt/live-bot
+COPY --from=build --chown=65532:65532 /workspace/apps/collector-engineering/collector_engineering/live_worker.py /opt/live_worker.py
 COPY tooling/scrapy_live_gateway_smoke.py /workspace/tooling/scrapy_live_gateway_smoke.py
 USER 65532:65532
-ENTRYPOINT ["python", "-B", "/workspace/tooling/scrapy_live_gateway_smoke.py"]
+ENTRYPOINT ["python", "-B", "/opt/live_worker.py"]

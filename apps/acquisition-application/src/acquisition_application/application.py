@@ -35,7 +35,12 @@ from mozaic_contract_resolution import (
 )
 
 from .identities import stable_identifier as _stable_id
-from .ports import ArtifactCustodyPort, ExecutionFinalizationPort
+from .ports import (
+    ArtifactCustodyPort,
+    EvidenceReleaseAuthorizationPort,
+    EvidenceReleasePort,
+    ExecutionFinalizationPort,
+)
 from .result_bundle import (
     FixtureImportError,
     VerifiedResultBundle,
@@ -233,11 +238,240 @@ class TrustedAcquisitionApplication:
         outputs: AcquisitionOutputApplication,
         custody: ArtifactCustodyPort,
         finalization: ExecutionFinalizationPort | None = None,
+        evidence_release: EvidenceReleasePort | None = None,
+        evidence_release_authorizer: EvidenceReleaseAuthorizationPort | None = None,
     ):
         self._execution_contexts = execution_contexts
         self._outputs = outputs
         self._custody = custody
         self._finalization = finalization
+        self._evidence_release = evidence_release
+        self._evidence_release_authorizer = evidence_release_authorizer
+
+    def _evidence_release_plan(
+        self, tenant_id: str, run_id: str, bundle: VerifiedResultBundle
+    ):
+        """Resolve owner facts required before any exact Gateway release."""
+        from .context import AcquisitionApplicationError
+
+        snapshot = self._execution_contexts.get(tenant_id, run_id)
+        reservation = None if snapshot is None else snapshot.reservation
+        if (
+            snapshot is None
+            or snapshot.intent.tenant_id != tenant_id
+            or snapshot.intent.run_id != run_id
+            or snapshot.state.value != "succeeded"
+            or snapshot.attempt_state is None
+            or snapshot.attempt_state.value != "succeeded"
+            or reservation is None
+            or snapshot.publication_receipt is None
+            or reservation.tenant_id != tenant_id
+            or reservation.run_id != run_id
+            or reservation.attempt_id != snapshot.attempt_id
+            or reservation.fencing_generation != snapshot.generation
+        ):
+            raise AcquisitionApplicationError(
+                "BC04 completion or finalization is unresolved"
+            )
+        context = self._verification_context(tenant_id, run_id)
+        if (
+            context.attempt_id != reservation.attempt_id
+            or context.generation != reservation.fencing_generation
+        ):
+            raise AcquisitionApplicationError(
+                "BC04 current attempt differs from reservation"
+            )
+        output_set_id = reservation.output_set_id
+        output_set = self._outputs.inspect_output_set(tenant_id, output_set_id)
+        receipt = self._outputs.get_publication_receipt(tenant_id, output_set_id)
+        bc04_receipt = snapshot.publication_receipt
+        if (
+            output_set is None
+            or output_set.state.value != "published"
+            or output_set.binding.tenant_id != tenant_id
+            or output_set.binding.execution.run_id != run_id
+            or output_set.binding.execution.attempt_id != reservation.attempt_id
+            or output_set.binding.execution.fencing_token
+            != reservation.fencing_generation
+            or output_set.manifest_digest != reservation.manifest_digest
+            or receipt is None
+            or receipt.tenant_id != tenant_id
+            or receipt.output_set_id != output_set_id
+            or receipt.manifest_digest != reservation.manifest_digest
+            or receipt.finalization_reservation_id != reservation.reservation_id
+            or bc04_receipt.get("tenant_id") != tenant_id
+            or bc04_receipt.get("output_set_id") != output_set_id
+            or bc04_receipt.get("manifest_digest") != reservation.manifest_digest
+            or bc04_receipt.get("finalization_reservation_id")
+            != reservation.reservation_id
+            or bc04_receipt.get("publication_id") != receipt.publication_id
+        ):
+            raise AcquisitionApplicationError(
+                "BC04 and BC05 publication facts are inconsistent"
+            )
+
+        published_refs: dict[str, ArtifactRef] = {}
+        cursor = None
+        while True:
+            page = self._outputs.read_published_outputs(
+                tenant_id, output_set_id, cursor=cursor, limit=100
+            )
+            for output in page.outputs:
+                if (
+                    output.output_set_id != output_set_id
+                    or output.binding.tenant_id != tenant_id
+                    or output.binding.execution.run_id != run_id
+                    or output.binding.execution.attempt_id != reservation.attempt_id
+                    or output.binding.execution.fencing_token
+                    != reservation.fencing_generation
+                ):
+                    raise AcquisitionApplicationError(
+                        "published membership escaped exact execution binding"
+                    )
+                for item in output.artifact_items:
+                    prior = published_refs.get(item.artifact.artifact_id)
+                    if prior is not None and prior != item.artifact:
+                        raise AcquisitionApplicationError(
+                            "published artifact identity conflicts"
+                        )
+                    published_refs[item.artifact.artifact_id] = item.artifact
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+
+        expected: list[tuple[str, str, int, ArtifactRef]] = []
+        source = SourceRevisionRef(context.source_id, context.source_revision_id)
+        for fetched in bundle.pages:
+            identity = (
+                {
+                    "tenant": tenant_id,
+                    "run": run_id,
+                    "attempt": context.attempt_id,
+                    "fetch": fetched.evidence_ref,
+                    "digest": fetched.digest,
+                }
+                if context.output_modality == "artifact"
+                else {
+                    "tenant": tenant_id,
+                    "run": run_id,
+                    "attempt": context.attempt_id,
+                    "url": fetched.url,
+                    "page": fetched.evidence_ref,
+                    "digest": fetched.digest,
+                }
+            )
+            artifact_id = _stable_id("artifact-", identity)
+            artifact = published_refs.get(artifact_id)
+            if (
+                artifact is None
+                or artifact.digest != fetched.digest
+                or artifact.size_bytes != fetched.acquired_size
+            ):
+                raise AcquisitionApplicationError(
+                    "published OutputSet does not bind every exact FetchEvidence"
+                )
+            if not self._custody.verify_existing_artifact(
+                tenant_id=tenant_id, artifact=artifact, source=source
+            ):
+                raise AcquisitionApplicationError(
+                    "BC06 has not confirmed exact durable custody"
+                )
+            expected.append(
+                (fetched.evidence_ref, fetched.digest, fetched.acquired_size, artifact)
+            )
+
+        # BC04 completion and BC05 publication are durable immutable facts, but
+        # re-read the execution owner immediately before authorizing release.
+        current = self._execution_contexts.get(tenant_id, run_id)
+        if (
+            current is None
+            or current.state.value != "succeeded"
+            or current.attempt_state is None
+            or current.attempt_state.value != "succeeded"
+            or current.generation != snapshot.generation
+            or current.reservation != reservation
+            or current.publication_receipt != bc04_receipt
+        ):
+            raise AcquisitionApplicationError(
+                "BC04 release eligibility changed during inspection"
+            )
+        return context, reservation, tuple(expected)
+
+    def inspect_evidence_release(
+        self, tenant_id: str, run_id: str, bundle: VerifiedResultBundle
+    ) -> dict[str, object]:
+        """Read-only eligibility inspection using BC04, BC05 and BC06 owners."""
+        context, reservation, evidence = self._evidence_release_plan(
+            tenant_id, run_id, bundle
+        )
+        return {
+            "eligible": True,
+            "tenant_id": tenant_id,
+            "run_id": run_id,
+            "attempt_id": reservation.attempt_id,
+            "generation": reservation.fencing_generation,
+            "output_set_id": reservation.output_set_id,
+            "manifest_digest": reservation.manifest_digest,
+            "fetch_ids": [item[0] for item in evidence],
+            "evidence_count": len(evidence),
+            "profile": context.output_modality,
+        }
+
+    def release_published_evidence(
+        self,
+        tenant_id: str,
+        run_id: str,
+        bundle: VerifiedResultBundle,
+        *,
+        operator_identity: str,
+    ) -> dict[str, object]:
+        """Explicit trusted operator release after owner-verified durable publication."""
+        from .context import AcquisitionApplicationError
+
+        if not operator_identity.strip():
+            raise AcquisitionApplicationError("trusted operator identity is required")
+        if self._evidence_release_authorizer is None:
+            raise AcquisitionApplicationError(
+                "evidence release operator authorization is not configured"
+            )
+        self._evidence_release_authorizer.assert_can_release(
+            operator_identity, tenant_id, run_id
+        )
+        if self._evidence_release is None:
+            raise AcquisitionApplicationError(
+                "Gateway evidence release is not configured"
+            )
+        context, reservation, evidence = self._evidence_release_plan(
+            tenant_id, run_id, bundle
+        )
+        results = []
+        for fetch_id, digest, size, _artifact in evidence:
+            result = self._evidence_release.release(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                attempt_id=reservation.attempt_id,
+                generation=reservation.fencing_generation,
+                fetch_id=fetch_id,
+                digest=digest,
+            )
+            results.append(
+                {
+                    "fetch_id": fetch_id,
+                    "size_bytes": size,
+                    "body_state": result["body_state"],
+                }
+            )
+        return {
+            "eligible": True,
+            "operator_identity": operator_identity,
+            "tenant_id": tenant_id,
+            "run_id": run_id,
+            "attempt_id": reservation.attempt_id,
+            "generation": reservation.fencing_generation,
+            "output_set_id": reservation.output_set_id,
+            "profile": context.output_modality,
+            "released": results,
+        }
 
     def _context(
         self, tenant_id: str, run_id: str, *, allow_published_replay: bool = False

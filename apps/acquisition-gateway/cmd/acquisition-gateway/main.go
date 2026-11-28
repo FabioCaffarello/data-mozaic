@@ -87,6 +87,10 @@ func main() {
 	if err != nil {
 		log.Fatal("gateway spool file budget invalid")
 	}
+	archiveBytes, err := strconv.ParseInt(env("GATEWAY_MAX_EVIDENCE_ARCHIVE_BYTES", "16777216"), 10, 64)
+	if err != nil || archiveBytes < 1 {
+		log.Fatal("gateway evidence archive budget invalid")
+	}
 	var testRoots *x509.CertPool
 	if rootsPath := os.Getenv("GATEWAY_TEST_ROOTS_FILE"); rootsPath != "" {
 		pem, err := trustedFile(rootsPath, 1<<20)
@@ -98,7 +102,7 @@ func main() {
 			log.Fatal("gateway test roots invalid")
 		}
 	}
-	app, err := gateway.New(gateway.Options{Audience: audience, Keys: keys, Policies: policies, Started: time.Now().UTC(), GlobalConcurrency: concurrency, StatePath: statePath, EvidenceDirectory: evidenceDirectory, MaxSpoolBytes: spoolBytes, MaxEvidenceFiles: spoolFiles, TestRoots: testRoots, OperationAuthorizer: operationAuthorizer, EvidenceToken: os.Getenv("GATEWAY_EVIDENCE_IMPORT_TOKEN")})
+	app, err := gateway.New(gateway.Options{Audience: audience, Keys: keys, Policies: policies, Started: time.Now().UTC(), GlobalConcurrency: concurrency, StatePath: statePath, EvidenceDirectory: evidenceDirectory, MaxSpoolBytes: spoolBytes, MaxEvidenceFiles: spoolFiles, MaxEvidenceArchiveBytes: archiveBytes, TestRoots: testRoots, OperationAuthorizer: operationAuthorizer, EvidenceToken: os.Getenv("GATEWAY_EVIDENCE_IMPORT_TOKEN"), EvidenceReleaseToken: os.Getenv("GATEWAY_EVIDENCE_RELEASE_TOKEN")})
 	if err != nil {
 		log.Fatalf("gateway startup denied: %v", err)
 	}

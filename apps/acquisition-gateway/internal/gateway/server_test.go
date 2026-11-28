@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -216,8 +217,8 @@ func TestEvidenceTransferCapacityRejectsAndReleasesSlot(t *testing.T) {
 	resources.Header.Set("Authorization", "Bearer "+g.evidenceToken)
 	resourceResponse := httptest.NewRecorder()
 	g.ServeHTTP(resourceResponse, resources)
-	var snapshot map[string]int64
-	if err := json.Unmarshal(resourceResponse.Body.Bytes(), &snapshot); err != nil || snapshot["active_evidence_transfers"] != 1 {
+	var snapshot map[string]any
+	if err := json.Unmarshal(resourceResponse.Body.Bytes(), &snapshot); err != nil || snapshot["active_evidence_transfers"] != float64(1) {
 		t.Fatalf("active evidence transfer snapshot=%v err=%v", snapshot, err)
 	}
 	second := httptest.NewRecorder()
@@ -335,11 +336,11 @@ func TestResourceSnapshotRequiresAuthenticationAndContainsOnlyAggregateState(t *
 	request.Header.Set("Authorization", "Bearer "+g.evidenceToken)
 	response := httptest.NewRecorder()
 	g.ServeHTTP(response, request)
-	var snapshot map[string]int64
+	var snapshot map[string]any
 	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &snapshot) != nil {
 		t.Fatalf("resource snapshot response status=%d body=%q", response.Code, response.Body.String())
 	}
-	if _, hasTenant := snapshot["tenant_id"]; hasTenant || snapshot["spool_max_bytes"] != g.maxSpoolBytes {
+	if _, hasTenant := snapshot["tenant_id"]; hasTenant || snapshot["spool_max_bytes"] != float64(g.maxSpoolBytes) || snapshot["spool_archive_bytes_available"] != float64(g.maxEvidenceArchiveBytes) || snapshot["spool_archive_exhausted"] != false {
 		t.Fatalf("resource snapshot contains tenant detail or wrong bounds: %#v", snapshot)
 	}
 }
@@ -364,8 +365,285 @@ func TestSpoolStartupRemovesOnlyIncompleteAndUnpairedEvidenceFiles(t *testing.T)
 		t.Fatalf("startup spool recovery used=%d files=%d err=%v", used, files, err)
 	}
 	entries, err := os.ReadDir(root)
-	if err != nil || len(entries) != 2 {
+	if err != nil || len(entries) != 3 {
 		t.Fatalf("startup recovery left unexpected spool entries: %#v err=%v", entries, err)
+	}
+}
+
+func TestEvidenceReleaseIsBoundIdempotentAndRetainsMetadata(t *testing.T) {
+	if validEvidenceID(strings.Repeat("a", 30) + "../") {
+		t.Fatal("path traversal-shaped FetchEvidence ID was accepted")
+	}
+	const sourceBody = "custodied-source-body"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(sourceBody))
+	}))
+	defer upstream.Close()
+	g, cap, _ := testGateway(t, upstream.URL, func(p *Policy) {
+		p.MaxResponseBytes = int64(len(sourceBody))
+		p.MaxTotalResponseBytes = int64(len(sourceBody) * 3)
+	})
+	g.maxSpoolBytes = int64(len(sourceBody))
+	g.maxEvidenceFiles = 1
+	g.evidenceReleaseToken = "release-secret"
+	fetched := fetch(g, cap, `{"url":"`+upstream.URL+`/api/v1/records"}`, nil)
+	if fetched.Code != http.StatusOK {
+		t.Fatalf("fetch status=%d body=%s", fetched.Code, fetched.Body.String())
+	}
+	evidence, err := readEvidenceMetadata(g.evidenceDirectory, fetched.Header().Get("X-Mozaic-Fetch-ID"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := func(attempt, tenant, digest, token string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodDelete, "/internal/v1/evidence/"+evidence.FetchID, nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		r.Header.Set("X-DM-Tenant-ID", tenant)
+		r.Header.Set("X-DM-Run-ID", evidence.RunID)
+		r.Header.Set("X-DM-Attempt-ID", attempt)
+		r.Header.Set("X-DM-Generation", strconv.FormatInt(evidence.Generation, 10))
+		r.Header.Set("X-DM-Body-SHA256", digest)
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, r)
+		return w
+	}
+	if response := request(evidence.AttemptID, evidence.TenantID, evidence.BodyDigest, "wrong"); response.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong release credential status=%d", response.Code)
+	}
+	if response := request("other-attempt", evidence.TenantID, evidence.BodyDigest, g.evidenceReleaseToken); response.Code != http.StatusForbidden {
+		t.Fatalf("stale attempt release status=%d", response.Code)
+	}
+	if response := request(evidence.AttemptID, "other-tenant", evidence.BodyDigest, g.evidenceReleaseToken); response.Code != http.StatusForbidden {
+		t.Fatalf("cross-tenant release status=%d", response.Code)
+	}
+	if response := request(evidence.AttemptID, evidence.TenantID, "sha256:wrong", g.evidenceReleaseToken); response.Code != http.StatusForbidden {
+		t.Fatalf("mismatched evidence release status=%d", response.Code)
+	}
+	if g.spoolBytes != evidence.BodySize {
+		t.Fatalf("rejected release changed spool accounting to %d", g.spoolBytes)
+	}
+	if denied := fetch(g, cap, `{"url":"`+upstream.URL+`/api/v1/records"}`, nil); denied.Code != http.StatusTooManyRequests || !strings.Contains(denied.Body.String(), "evidence_spool_capacity_exhausted") {
+		t.Fatalf("capacity exhaustion was not enforced before release: status=%d body=%s", denied.Code, denied.Body.String())
+	}
+	released := request(evidence.AttemptID, evidence.TenantID, evidence.BodyDigest, g.evidenceReleaseToken)
+	var releaseResult map[string]string
+	if released.Code != http.StatusOK || json.Unmarshal(released.Body.Bytes(), &releaseResult) != nil || releaseResult["contract_version"] != "fetch-evidence/v1" || releaseResult["fetch_id"] != evidence.FetchID || releaseResult["body_state"] != "released" || releaseResult["body_digest"] != evidence.BodyDigest {
+		t.Fatalf("release response status=%d body=%s", released.Code, released.Body.String())
+	}
+	if g.spoolBytes != 0 {
+		t.Fatalf("body release did not reclaim capacity: %d", g.spoolBytes)
+	}
+	if _, _, err := readEvidence(g.evidenceDirectory, evidence.FetchID); err == nil {
+		t.Fatal("released evidence body remains readable")
+	}
+	retained, err := readEvidenceMetadata(g.evidenceDirectory, evidence.FetchID)
+	if err != nil || retained.BodyDigest != evidence.BodyDigest || retained.RunID != evidence.RunID {
+		t.Fatalf("released metadata lost provenance: %#v err=%v", retained, err)
+	}
+	metadataRequest := httptest.NewRequest(http.MethodGet, "/internal/v1/evidence/"+evidence.FetchID+"/metadata", nil)
+	metadataRequest.Header.Set("Authorization", "Bearer "+g.evidenceToken)
+	metadataRequest.Header.Set("X-DM-Tenant-ID", evidence.TenantID)
+	metadataRequest.Header.Set("X-DM-Run-ID", evidence.RunID)
+	metadataRequest.Header.Set("X-DM-Attempt-ID", evidence.AttemptID)
+	metadataRequest.Header.Set("X-DM-Generation", strconv.FormatInt(evidence.Generation, 10))
+	metadataResponse := httptest.NewRecorder()
+	g.ServeHTTP(metadataResponse, metadataRequest)
+	var historical map[string]any
+	if metadataResponse.Code != http.StatusOK || json.Unmarshal(metadataResponse.Body.Bytes(), &historical) != nil || historical["fetch_id"] != evidence.FetchID || historical["body_state"] != "released" {
+		t.Fatalf("historical metadata lookup failed status=%d body=%s", metadataResponse.Code, metadataResponse.Body.String())
+	}
+	if response := request(evidence.AttemptID, evidence.TenantID, evidence.BodyDigest, g.evidenceReleaseToken); response.Code != http.StatusOK {
+		t.Fatalf("duplicate release is not idempotent: status=%d", response.Code)
+	}
+	// Simulate metadata-only evidence written by the previous M9 release
+	// implementation. Startup compacts it into the bounded historical archive.
+	archivePath := filepath.Join(g.evidenceDirectory, "archive", evidence.FetchID+".json")
+	activePath := filepath.Join(g.evidenceDirectory, evidence.FetchID+".json")
+	archivedBytes, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(archivePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activePath, archivedBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	used, files, err := prepareSpool(g.evidenceDirectory, g.maxSpoolBytes, g.maxEvidenceFiles)
+	if err != nil || used != 0 || files != 0 {
+		t.Fatalf("restart accounting after release used=%d files=%d err=%v", used, files, err)
+	}
+	if _, err := os.Stat(activePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy active metadata was not compacted: %v", err)
+	}
+	if _, err := readEvidenceMetadata(g.evidenceDirectory, evidence.FetchID); err != nil {
+		t.Fatalf("archived provenance no longer resolves: %v", err)
+	}
+	time.Sleep(110 * time.Millisecond)
+	if subsequent := fetch(g, cap, `{"url":"`+upstream.URL+`/api/v1/records"}`, nil); subsequent.Code != http.StatusOK || subsequent.Body.String() != sourceBody {
+		t.Fatalf("acquisition was not admitted after release: status=%d body=%q", subsequent.Code, subsequent.Body.String())
+	}
+}
+
+func TestEvidenceArchiveExhaustionFailsClosedAndReportsCapacity(t *testing.T) {
+	const sourceBody = "archive-exhaustion"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(sourceBody))
+	}))
+	defer upstream.Close()
+	g, cap, _ := testGateway(t, upstream.URL, func(p *Policy) {
+		p.MaxResponseBytes = int64(len(sourceBody))
+		p.MaxTotalResponseBytes = int64(len(sourceBody) * 4)
+		p.RequestsPerSecond = 10
+	})
+	g.evidenceReleaseToken = "archive-release-test-token"
+	fetchOne := func() (Evidence, error) {
+		response := fetch(g, cap, `{"url":"`+upstream.URL+`/api/v1/records"}`, nil)
+		if response.Code != http.StatusOK {
+			return Evidence{}, fmt.Errorf("fetch status=%d body=%s", response.Code, response.Body.String())
+		}
+		return readEvidenceMetadata(g.evidenceDirectory, response.Header().Get("X-Mozaic-Fetch-ID"))
+	}
+	release := func(evidence Evidence) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodDelete, "/internal/v1/evidence/"+evidence.FetchID, nil)
+		request.Header.Set("Authorization", "Bearer "+g.evidenceReleaseToken)
+		request.Header.Set("X-DM-Tenant-ID", evidence.TenantID)
+		request.Header.Set("X-DM-Run-ID", evidence.RunID)
+		request.Header.Set("X-DM-Attempt-ID", evidence.AttemptID)
+		request.Header.Set("X-DM-Generation", strconv.FormatInt(evidence.Generation, 10))
+		request.Header.Set("X-DM-Body-SHA256", evidence.BodyDigest)
+		response := httptest.NewRecorder()
+		g.ServeHTTP(response, request)
+		return response
+	}
+	first, err := fetchOne()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := release(first); response.Code != http.StatusOK {
+		t.Fatalf("first release status=%d body=%s", response.Code, response.Body.String())
+	}
+	if g.spoolArchiveBytes <= 0 {
+		t.Fatal("first release did not create measurable archived metadata")
+	}
+	// Set the isolated quota to current durable usage, so the second metadata
+	// record cannot fit without touching any existing or preserved archive.
+	g.maxEvidenceArchiveBytes = g.spoolArchiveBytes
+	time.Sleep(110 * time.Millisecond)
+	second, err := fetchOne()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := g.spoolBytes
+	response := release(second)
+	if response.Code != http.StatusInsufficientStorage || !strings.Contains(response.Body.String(), "evidence_archive_capacity_exhausted") {
+		t.Fatalf("archive exhaustion status=%d body=%s", response.Code, response.Body.String())
+	}
+	if g.spoolBytes != before || !fileExists(filepath.Join(g.evidenceDirectory, second.FetchID+".body")) {
+		t.Fatalf("failed release changed active body/accounting: spool=%d before=%d", g.spoolBytes, before)
+	}
+	if _, err := readEvidenceMetadata(g.evidenceDirectory, second.FetchID); err != nil {
+		t.Fatalf("active metadata was lost: %v", err)
+	}
+	if _, err := readEvidenceMetadata(g.evidenceDirectory, first.FetchID); err != nil {
+		t.Fatalf("historical metadata was lost: %v", err)
+	}
+	resourceRequest := httptest.NewRequest(http.MethodGet, "/internal/v1/resources", nil)
+	resourceRequest.Header.Set("Authorization", "Bearer "+g.evidenceToken)
+	resourceResponse := httptest.NewRecorder()
+	g.ServeHTTP(resourceResponse, resourceRequest)
+	var resources map[string]any
+	if resourceResponse.Code != http.StatusOK || json.Unmarshal(resourceResponse.Body.Bytes(), &resources) != nil || resources["spool_archive_exhausted"] != true || resources["spool_archive_bytes_available"] != float64(0) {
+		t.Fatalf("archive exhaustion not visible in resource snapshot: status=%d body=%s", resourceResponse.Code, resourceResponse.Body.String())
+	}
+	activeBytes, activeFiles, err := prepareSpoolWithArchive(g.evidenceDirectory, g.maxSpoolBytes, g.maxEvidenceFiles, g.maxEvidenceArchiveBytes)
+	if err != nil || activeBytes != before || activeFiles != 2 {
+		t.Fatalf("restart did not preserve exhausted state: bytes=%d files=%d err=%v", activeBytes, activeFiles, err)
+	}
+	if _, err := readEvidenceMetadata(g.evidenceDirectory, first.FetchID); err != nil {
+		t.Fatalf("restart lost historical archive entry: %v", err)
+	}
+	if _, _, err := readEvidence(g.evidenceDirectory, second.FetchID); err != nil {
+		t.Fatalf("restart lost evidence still required after failed release: %v", err)
+	}
+}
+
+func TestEvidenceReleaseRejectsActiveReader(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("active")) }))
+	defer upstream.Close()
+	g, cap, _ := testGateway(t, upstream.URL, nil)
+	g.evidenceReleaseToken = "release-secret"
+	fetched := fetch(g, cap, `{"url":"`+upstream.URL+`/api/v1/records"}`, nil)
+	evidence, err := readEvidenceMetadata(g.evidenceDirectory, fetched.Header().Get("X-Mozaic-Fetch-ID"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := &blockingEvidenceWriter{header: make(http.Header), started: make(chan struct{}), release: make(chan struct{})}
+	request := httptest.NewRequest(http.MethodGet, "/internal/v1/evidence/"+evidence.FetchID, nil)
+	request.Header.Set("Authorization", "Bearer "+g.evidenceToken)
+	request.Header.Set("X-DM-Tenant-ID", evidence.TenantID)
+	request.Header.Set("X-DM-Run-ID", evidence.RunID)
+	request.Header.Set("X-DM-Attempt-ID", evidence.AttemptID)
+	request.Header.Set("X-DM-Generation", strconv.FormatInt(evidence.Generation, 10))
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		g.serveEvidence(writer, request)
+	}()
+	<-writer.started
+	release := httptest.NewRequest(http.MethodDelete, "/internal/v1/evidence/"+evidence.FetchID, nil)
+	release.Header.Set("Authorization", "Bearer "+g.evidenceReleaseToken)
+	release.Header.Set("X-DM-Tenant-ID", evidence.TenantID)
+	release.Header.Set("X-DM-Run-ID", evidence.RunID)
+	release.Header.Set("X-DM-Attempt-ID", evidence.AttemptID)
+	release.Header.Set("X-DM-Generation", strconv.FormatInt(evidence.Generation, 10))
+	release.Header.Set("X-DM-Body-SHA256", evidence.BodyDigest)
+	response := httptest.NewRecorder()
+	g.ServeHTTP(response, release)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "evidence_read_active") {
+		t.Fatalf("active-reader release status=%d body=%s", response.Code, response.Body.String())
+	}
+	close(writer.release)
+	<-finished
+	if g.spoolBytes != evidence.BodySize {
+		t.Fatalf("active-reader denial changed spool accounting: %d", g.spoolBytes)
+	}
+}
+
+func TestEvidenceReleaseDirectorySyncFailureRecoversAtStartup(t *testing.T) {
+	const sourceBody = "sync-boundary"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(sourceBody)) }))
+	defer upstream.Close()
+	g, cap, _ := testGateway(t, upstream.URL, func(p *Policy) {
+		p.MaxResponseBytes = int64(len(sourceBody))
+		p.MaxTotalResponseBytes = int64(len(sourceBody) * 2)
+	})
+	fetched := fetch(g, cap, `{"url":"`+upstream.URL+`/api/v1/records"}`, nil)
+	if fetched.Code != http.StatusOK {
+		t.Fatalf("fetch status=%d", fetched.Code)
+	}
+	id := fetched.Header().Get("X-Mozaic-Fetch-ID")
+	_, _, err := releaseEvidenceBodyUsing(g.evidenceDirectory, id, 1<<20, func(path string) error {
+		if path == g.evidenceDirectory {
+			return errors.New("injected_directory_sync_failure")
+		}
+		return syncDirectory(path)
+	})
+	if err == nil || err.Error() != "evidence_release_sync_failed" {
+		t.Fatalf("sync failure not surfaced: %v", err)
+	}
+	if fileExists(filepath.Join(g.evidenceDirectory, id+".body")) {
+		t.Fatal("body unlink was not reached before injected directory sync failure")
+	}
+	if !fileExists(filepath.Join(g.evidenceDirectory, id+".json")) || !fileExists(filepath.Join(g.evidenceDirectory, "archive", id+".json")) {
+		t.Fatal("partial release lost active or archived metadata")
+	}
+	used, entries, err := prepareSpoolWithArchive(g.evidenceDirectory, 1<<20, 1, 1<<20)
+	if err != nil || used != 0 || entries != 0 {
+		t.Fatalf("startup did not recover partial release: bytes=%d entries=%d err=%v", used, entries, err)
+	}
+	if _, err := readEvidenceMetadata(g.evidenceDirectory, id); err != nil {
+		t.Fatalf("recovery lost provenance: %v", err)
 	}
 }
 

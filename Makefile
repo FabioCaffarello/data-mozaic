@@ -1,4 +1,4 @@
-.PHONY: raw-artifact-acquisition-acceptance raw-artifact-negative-acceptance acquisition-resource-benchmark acquisition-capabilities agent-to-raw-acceptance
+.PHONY: raw-artifact-acquisition-acceptance raw-artifact-negative-acceptance acquisition-resource-benchmark acquisition-capabilities agent-to-raw-acceptance acquisition-operational-acceptance acquisition-operator-acceptance acquisition-inspect acquisition-preflight acquisition-release-evidence authorized-live-readiness-acceptance
 .PHONY: authorized-live-scenario work-intake-setup work-intake-migrate work-intake-postgres-tests work-intake-acceptance
 COMPOSE_FILE := deployments/compose/postgres.compose.yaml
 MONGO_COMPOSE_FILE := deployments/compose/mongodb.compose.yaml
@@ -13,7 +13,7 @@ define require_env
 endef
 
 help:
-	@printf '%s\n' 'sync          Install locked development dependencies' 'check         Run the fast quality gate' 'acquisition-output-tests Run BC05 output domain and contract tests' 'acquisition-output-fixture-example Run the synthetic worker-independent output example' 'execution-coordination-fixture-acquisition Run durable fixture-only Scrapy through BC04/BC05/BC06' 'execution-coordination-recover-run Recover one expired BC04 run by tenant and run ID' 'db-up         Start local PostgreSQL and wait for readiness' 'db-migrate    Apply checksummed pending Scout migrations' 'test-integration Run PostgreSQL integration/recovery tests' 'test-recovery Alias for the PostgreSQL integration/recovery suite' 'scout-relay   Run independent Scout outbox worker' 'scout-sandbox-check Verify optional network egress isolation with Docker' 'scout-protected-replay-check Run the protected BC15 executor E2E' 'scout-http-e2e Run MCP/HTTPS tests (not DNS adversarial tests)' 'scout-dns-adversarial-check Run Squid/DNS tests through the real proxy' 'db-down       Stop PostgreSQL without deleting its volume' 'ci            Run repository checks'
+	@printf '%s\n' 'sync          Install locked development dependencies' 'check         Run the fast quality gate' 'acquisition-operational-acceptance Run M9 controlled lifecycle, operator journey, recovery, and Agent-to-Raw acceptance' 'acquisition-operator-acceptance Run fresh-process configuration-backed operational acquisition' 'acquisition-inspect Inspect one tenant-scoped Submission or CaptureRun' 'acquisition-release-evidence Inspect eligibility or release exact published raw evidence' 'acquisition-preflight Run advisory owner-composed acquisition readiness' 'acquisition-output-tests Run BC05 output domain and contract tests' 'acquisition-output-fixture-example Run the synthetic worker-independent output example' 'execution-coordination-fixture-acquisition Run durable fixture-only Scrapy through BC04/BC05/BC06' 'execution-coordination-recover-run Recover one expired BC04 run by tenant and run ID' 'db-up         Start local PostgreSQL and wait for readiness' 'db-migrate    Apply checksummed pending Scout migrations' 'test-integration Run PostgreSQL integration/recovery tests' 'test-recovery Alias for the PostgreSQL integration/recovery suite' 'scout-relay   Run independent Scout outbox worker' 'scout-sandbox-check Verify optional network egress isolation with Docker' 'scout-protected-replay-check Run the protected BC15 executor E2E' 'scout-http-e2e Run MCP/HTTPS tests (not DNS adversarial tests)' 'scout-dns-adversarial-check Run Squid/DNS tests through the real proxy' 'db-down       Stop PostgreSQL without deleting its volume' 'ci            Run repository checks'
 
 sync:
 	uv sync --all-packages --locked
@@ -201,6 +201,47 @@ agent-to-raw-acceptance: work-intake-migrate
 	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
 	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
 	@set -a; . ./.env; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/run_agent_to_raw_acceptance.py
+
+acquisition-operational-acceptance:
+	$(MAKE) acquisition-operator-acceptance
+	$(MAKE) raw-artifact-acquisition-acceptance
+	$(MAKE) authorized-live-html-acquisition
+	$(MAKE) authorized-live-pagination-acquisition
+	$(MAKE) authorized-live-pagination-planned-acquisition
+	$(MAKE) authorized-live-publication-ack-loss
+	$(MAKE) authorized-live-pagination-cancellation
+	$(MAKE) authorized-live-custody-interruption
+	$(MAKE) authorized-live-partial-stage-interruption
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; for cycle in 1 2 3 4 5 6 7; do echo "M9 active-entry reuse cycle $$cycle/7"; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 MOZAIC_LIFECYCLE_ACCEPTANCE=1 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case raw-json --max-evidence-entries 3 --isolation-id m9cycle2 || exit $$?; done
+	$(MAKE) authorized-live-readiness-acceptance
+	$(MAKE) raw-artifact-negative-acceptance
+	$(MAKE) agent-to-raw-acceptance
+
+acquisition-operator-acceptance: work-intake-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 MOZAIC_LIFECYCLE_ACCEPTANCE=1 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case work-intake --operator-workflow
+
+authorized-live-readiness-acceptance: work-intake-migrate
+	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli ping
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); set +a; uv run --locked --all-packages python -m acquisition_output.adapters.mongodb.cli provision
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 MOZAIC_LIFECYCLE_ACCEPTANCE=1 uv run --locked --all-packages python tooling/run_authorized_live_json.py --case raw-json --max-evidence-entries 1 --max-spool-bytes 16777216 --isolation-id m9ready4 --readiness-conformance
+
+acquisition-inspect:
+	@test -n "$(ACQUISITION_INSPECT_ARGS)" || { echo 'Set ACQUISITION_INSPECT_ARGS with --tenant-id and exactly one of --submission-id or --run-id.'; exit 2; }
+	@test -f .env.execution-coordination -a -f .env.work-intake -a -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved owner environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL=http://127.0.0.1:8086 uv run --locked --all-packages python tooling/inspect_acquisition_run.py $(ACQUISITION_INSPECT_ARGS)
+
+acquisition-preflight:
+	@test -f .env.execution-coordination -a -f .env.work-intake -a -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved owner environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./.env.work-intake; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; uv run --locked --all-packages python tooling/acquisition_preflight.py $(ACQUISITION_PREFLIGHT_ARGS)
+
+acquisition-release-evidence:
+	@test -n "$(ACQUISITION_RELEASE_ARGS)" || { echo 'Set ACQUISITION_RELEASE_ARGS with tenant, run and one or more fetch IDs; add --release for the explicit mutation.'; exit 2; }
+	@test -f .env.execution-coordination -a -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved owner environment files are unavailable.'; exit 2; }
+	@set -a; . ./.env.execution-coordination; . ./$(MONGO_ENV_FILE); . ./$(BC06_ENV_FILE); set +a; ARTIFACT_CUSTODY_HTTP_URL="$${ARTIFACT_CUSTODY_HTTP_URL:-http://127.0.0.1:8086}" uv run --locked --all-packages python tooling/acquisition_release_evidence.py $(ACQUISITION_RELEASE_ARGS)
 
 acquisition-resource-benchmark: work-intake-migrate
 	@test -f $(MONGO_ENV_FILE) -a -f $(BC06_ENV_FILE) || { echo 'Required preserved MongoDB and BC06 environment files are unavailable.'; exit 2; }
