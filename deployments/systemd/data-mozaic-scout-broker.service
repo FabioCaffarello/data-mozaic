@@ -1,0 +1,37 @@
+[Unit]
+Description=Data Mozaic protected Scout MCP broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=scout-broker
+Group=scout-broker
+SupplementaryGroups=docker scout-evidence-reviewers
+WorkingDirectory=/
+EnvironmentFile=/etc/data-mozaic/scout/broker.env
+Environment=PATH=/usr/bin:/bin
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/data-mozaic/scout-broker/current/venv/bin/python -I -m scout.tool_host
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/data-mozaic/scout
+ReadWritePaths=/var/lib/data-mozaic/scout-evidence
+ReadWritePaths=/var/lib/data-mozaic/scout-artifacts
+
+[Install]
+WantedBy=multi-user.target

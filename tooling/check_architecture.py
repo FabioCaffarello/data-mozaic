@@ -48,14 +48,22 @@ SOURCE_ROOTS = (
 ALLOWED = {
     "scout": set(),
     "scout.domain": set(),
+    "scout.discovery_content": set(),
     "scout.ports": {"scout.domain"},
     "scout.projections": {"scout.domain"},
     "scout.application": {
         "scout.domain",
         "scout.ports",
         "scout.projections",
+        "scout.discovery_content",
         "mozaic_observability",
     },
+    "scout.proposal_workflow": {
+        "scout.application",
+        "scout.domain",
+        "scout.edge",
+    },
+    "scout.reviewer_identity": {"scout.domain"},
     "scout.adapters": {
         "scout.domain",
         "scout.ports",
@@ -66,7 +74,7 @@ ALLOWED = {
     "scout.fakes": {"scout.domain", "scout.projections", "scout.edge"},
     "scout.outbox_relay": {"mozaic_observability"},
     "scout.relay_worker": {"scout.adapters", "scout.outbox_relay"},
-    "scout.tools": {"scout.domain"},
+    "scout.tools": {"scout.domain", "scout.discovery_content"},
     "scout.demo": {
         "scout.application",
         "scout.domain",
@@ -83,7 +91,22 @@ ALLOWED = {
         "scout.application",
         "scout.domain",
         "scout.edge",
+        "scout.proposal_workflow",
         "scout.tools",
+        # The protected composition root wires BC15's public semantic
+        # validator into the BC14 proposal workflow; neither domain imports it.
+        "collector_engineering",
+    },
+    "scout.reviewer_cli": {
+        "scout.adapters",
+        "scout.application",
+        "scout.domain",
+        "scout.proposal_workflow",
+        "scout.reviewer_identity",
+        "scout.tools",
+        "scout.tool_host",
+        "acquisition_lifecycle",
+        "collector_engineering",
     },
     "mozaic_observability": set(),
     "collector_engineering": {"mozaic_bot_build"},

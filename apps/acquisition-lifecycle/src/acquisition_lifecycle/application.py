@@ -11,7 +11,10 @@ from typing import Any
 
 import rfc8785
 from collector_engineering.live_admission import validate_live_admission
-from collector_engineering.playbook_v2 import load_playbook_v2, validate_playbook_v2
+from collector_engineering.playbook_v2 import (
+    parse_playbook,
+    validate_playbook_v2,
+)
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 from mozaic_bot_build import canonical_json, verify_bot_build
@@ -140,12 +143,35 @@ class AcquisitionLifecycle:
         content = path.read_bytes()
         if not content or len(content) > 1_000_000:
             raise LifecycleError("Playbook revision exceeds the supported size")
-        try:
-            parsed = load_playbook_v2(path)
-        except Exception as error:
-            raise LifecycleError("CapturePlaybook revision is invalid") from error
         if path.is_symlink() or path.read_bytes() != content:
             raise LifecycleError("CapturePlaybook changed while it was being validated")
+        return self._register_playbook_content(content, actor_id=actor_id)
+
+    def register_playbook_document(
+        self, document: dict[str, Any], *, actor_id: str
+    ) -> dict[str, str]:
+        """Register an already parsed declarative candidate through BC15 validation.
+
+        Used by trusted application compositions such as Scout proposal
+        promotion. This operation registers immutable Playbook content only;
+        release eligibility and approval remain separate M4 operations.
+        """
+        if not isinstance(document, dict):
+            raise LifecycleError("CapturePlaybook candidate must be an object")
+        content = (
+            json.dumps(
+                document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            + "\n"
+        ).encode("utf-8")
+        digest = self._register_playbook_content(content, actor_id=actor_id)
+        return {"playbook_id": document["playbook_id"], "playbook_digest": digest}
+
+    def _register_playbook_content(self, content: bytes, *, actor_id: str) -> str:
+        try:
+            parsed = parse_playbook(content.decode("utf-8"))
+        except Exception as error:
+            raise LifecycleError("CapturePlaybook revision is invalid") from error
         validation = validate_playbook_v2(parsed)
         if not validation.valid:
             raise LifecycleError("CapturePlaybook revision failed BC15 validation")

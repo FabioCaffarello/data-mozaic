@@ -70,6 +70,18 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                     / "contracts/scout/transcript/draft/v2/ScoutSessionTranscript.schema.json"
                 ).read_bytes()
             ).hexdigest(),
+            "ScoutSessionTranscript.v3.schema.json": hashlib.sha256(
+                (
+                    ROOT
+                    / "contracts/scout/transcript/draft/v3/ScoutSessionTranscript.schema.json"
+                ).read_bytes()
+            ).hexdigest(),
+            "CapturePlaybook.v4.schema.json": hashlib.sha256(
+                (
+                    ROOT
+                    / "contracts/capture-playbook/draft/v4/CapturePlaybook.schema.json"
+                ).read_bytes()
+            ).hexdigest(),
         }
         with tempfile.TemporaryDirectory(
             prefix="bc15 isolated with spaces "
@@ -188,7 +200,8 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                             "root=files('collector_engineering').joinpath('schemas'); "
                             "print(json.dumps({name: hashlib.sha256(root.joinpath(name).read_bytes()).hexdigest() "
                             "for name in ('CapturePlaybook.schema.json','PlaybookProposal.schema.json',"
-                            "'ScoutSessionTranscript.v1.schema.json','ScoutSessionTranscript.v2.schema.json')}))"
+                            "'ScoutSessionTranscript.v1.schema.json','ScoutSessionTranscript.v2.schema.json',"
+                            "'ScoutSessionTranscript.v3.schema.json','CapturePlaybook.v4.schema.json')}))"
                         ),
                     ],
                     cwd=external,
@@ -200,6 +213,29 @@ class CollectorEngineeringPackagingTests(unittest.TestCase):
                 import json
 
                 self.assertEqual(expected, json.loads(schemas.stdout))
+                capabilities = subprocess.run(
+                    [
+                        str(python),
+                        "-c",
+                        (
+                            "import runpy,sys; "
+                            f"sys.path.insert(0, {str(runtime_dependencies)!r}); "
+                            "runpy.run_module('collector_engineering',run_name='__main__')"
+                        ),
+                        "capabilities",
+                    ],
+                    cwd=external,
+                    env=clean_env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(
+                    2_000_000,
+                    json.loads(capabilities.stdout)["raw_artifact_profile"][
+                        "max_artifact_bytes"
+                    ],
+                )
                 draft_path = external / f"candidate-{suffix}.yaml"
                 for command in (
                     ["draft", str(transcript_path), "--output", str(draft_path)],

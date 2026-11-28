@@ -16,6 +16,9 @@ dependencies = [
     "selectolax>=0.4.13,<0.5",
 ]
 
+[project.scripts]
+collector-engineering = "collector_engineering.__main__:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["collector_engineering"]
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -28,7 +29,7 @@ SINGLE_EXPECTATIONS = (
 SINGLE_SOURCE = ("e2e-catalog-single", "single-resource-v1")
 LOCAL_PRINCIPAL = "scout-local-acceptance"
 FIXTURE_ORIGIN = "https://catalog.fixture.test"
-FIXTURE_PREFIX = "/api"
+FIXTURE_PREFIX = "/api/catalog"
 FIXTURE_PROXY_PORT = 3128
 
 
@@ -193,7 +194,14 @@ def find_repository_root(start: Path) -> Path:
     return Path(result.stdout.strip()).resolve()
 
 
-def _prepare_local_files(root: Path, runtime: Path, proxy_url: str) -> dict:
+def _prepare_local_files(
+    root: Path,
+    runtime: Path,
+    proxy_url: str,
+    *,
+    certificate_dir: Path | None = None,
+    previous_certificate_dir: Path | None = None,
+) -> dict:
     local = root / ".local"
     _prepare_private_local_directory(local)
     env_path = root / ".env"
@@ -213,6 +221,7 @@ def _prepare_local_files(root: Path, runtime: Path, proxy_url: str) -> dict:
 
     artifact_root = _artifact_home(root)
     evidence_root = runtime / "evidence"
+    certificate_dir = certificate_dir or runtime / "certs"
     _secure_directory(artifact_root.parent)
     _secure_directory(artifact_root)
     _secure_directory(evidence_root)
@@ -226,7 +235,7 @@ def _prepare_local_files(root: Path, runtime: Path, proxy_url: str) -> dict:
             "SCOUT_EVIDENCE_ROOT": str(evidence_root),
             "SCOUT_ARTIFACT_ROOT": str(artifact_root),
             "SCOUT_EGRESS_PROXY": proxy_url,
-            "SSL_CERT_FILE": str(runtime / "certs/ca.crt"),
+            "SSL_CERT_FILE": str(certificate_dir / "ca.crt"),
         }
         if any(current.get(key) != value for key, value in expected.items()):
             previous_roots = (runtime / "artifacts", _legacy_artifact_home(root))
@@ -239,6 +248,21 @@ def _prepare_local_files(root: Path, runtime: Path, proxy_url: str) -> dict:
                 )
                 for previous_root in previous_roots
             )
+            if (
+                principal == LOCAL_PRINCIPAL
+                and previous_certificate_dir is not None
+                and current.get("SSL_CERT_FILE")
+                == str(previous_certificate_dir / "ca.crt")
+                and all(
+                    current.get(key) == value
+                    for key, value in expected.items()
+                    if key != "SSL_CERT_FILE"
+                )
+            ):
+                _rewrite_managed_env_values(
+                    env_path, {"SSL_CERT_FILE": expected["SSL_CERT_FILE"]}
+                )
+                current = _read_env(env_path)
             if principal == LOCAL_PRINCIPAL and managed_previous:
                 _rewrite_managed_env_values(
                     env_path, {"SCOUT_ARTIFACT_ROOT": str(artifact_root)}
@@ -261,7 +285,7 @@ def _prepare_local_files(root: Path, runtime: Path, proxy_url: str) -> dict:
         "SCOUT_EVIDENCE_ROOT": str(evidence_root),
         "SCOUT_ARTIFACT_ROOT": str(artifact_root),
         "SCOUT_EGRESS_PROXY": proxy_url,
-        "SSL_CERT_FILE": str(runtime / "certs/ca.crt"),
+        "SSL_CERT_FILE": str(certificate_dir / "ca.crt"),
     }
     rendered = []
     seen = set()
@@ -303,6 +327,60 @@ def _load_runtime(root: Path) -> tuple[Path, dict]:
     return runtime, value
 
 
+def _fixture_certificate_valid(certificate_dir: Path) -> bool:
+    """Check the isolated synthetic CA/leaf chain, name and remaining lifetime."""
+    ca = certificate_dir / "ca.crt"
+    leaf = certificate_dir / "server.crt"
+    if any(path.is_symlink() or not path.is_file() for path in (ca, leaf)):
+        return False
+    checks = (
+        ["openssl", "verify", "-CAfile", str(ca), str(leaf)],
+        [
+            "openssl",
+            "x509",
+            "-in",
+            str(leaf),
+            "-checkhost",
+            "catalog.fixture.test",
+            "-noout",
+        ],
+        ["openssl", "x509", "-in", str(leaf), "-checkend", "86400", "-noout"],
+    )
+    try:
+        return all(
+            _run(command, cwd=certificate_dir, timeout=5).returncode == 0
+            for command in checks
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _new_fixture_certificate_directory(root: Path, runtime: Path) -> Path:
+    directory = runtime / f"certs-refresh-{uuid.uuid4().hex[:12]}"
+    directory.mkdir(mode=0o700)
+    e2e = _import_e2e_helpers(root)
+    e2e._make_certificates(directory)
+    (directory / "ca.key").chmod(0o600)
+    (directory / "server.key").chmod(0o600)
+    if not _fixture_certificate_valid(directory):
+        raise RuntimeError("new synthetic fixture certificate failed validation")
+    return directory
+
+
+def _fixture_addresses(subnet: str) -> dict[str, str]:
+    network = ipaddress.ip_network(subnet, strict=True)
+    if network.version != 4 or network.num_addresses < 64:
+        raise RuntimeError(
+            "synthetic Scout fixture requires an isolated IPv4 /26 or larger"
+        )
+    return {
+        "SCOUT_HTTP_E2E_SQUID_IP": str(network.network_address + 2),
+        "SCOUT_HTTP_E2E_FIXTURE_IP": str(network.network_address + 10),
+        "SCOUT_HTTP_E2E_SINK_IP": str(network.network_address + 11),
+        "SCOUT_HTTP_E2E_DNS_IP": str(network.network_address + 53),
+    }
+
+
 def _rewrite_managed_env_values(path: Path, updates: dict[str, str]) -> None:
     _secure_file(path, required=True)
     rewritten = []
@@ -341,7 +419,11 @@ def _rewrite_managed_env_values(path: Path, updates: dict[str, str]) -> None:
 
 
 def _migrate_managed_proxy_url(
-    root: Path, runtime: Path, old_port: int, new_port: int
+    root: Path,
+    runtime: Path,
+    old_port: int,
+    new_port: int,
+    certificate_dir: Path | None = None,
 ) -> None:
     if old_port == new_port:
         return
@@ -357,7 +439,7 @@ def _migrate_managed_proxy_url(
         "SCOUT_EVIDENCE_ROOT": str(runtime / "evidence"),
         "SCOUT_ARTIFACT_ROOT": str(runtime / "artifacts"),
         "SCOUT_EGRESS_PROXY": f"http://127.0.0.1:{old_port}",
-        "SSL_CERT_FILE": str(runtime / "certs/ca.crt"),
+        "SSL_CERT_FILE": str((certificate_dir or runtime / "certs") / "ca.crt"),
     }
     if any(values.get(key) != value for key, value in expected.items()):
         raise RuntimeError(
@@ -493,15 +575,29 @@ def _setup(args) -> int:
     )
 
     runtime_path = runtime / "runtime.json"
+    previous_certificate_dir = None
     if runtime_path.exists():
         _secure_file(runtime_path, required=True)
         runtime_data = json.loads(runtime_path.read_text(encoding="utf-8"))
         if runtime_data.get("worktree") != str(root.resolve()):
             raise RuntimeError("runtime manifest does not match this worktree")
         _migrate_managed_proxy_url(
-            root, runtime, runtime_data["proxy_port"], FIXTURE_PROXY_PORT
+            root,
+            runtime,
+            runtime_data["proxy_port"],
+            FIXTURE_PROXY_PORT,
+            Path(runtime_data.get("certificate_dir", runtime / "certs")),
         )
         runtime_data["proxy_port"] = FIXTURE_PROXY_PORT
+        previous_certificate_dir = Path(
+            runtime_data.get("certificate_dir", runtime / "certs")
+        )
+        if not _fixture_certificate_valid(previous_certificate_dir):
+            runtime_data["complete"] = False
+            runtime_data["certificate_dir"] = str(
+                _new_fixture_certificate_directory(root, runtime)
+            )
+            _write_runtime(runtime, runtime_data)
     else:
         e2e = _import_e2e_helpers(root)
         cert_dir = runtime / "certs"
@@ -529,15 +625,28 @@ def _setup(args) -> int:
             "project": project,
             "proxy_port": proxy_port,
             "dns_control_port": dns_port,
+            "network_subnet": str(e2e._select_e2e_subnet()),
             "certificate_dir": str(cert_dir),
             "squid_config": str(squid_config),
         }
+        _write_runtime(runtime, runtime_data)
+
+    e2e = _import_e2e_helpers(root)
+    if not runtime_data.get("network_subnet"):
+        runtime_data["network_subnet"] = str(e2e._select_e2e_subnet())
+        runtime_data["complete"] = False
+    runtime_data["fixture_addresses"] = _fixture_addresses(
+        runtime_data["network_subnet"]
+    )
+    if not runtime_data.get("complete"):
         _write_runtime(runtime, runtime_data)
 
     local_settings = _prepare_local_files(
         root,
         runtime,
         f"http://127.0.0.1:{runtime_data['proxy_port']}",
+        certificate_dir=Path(runtime_data["certificate_dir"]),
+        previous_certificate_dir=previous_certificate_dir,
     )
     if (
         args.authorize_fixture_source
@@ -545,7 +654,6 @@ def _setup(args) -> int:
     ):
         raise RuntimeError("only the versioned synthetic single fixture is supported")
 
-    e2e = _import_e2e_helpers(root)
     environment = os.environ.copy()
     environment.update(compose_env)
     environment.update(
@@ -554,6 +662,8 @@ def _setup(args) -> int:
             "SCOUT_HTTP_E2E_SQUID_CONFIG": runtime_data["squid_config"],
             "SCOUT_HTTP_E2E_PROXY_PORT": str(runtime_data["proxy_port"]),
             "SCOUT_HTTP_E2E_DNS_CONTROL_PORT": str(runtime_data["dns_control_port"]),
+            "SCOUT_HTTP_E2E_SUBNET": runtime_data["network_subnet"],
+            **runtime_data["fixture_addresses"],
         }
     )
     command = [
@@ -572,8 +682,9 @@ def _setup(args) -> int:
     dns_url = f"http://127.0.0.1:{runtime_data['dns_control_port']}"
     e2e._wait_dns_control(dns_url)
     _configure_fixture_dns(dns_url)
-    ca_cert = runtime / "certs/ca.crt"
-    server_cert = runtime / "certs/server.crt"
+    cert_dir = Path(runtime_data["certificate_dir"])
+    ca_cert = cert_dir / "ca.crt"
+    server_cert = cert_dir / "server.crt"
     _require_ok(
         ["openssl", "verify", "-CAfile", str(ca_cert), str(server_cert)],
         cwd=root,
@@ -798,7 +909,7 @@ def _database_check(root: Path) -> tuple[bool, str]:
 
 def _fixture_stack_check(root: Path) -> tuple[bool, str]:
     try:
-        runtime, data = _load_runtime(root)
+        _runtime, data = _load_runtime(root)
         if not data.get("complete"):
             return False, "fixture setup was interrupted"
         if data.get("proxy_port") != FIXTURE_PROXY_PORT:
@@ -814,6 +925,8 @@ def _fixture_stack_check(root: Path) -> tuple[bool, str]:
                 "SCOUT_HTTP_E2E_SQUID_CONFIG": data["squid_config"],
                 "SCOUT_HTTP_E2E_PROXY_PORT": str(data["proxy_port"]),
                 "SCOUT_HTTP_E2E_DNS_CONTROL_PORT": str(data["dns_control_port"]),
+                "SCOUT_HTTP_E2E_SUBNET": data["network_subnet"],
+                **data["fixture_addresses"],
             }
         )
         compose = [
@@ -854,14 +967,14 @@ def _fixture_stack_check(root: Path) -> tuple[bool, str]:
                 "openssl",
                 "verify",
                 "-CAfile",
-                str(runtime / "certs/ca.crt"),
-                str(runtime / "certs/server.crt"),
+                str(Path(data["certificate_dir"]) / "ca.crt"),
+                str(Path(data["certificate_dir"]) / "server.crt"),
             ],
             [
                 "openssl",
                 "x509",
                 "-in",
-                str(runtime / "certs/server.crt"),
+                str(Path(data["certificate_dir"]) / "server.crt"),
                 "-checkhost",
                 "catalog.fixture.test",
                 "-noout",

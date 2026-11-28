@@ -1,4 +1,5 @@
 catalog.fixture.test
+api.fixture.test
 single.fixture.test
 cname.fixture.test
 private.fixture.test

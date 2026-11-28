@@ -29,25 +29,58 @@ except ImportError:  # direct execution via `python tooling/package_scout_broker
     )
 
 ROOT = Path(__file__).resolve().parents[1]
+BROKER_WORKSPACE_PACKAGES = (
+    "mozaic-observability",
+    "mozaic-bot-build",
+    "mozaic-contract-resolution",
+    "mozaic-collector-engineering",
+    "mozaic-execution-coordination",
+    "mozaic-acquisition-lifecycle",
+    "mozaic-scout",
+)
+DEPLOYMENT_FILES = (
+    "deployments/systemd/data-mozaic-scout-broker.service",
+    "deployments/macos/org.datamozaic.scout-tunnel.plist.example",
+    "deployments/sshd/scout-tunnel-match.conf.example",
+    "config/scout/scout-tunnel-authorized-key.example",
+    "config/scout/broker.env.example",
+    "config/scout/reviewer.env.example",
+    "config/scout/reviewer-identities.example.json",
+    "config/scout/linux-installation.example.json",
+    "config/scout/scout-tunnel-ssh-config.example",
+    "config/scout/authoring-policy.example.json",
+    "config/scout/codex-requirements.example.toml",
+)
+BROKER_SOURCE_PATHS = (
+    "apps/scout/pyproject.toml",
+    "apps/scout/scout",
+    "libs/python/observability/pyproject.toml",
+    "libs/python/observability/src/mozaic_observability",
+    "libs/python/bot-build/pyproject.toml",
+    "libs/python/bot-build/src/mozaic_bot_build",
+    "libs/python/contract-resolution/pyproject.toml",
+    "libs/python/contract-resolution/src/mozaic_contract_resolution",
+    "apps/collector-engineering/pyproject.toml",
+    "apps/collector-engineering/collector_engineering",
+    "apps/execution-coordination/pyproject.toml",
+    "apps/execution-coordination/src/execution_coordination",
+    "apps/acquisition-lifecycle/pyproject.toml",
+    "apps/acquisition-lifecycle/src/acquisition_lifecycle",
+    "apps/collector-engineering/Dockerfile.protected",
+    "contracts/payload/draft/v1",
+)
 
 
 def source_digest() -> str:
-    files = [
-        ROOT / "uv.lock",
-        ROOT / "apps/scout/pyproject.toml",
-        ROOT / "libs/python/observability/pyproject.toml",
-        ROOT / "apps/collector-engineering/pyproject.toml",
-        ROOT / "apps/collector-engineering/Dockerfile.protected",
-    ]
-    files.extend(sorted((ROOT / "apps/scout/scout").rglob("*.py")))
-    files.extend(sorted((ROOT / "libs/python/observability").rglob("*.py")))
-    files.extend(
-        sorted(
-            (ROOT / "apps/collector-engineering/collector_engineering").rglob("*.py")
-        )
-    )
+    files = [ROOT / "uv.lock"]
+    for relative in BROKER_SOURCE_PATHS:
+        path = ROOT / relative
+        files.extend(sorted(path.rglob("*") if path.is_dir() else (path,)))
+    files.extend(ROOT / relative for relative in DEPLOYMENT_FILES)
     digest = hashlib.sha256()
     for path in files:
+        if not path.is_file() or path.is_symlink():
+            continue
         digest.update(path.relative_to(ROOT).as_posix().encode())
         digest.update(b"\0")
         digest.update(bytes.fromhex(sha256_file(path)))
@@ -184,7 +217,7 @@ def main() -> int:
         )
         wheels = staging / "wheels"
         wheels.mkdir()
-        for package in ("mozaic-observability", "mozaic-scout"):
+        for package in BROKER_WORKSPACE_PACKAGES:
             subprocess.run(
                 [
                     "uv",
@@ -210,6 +243,14 @@ def main() -> int:
         shutil.copy2(ROOT / "tooling/scout_release_artifact.py", staging)
         shutil.copy2(ROOT / "tooling/install_scout_bundle.sh", staging)
         (staging / "install_scout_bundle.sh").chmod(0o755)
+        for relative in DEPLOYMENT_FILES:
+            destination = staging / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / relative, destination)
+        shutil.copytree(
+            ROOT / "contracts/payload/draft/v1",
+            staging / "contracts/payload/draft/v1",
+        )
         wheelhouse = staging / "wheelhouse"
         wheelhouse.mkdir()
         with tempfile.TemporaryDirectory(

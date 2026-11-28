@@ -32,6 +32,7 @@ services:
         ipv4_address: ${SCOUT_HTTP_E2E_FIXTURE_IP:?Set the isolated E2E fixture IP}
         aliases:
           - catalog.fixture.test
+          - api.fixture.test
 
   dns-fixture:
     image: python:3.12-slim

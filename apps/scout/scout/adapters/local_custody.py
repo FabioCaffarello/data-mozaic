@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
@@ -19,17 +20,42 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 class LocalFileEvidenceCustody:
     """Atomic, identity-addressable filesystem double for offline development."""
 
-    def __init__(self, root: Path, *, max_bytes: int = 2_000_000):
+    def __init__(
+        self,
+        root: Path,
+        *,
+        max_bytes: int = 2_000_000,
+        reviewer_read_gid: int | None = None,
+    ):
         if not root.is_absolute() or max_bytes < 1:
             raise ValueError("custody root must be absolute and byte limit positive")
+        if reviewer_read_gid is not None and reviewer_read_gid < 1:
+            raise ValueError("reviewer evidence group ID must be positive")
         self.root = root
         self.max_bytes = max_bytes
+        self.reviewer_read_gid = reviewer_read_gid
 
     def _root(self) -> Path:
+        if self.reviewer_read_gid is not None and not self.root.exists():
+            raise IntegrityError("reviewer-readable custody root must be provisioned")
         self.root.mkdir(parents=True, exist_ok=True)
         if self.root.is_symlink():
             raise IntegrityError("custody root cannot be a symlink")
-        return self.root.resolve(strict=True)
+        root = self.root.resolve(strict=True)
+        if self.reviewer_read_gid is not None:
+            metadata = root.stat()
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or metadata.st_gid != self.reviewer_read_gid
+                or not metadata.st_mode & stat.S_ISGID
+                or metadata.st_mode & 0o050 != 0o050
+                or metadata.st_mode & 0o027
+            ):
+                raise IntegrityError(
+                    "reviewer-readable custody root ownership or permissions are invalid"
+                )
+        return root
 
     def _artifact_id(self, artifact_id: str) -> None:
         if not _ARTIFACT_ID.fullmatch(artifact_id):
@@ -38,11 +64,37 @@ class LocalFileEvidenceCustody:
     def _atomic_write(
         self, directory: Path, target: Path, data: bytes, *, replace: bool = True
     ) -> None:
-        directory.mkdir(parents=True, exist_ok=True)
+        directory.mkdir(
+            parents=True,
+            exist_ok=True,
+            mode=0o2750 if self.reviewer_read_gid is not None else 0o700,
+        )
         if directory.is_symlink():
             raise IntegrityError("custody directory cannot be a symlink")
+        if self.reviewer_read_gid is not None:
+            metadata = directory.stat()
+            if (
+                metadata.st_uid != os.geteuid()
+                or metadata.st_gid != self.reviewer_read_gid
+            ):
+                raise IntegrityError("reviewer evidence directory ownership changed")
+            directory.chmod(0o2750)
+            if not directory.stat().st_mode & stat.S_ISGID:
+                raise IntegrityError(
+                    "reviewer evidence directory setgid is unavailable"
+                )
         fd, temp_name = tempfile.mkstemp(prefix=".pending-", dir=directory)
         temp_path = Path(temp_name)
+        if self.reviewer_read_gid is not None:
+            metadata = os.fstat(fd)
+            if (
+                metadata.st_uid != os.geteuid()
+                or metadata.st_gid != self.reviewer_read_gid
+            ):
+                os.close(fd)
+                temp_path.unlink(missing_ok=True)
+                raise IntegrityError("reviewer evidence file ownership changed")
+            os.fchmod(fd, 0o640)
         try:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(data)

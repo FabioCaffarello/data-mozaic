@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "agent_uid": 21001,
+  "reviewers": [
+    {
+      "uid": 21002,
+      "principal": "reviewer:controlled-operator",
+      "source_scopes": [
+        {
+          "source_id": "e2e-catalog-single",
+          "revision": "single-resource-v1"
+        }
+      ]
+    }
+  ]
+}

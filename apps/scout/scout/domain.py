@@ -195,6 +195,20 @@ class PlaybookProposal:
     assumptions: tuple[str, ...]
     risks: tuple[str, ...]
     required_capabilities: tuple[str, ...]
+    # BC14 stores and binds the declarative BC15 input but does not interpret
+    # compiler semantics. Absent values preserve historical proposal v1.
+    proposal_revision: int = 1
+    candidate_specification: dict | None = None
+    candidate_sha256: str | None = None
+
+
+def proposal_event_id(proposal: PlaybookProposal) -> str:
+    base = "handoff:" + proposal.proposal_id
+    return (
+        base
+        if proposal.proposal_revision == 1
+        else f"{base}:r{proposal.proposal_revision}"
+    )
 
 
 class State(StrEnum):
@@ -223,6 +237,7 @@ class ScoutSession:
     manifests: tuple[EvidenceManifest, ...] = field(default_factory=tuple)
     findings: tuple[DiscoveryFinding, ...] = field(default_factory=tuple)
     proposal: PlaybookProposal | None = None
+    proposal_history: tuple[PlaybookProposal, ...] = field(default_factory=tuple)
     handoff_result: str | None = None
     start_requested_url: str | None = None
     start_effective_url: str | None = None
@@ -427,17 +442,26 @@ class ScoutSession:
         }
         proposal_manifest_ids = set(proposal.manifest_ids)
         if (
-            self.proposal is not None
-            or proposal.session_id != self.session_id
+            proposal.session_id != self.session_id
             or proposal.source != self.source
             or not proposal.summary.strip()
             or not proposal.finding_ids
             or not proposal.manifest_ids
+            or proposal.proposal_revision < 1
+            or (proposal.candidate_specification is None)
+            != (proposal.candidate_sha256 is None)
+            or (
+                proposal.candidate_sha256 is not None
+                and len(proposal.candidate_sha256) != 64
+            )
+            or proposal.proposal_revision
+            != (1 if self.proposal is None else self.proposal.proposal_revision + 1)
             or not finding_ids <= {f.finding_id for f in self.findings}
             or not proposal_manifest_ids <= {m.manifest_id for m in self.manifests}
             or not finding_manifest_ids <= proposal_manifest_ids
         ):
             raise IntegrityError("invalid proposal")
+        self.proposal_history += (proposal,)
         self.proposal = proposal
 
     def complete(self, decision: PolicyDecisionRef, now: datetime):

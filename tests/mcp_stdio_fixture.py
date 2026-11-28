@@ -15,6 +15,7 @@ from scout.fakes import (
     FakeSessionRepository,
     FakeSourceLookup,
 )
+from scout.tool_host.composition import _trusted_proposal_workflow
 from scout.tool_host.server import create_server, serve
 
 
@@ -76,10 +77,17 @@ def main():
                     allow_unprivileged_test_cli=True,
                 ),
                 acceptance_expectations={source_key: oracle},
+                proposal_workflow=_trusted_proposal_workflow(app),
             )
         )
     else:
-        serve(create_server(app, "local-analyst"))
+        serve(
+            create_server(
+                app,
+                "local-analyst",
+                proposal_workflow=_trusted_proposal_workflow(app),
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -9,6 +9,38 @@ import shutil
 import subprocess
 from pathlib import Path, PurePosixPath
 
+BROKER_SOURCE_PATHS = (
+    "apps/scout/pyproject.toml",
+    "apps/scout/scout",
+    "libs/python/observability/pyproject.toml",
+    "libs/python/observability/src/mozaic_observability",
+    "libs/python/bot-build/pyproject.toml",
+    "libs/python/bot-build/src/mozaic_bot_build",
+    "libs/python/contract-resolution/pyproject.toml",
+    "libs/python/contract-resolution/src/mozaic_contract_resolution",
+    "apps/collector-engineering/pyproject.toml",
+    "apps/collector-engineering/collector_engineering",
+    "apps/execution-coordination/pyproject.toml",
+    "apps/execution-coordination/src/execution_coordination",
+    "apps/acquisition-lifecycle/pyproject.toml",
+    "apps/acquisition-lifecycle/src/acquisition_lifecycle",
+    "apps/collector-engineering/Dockerfile.protected",
+    "contracts/payload/draft/v1",
+)
+BROKER_DEPLOYMENT_FILES = (
+    "deployments/systemd/data-mozaic-scout-broker.service",
+    "deployments/macos/org.datamozaic.scout-tunnel.plist.example",
+    "deployments/sshd/scout-tunnel-match.conf.example",
+    "config/scout/scout-tunnel-authorized-key.example",
+    "config/scout/broker.env.example",
+    "config/scout/reviewer.env.example",
+    "config/scout/reviewer-identities.example.json",
+    "config/scout/linux-installation.example.json",
+    "config/scout/scout-tunnel-ssh-config.example",
+    "config/scout/authoring-policy.example.json",
+    "config/scout/codex-requirements.example.toml",
+)
+
 try:
     from .scout_release_artifact import (
         architecture_for_platform,
@@ -49,25 +81,14 @@ def _source_digest(root: Path, *, worker_only: bool = False) -> str:
             )
         )
     else:
-        files.extend(
-            [
-                root / "apps/scout/pyproject.toml",
-                root / "libs/python/observability/pyproject.toml",
-                root / "apps/collector-engineering/pyproject.toml",
-                root / "apps/collector-engineering/Dockerfile.protected",
-            ]
-        )
-        files.extend(sorted((root / "apps/scout/scout").rglob("*.py")))
-        files.extend(sorted((root / "libs/python/observability").rglob("*.py")))
-        files.extend(
-            sorted(
-                (root / "apps/collector-engineering/collector_engineering").rglob(
-                    "*.py"
-                )
-            )
-        )
+        for relative in BROKER_SOURCE_PATHS:
+            path = root / relative
+            files.extend(sorted(path.rglob("*") if path.is_dir() else (path,)))
+        files.extend(root / relative for relative in BROKER_DEPLOYMENT_FILES)
     digest = hashlib.sha256()
     for path in files:
+        if path.is_dir() or path.is_symlink():
+            continue
         digest.update(path.relative_to(root).as_posix().encode())
         digest.update(b"\0")
         digest.update(bytes.fromhex(sha256_file(path)))

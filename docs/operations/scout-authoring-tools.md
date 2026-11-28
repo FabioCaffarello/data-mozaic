@@ -24,7 +24,7 @@ After status reports ready, `make scout-authoring-acceptance` starts a real `cod
 
 ## Intended MCP tool contract (unavailable until trusted deployment)
 
-`scout_preflight`, `scout_start`, `scout_fetch`, `scout_record_finding`, `scout_propose`, `scout_status`, `scout_export_transcript`, `scout_bc15_replay`, `scout_bc15_accept`, `scout_bc15_status`, `scout_bc15_get_manifest`, and `scout_bc15_get_report` are the current authoring tools. `scout_explore_fixture` is a separate hermetic test/demo tool and is not the HTTP source workflow. Schemas reject extra arguments; principal, policy, approval, budgets, evidence root, Docker runtime, image, volumes, and credentials are launcher-owned.
+`scout_preflight`, `scout_start`, `scout_fetch`, `scout_record_finding`, `scout_propose`, `scout_status`, `scout_export_transcript`, `scout_proposal_history`, `scout_validate_proposal`, `scout_prepare_promotion`, `scout_bc15_replay`, `scout_bc15_accept`, `scout_bc15_status`, `scout_bc15_get_manifest`, and `scout_bc15_get_report` are the current authoring operations. The protected HTTP composition injects the BC15 candidate validator by default. It exposes history, structured validation diagnostics, and a reviewer handoff after validation. Its promotion and M4 registration ports explicitly deny calls; no promotion, release-approval, signing, or authority-installation tool is exposed to the authoring agent. The separate `scout-review promote` CLI is a reviewer adapter described below. The project MCP allowlist and active managed session must be checked independently; project configuration is not proof of effective availability. `scout_explore_fixture` is a hermetic test/demo tool and is not the HTTP source workflow. Schemas reject extra arguments; principal, policy, approval, budgets, evidence root, Docker runtime, image, volumes, and credentials are launcher-owned.
 
 - `scout_fetch` accepts one HTTPS page, resolves source/revision from its session, reauthorizes each redirect hop, spends the durable PostgreSQL request budget, stores final response bytes in local custody, and returns bounded extracted text, links, and evidence IDs/digests. Links are suggestions; none is followed automatically.
 - `scout_export_transcript` reauthorizes the session, checks proposal/finding/evidence references, verifies custody, and returns the versioned BC14 transcript plus its SHA-256. HTTP exploration exports internal transcript draft/v2 with requested/effective start URLs and ordered observations; the hermetic fixture workflow may still export v1. The JSON transcript intentionally contains metadata and references, not raw body bytes.
@@ -35,6 +35,28 @@ After status reports ready, `make scout-authoring-acceptance` starts a real `cod
 - At startup the broker snapshots the owner-only policy file into a mode-`0400` file under its private state root, then uses that snapshot for fetch and redirect authorization. This keeps worktree policy edits from changing the already-running broker's scope; the operating-system sandbox must still deny the agent writes to the private state root.
 - `scout_record_finding` supports `observation` and `hypothesis`; there is no independent verification tool in the current contract.
 - `scout_propose` submits a BC14 `PlaybookProposal` to the durable BC15 outbox. Delivery acknowledgement means received, not approved.
+- `scout_proposal_history` returns the authorized current proposal and immutable revisions. `scout_validate_proposal` re-exports the caller-authorized transcript, rechecks custody/source/scope/finding/candidate digests, and delegates semantic Playbook validation to BC15. `scout_prepare_promotion` returns the exact validated proposal revision and candidate digest as a reviewer handoff. These agent-facing calls never register a Playbook or approve a BotRelease.
+
+## Reviewer promotion boundary
+
+The separate `scout-review promote` command accepts the exact Scout session ID, proposal ID, proposal revision, and candidate SHA-256 twice for explicit confirmation. It does not accept `actor_id`, role, tenant, or reviewer identity from request arguments. The current implementation derives the principal from the effective Unix UID and a root-owned `/etc/data-mozaic/scout/reviewer-identities.json` policy. The reviewer UID must differ from both the agent UID and root. The policy grants only exact `(source_id, revision)` scopes and rejects extra role claims, duplicate identities, unsafe permissions, symlinks, and writable parent directories.
+
+An operator must provision a dedicated reviewer Unix account and root-owned identity policy before using the command. The managed process environment must also supply protected `SCOUT_REVIEW_SOURCE_REGISTRY`, `SCOUT_DATABASE_URL`, `SCOUT_EVIDENCE_ROOT`, and existing M4 lifecycle configuration. The reviewer command is:
+
+```sh
+scout-review promote \
+  --session-id '<reviewed-session-id>' \
+  --proposal-id '<reviewed-proposal-id>' \
+  --proposal-revision '<reviewed-revision-number>' \
+  --candidate-sha256 '<64-lowercase-hex-digest>' \
+  --confirm-candidate-sha256 '<same-64-lowercase-hex-digest>'
+```
+
+Run it only under the trusted reviewer account in its protected environment. It revalidates the exact BC14 proposal revision and candidate through BC15, then registers that immutable Playbook through M4. It does not approve a release, sign or install authority, or create a run. This is not production RBAC: it relies on administrator-owned Unix account separation, root-owned configuration, and the existing local application adapters. Current Scout identity contracts carry `SourceRef` rather than a tenant field; authorization is therefore source/revision scoped, not separately tenant scoped.
+
+The deterministic integration uses a temporary test-owned UID mapping and exercises M4 PostgreSQL registration, exact digest validation, source-scope denial, denied agent UID, and identical promotion replay. It does not prove a protected reviewer account is provisioned on this host. Release eligibility remained empty after promotion.
+
+The proposal budget check is intentionally conservative for this M8 authoring profile: candidate request, page, and response limits cannot exceed the approved Scout discovery budget. This is not a general invariant that future acquisition budgets must always be bounded by a historical discovery budget. A proposal is not execution authority; the SourceRevision, acquisition policy, approved release, and component safety limits independently govern live execution.
 
 The current composition supports one origin per source because of the existing `ScoutScope` contract; a multi-origin source fails closed. MCP SDK resolution remains pinned in `uv.lock` at 1.30.0 under `mcp>=1.30,<2` as recorded by Proposed ADR 015.
 

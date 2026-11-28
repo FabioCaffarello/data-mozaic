@@ -315,10 +315,11 @@ class ScoutIncrementalTests(unittest.TestCase):
         transcript = self.app.export_transcript(
             session.session_id, "operator", self.now
         )
-        self.assertEqual("scout-transcript-draft/v2", transcript["transcript_schema"])
+        self.assertEqual("scout-transcript-draft/v3", transcript["transcript_schema"])
         self.assertEqual(2, transcript["navigation"]["observation_count"])
         self.assertFalse(transcript["navigation"]["sequence_complete"])
         self.assertEqual([1], [page["sequence"] for page in transcript["pages"]])
+        self.assertEqual("text/html", transcript["pages"][0]["content_type"])
         validate_transcript(transcript)
 
     def test_http_replay_reconstructs_text_from_custody_without_refetch(self):
@@ -936,6 +937,26 @@ class ScoutIncrementalTests(unittest.TestCase):
         self.assertEqual(
             [first_finding_id],
             [item["finding_id"] for item in transcript["findings"]],
+        )
+        revised = app.submit_proposal_incremental(
+            session_id=session.session_id,
+            principal="operator",
+            expected_version=session.version,
+            command_id="proposal-subset-revision-2",
+            idempotency_key="proposal-subset-revision-2-key",
+            fingerprint="proposal-subset-revision-2-fingerprint",
+            summary="Capture the catalog home page with clarified assumptions.",
+            finding_ids=(first_finding_id,),
+            manifest_ids=(manifests[0],),
+            assumptions=("The fixture page is representative only.",),
+            risks=(),
+            required_capabilities=("http.fetch",),
+            now=self.now,
+        )
+        self.assertEqual(session.proposal.proposal_id, revised.proposal.proposal_id)
+        self.assertEqual(2, revised.proposal.proposal_revision)
+        self.assertEqual(
+            [1, 2], [p.proposal_revision for p in revised.proposal_history]
         )
 
     def test_start_denials_do_not_persist_sessions_or_receipts(self):

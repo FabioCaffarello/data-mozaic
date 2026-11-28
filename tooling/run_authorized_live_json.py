@@ -203,6 +203,7 @@ def _configure_case(case: str) -> None:
         "custody-interruption",
         "partial-stage-interruption",
         "work-intake",
+        "json-work-intake",
         *sorted(RAW_ARTIFACT_CASES),
         *RAW_ARTIFACT_CASES,
         *FAILURE_CASES,
@@ -212,6 +213,8 @@ def _configure_case(case: str) -> None:
     REVISION_ID = (
         "controlled-work-intake-v1"
         if case == "work-intake"
+        else "controlled-work-intake-v1"
+        if case == "json-work-intake"
         else "controlled-raw-" + case.removeprefix("raw-") + "-v1"
         if case in RAW_ARTIFACT_CASES
         else "controlled-v1"
@@ -225,7 +228,11 @@ def _configure_case(case: str) -> None:
         "controlled-live-"
         + case
         + "-get"
-        + ("-" + REVISION_ID if case in RAW_ARTIFACT_CASES else "")
+        + (
+            "-" + REVISION_ID
+            if case in RAW_ARTIFACT_CASES or case == "json-work-intake"
+            else ""
+        )
     )
     use_case_name = (
         "controlled-live-json"
@@ -240,6 +247,7 @@ def _configure_case(case: str) -> None:
             "invalid-output",
             "interrupted-body",
             "work-intake",
+            "json-work-intake",
             *sorted(RAW_ARTIFACT_CASES),
             *FAILURE_CASES - {"pagination-incomplete"},
         }
@@ -457,7 +465,7 @@ def _payload_contract(
 ) -> PayloadContractRef:
     contract_id = (
         "controlled-work-intake.record"
-        if CASE_KIND == "work-intake"
+        if CASE_KIND in {"work-intake", "json-work-intake"}
         else "controlled-live-html.record"
         if CASE_KIND == "html"
         else "controlled-live-pagination.record"
@@ -675,7 +683,7 @@ def _policy() -> dict[str, object]:
         "credential_refs": [],
         "evidence_retention_policy_ref": "controlled-test-retention-v1",
     }
-    if CASE_KIND == "work-intake":
+    if CASE_KIND in {"work-intake", "json-work-intake"}:
         policy["query_parameter_values"] = {"limit": ["1", "2", "3"]}
     return _publishable(policy, "policy_digest")
 
@@ -776,6 +784,7 @@ def main() -> int:
             "interrupted-body",
             "pagination-incomplete",
             "work-intake",
+            "json-work-intake",
             *sorted(RAW_ARTIFACT_CASES),
         ),
         default="json",
@@ -789,6 +798,11 @@ def main() -> int:
         "--artifact-size",
         type=int,
         help="controlled deterministic body size for raw-only v4 resource experiments",
+    )
+    parser.add_argument(
+        "--playbook",
+        type=Path,
+        help="use an explicitly supplied immutable controlled candidate for vertical acceptance",
     )
     args = parser.parse_args()
     raw_fault = args.raw_fault
@@ -813,8 +827,55 @@ def main() -> int:
         parser.error(
             "--artifact-size requires successful raw-only v4 and must fit the historical 2,000,000-byte limit"
         )
+    if args.playbook is not None and args.case not in {
+        "json",
+        "work-intake",
+        "json-work-intake",
+        *RAW_ARTIFACT_CASES,
+    }:
+        parser.error("--playbook override is restricted to controlled profile journeys")
     ARTIFACT_SIZE = args.artifact_size
     _configure_case(args.case)
+    playbook_path = PLAYBOOK
+    if args.playbook is not None:
+        import yaml
+
+        candidate_path = args.playbook
+        if candidate_path.is_symlink() or not candidate_path.is_file():
+            parser.error("--playbook must name a regular, non-symlink candidate")
+        candidate_bytes = candidate_path.read_bytes()
+        if not 0 < len(candidate_bytes) <= 1_000_000:
+            parser.error("--playbook candidate exceeds the bounded document size")
+        try:
+            candidate = yaml.safe_load(candidate_bytes)
+        except (UnicodeDecodeError, yaml.YAMLError) as error:
+            parser.error(f"--playbook candidate is invalid YAML: {error}")
+        if not isinstance(candidate, dict):
+            parser.error("--playbook candidate must contain an object")
+        try:
+            candidate_path.resolve(strict=True).relative_to(ROOT.resolve())
+        except ValueError:
+            parser.error(
+                "--playbook candidate must be inside the repository build context"
+            )
+        expected_origin = "https://api.fixture.test"
+        expected_dsl = (
+            "capture-playbook-draft/v4"
+            if args.case in RAW_ARTIFACT_CASES
+            else "capture-playbook-draft/v3"
+            if args.case in {"work-intake", "json-work-intake"}
+            else "capture-playbook-draft/v2"
+        )
+        if (
+            candidate.get("source", {}).get("source_id") != "controlled-http"
+            or candidate.get("source", {}).get("revision") != REVISION_ID
+            or candidate.get("source", {}).get("origin") != expected_origin
+            or candidate.get("dsl_version") != expected_dsl
+        ):
+            parser.error(
+                "--playbook candidate does not bind this exact controlled source revision and profile"
+            )
+        playbook_path = candidate_path.resolve(strict=True)
     if ARTIFACT_SIZE is not None:
         POLICY_ID = (
             "controlled-resource-" + str(ARTIFACT_SIZE) + "-" + uuid.uuid4().hex[:8]
@@ -900,7 +961,9 @@ def main() -> int:
             "CONTROLLED_SOURCE_ARTIFACT_SIZE": (
                 str(ARTIFACT_SIZE) if ARTIFACT_SIZE is not None else ""
             ),
-            "MOZAIC_LIVE_PLAYBOOK": str(PLAYBOOK.relative_to(ROOT)),
+            "MOZAIC_LIVE_PLAYBOOK": str(
+                playbook_path.resolve().relative_to(ROOT.resolve())
+            ),
             "MOZAIC_LIVE_FIXTURES": str(FIXTURES.relative_to(ROOT)),
         }
         if RUN_ISOLATION_ID is not None:
@@ -914,7 +977,7 @@ def main() -> int:
             scenario_playbook = scenario_directory / f"{scenario_id}.yaml"
             scenario_fixtures = scenario_directory / scenario_id
             shutil.copytree(FIXTURES, scenario_fixtures)
-            scenario_text = PLAYBOOK.read_text()
+            scenario_text = playbook_path.read_text()
             if CASE_KIND == "pagination-incomplete":
                 scenario_text = scenario_text.replace(
                     "completion_mode: bounded_window",
@@ -985,6 +1048,8 @@ def main() -> int:
             if CASE_KIND in RAW_ARTIFACT_CASES
             else registry.installed_reference("controlled.input.limit", "1.0.0")
             if CASE_KIND == "work-intake"
+            else registry.installed_reference("controlled.input.limit", "1.0.0")
+            if CASE_KIND == "json-work-intake"
             else None
         )
         snapshot_bytes, trusted_keys = _authority_snapshot(
@@ -1042,7 +1107,53 @@ def main() -> int:
                 ),
                 finalization=coordinator,
             )
-            if CASE_KIND == "work-intake":
+            if CASE_KIND == "json-work-intake":
+                from acquisition_lifecycle_acceptance_support import active_lifecycle
+                from work_intake.adapters.composition import compose_work_intake
+                from work_intake.domain import LogicalInput
+
+                input_reference = ContractReference(
+                    input_contract.contract_id,
+                    input_contract.version,
+                    input_contract.digest,
+                )
+                operations = compose_work_intake(
+                    database_url=os.environ["WORK_INTAKE_DATABASE_URL"],
+                    migrations_root=ROOT / "migrations",
+                    contract_root=ROOT / "contracts/payload/draft/v1",
+                    lifecycle=active_lifecycle(),
+                    coordinator=coordinator,
+                )
+                accepted = operations.submit(
+                    logical_input=LogicalInput(
+                        TENANT,
+                        "structured-json-limit-2",
+                        SOURCE_ID,
+                        REVISION_ID,
+                        input_reference,
+                    ),
+                    idempotency_scope="agent-to-raw-json-acceptance",
+                    idempotency_key="structured-json-" + release_id,
+                    release_id=release_id,
+                    parameters={"limit": 2},
+                )
+                dispatch_results = operations.dispatch_pending(
+                    worker_id="agent-to-raw-json-dispatcher",
+                    limit=1,
+                    tenant_id=TENANT,
+                )
+                if len(dispatch_results) != 1:
+                    raise RuntimeError(
+                        "BC13 did not dispatch the structured JSON Scout proposal"
+                    )
+                accepted = operations.inspect(TENANT, accepted.intent.submission_id)
+                if accepted.run_id is None:
+                    raise RuntimeError(
+                        "structured JSON BC13 submission was not admitted by BC04: "
+                        f"state={accepted.state.value}; diagnostic={accepted.diagnostic_code}"
+                    )
+                accepted_submissions = [accepted]
+            elif CASE_KIND == "work-intake":
                 from acquisition_lifecycle_acceptance_support import active_lifecycle
                 from work_intake.adapters.composition import compose_work_intake
                 from work_intake.domain import LogicalInput
@@ -1393,7 +1504,7 @@ def main() -> int:
                     result_parent = results / intake_submission.intent.submission_id
                     result_parent.mkdir(mode=0o777)
                     result_parent.chmod(0o777)
-                    if CASE_KIND == "work-intake":
+                    if CASE_KIND in {"work-intake", "json-work-intake"}:
                         expected_records_path = root / (
                             "expected-" + str(parameter_value) + ".jsonl"
                         )

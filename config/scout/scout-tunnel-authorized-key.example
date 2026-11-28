@@ -1,0 +1,4 @@
+# Template only. Replace the key field with the dedicated Mac LaunchDaemon key.
+# Install under the Linux scout-mcp-tunnel account with mode 0600, root-owned
+# parent directories, and no other authorized keys for this account.
+restrict,port-forwarding,permitopen="127.0.0.1:8765" ssh-ed25519 REPLACE_WITH_DEDICATED_TUNNEL_PUBLIC_KEY data-mozaic-scout-tunnel

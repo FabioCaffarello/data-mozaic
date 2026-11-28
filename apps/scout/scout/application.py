@@ -3,11 +3,13 @@
 import hashlib
 import json
 import logging
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime
 
 from mozaic_observability import bind_context, log_event
 
+from .discovery_content import SUPPORTED_DISCOVERY_CONTENT_TYPES
 from .domain import (
     AuthorizationError,
     ConflictError,
@@ -16,6 +18,7 @@ from .domain import (
     EvidenceUnavailableError,
     IntegrityError,
     PlaybookProposal,
+    PolicyDecisionRef,
     ScoutObjective,
     ScoutScope,
     ScoutSession,
@@ -23,6 +26,7 @@ from .domain import (
     SourceRef,
     SourceRevisionConflict,
     State,
+    proposal_event_id,
 )
 from .ports import (
     CUSTODY_STATUS_AVAILABLE,
@@ -30,6 +34,7 @@ from .ports import (
     FixtureExplorationPort,
     HTTPDiscoveryFactoryPort,
     PolicyDecisionPort,
+    ProposalReviewAccessPort,
     ScoutSessionRepositoryPort,
     SourceLookupPort,
 )
@@ -71,11 +76,13 @@ class ScoutApplication:
         custody: EvidenceCustodyPort,
         fixture_explorer: FixtureExplorationPort | None = None,
         http_discovery_factory: HTTPDiscoveryFactoryPort | None = None,
+        proposal_review_access: ProposalReviewAccessPort | None = None,
     ):
         self.sources, self.policy, self.repository = sources, policy, repository
         self.custody = custody
         self.fixture_explorer = fixture_explorer
         self.http_discovery_factory = http_discovery_factory
+        self.proposal_review_access = proposal_review_access
 
     @staticmethod
     def _trace(event: str, session_id: str, command_id: str, state: str) -> None:
@@ -467,7 +474,7 @@ class ScoutApplication:
                 or observation.source != session.source
                 or observation.session_id != session_id
                 or observation.url is None
-                or observation.content_type not in {"text/html", "text/plain"}
+                or observation.content_type not in SUPPORTED_DISCOVERY_CONTENT_TYPES
                 or not observation.extraction_version
                 or replay_target is None
                 or not session.authorization.scope.allows(
@@ -572,7 +579,7 @@ class ScoutApplication:
         if (
             result.status < 100
             or result.status > 599
-            or result.content_type not in {"text/html", "text/plain"}
+            or result.content_type not in SUPPORTED_DISCOVERY_CONTENT_TYPES
             or not isinstance(result.body, bytes)
             or not isinstance(result.extraction_version, str)
             or not result.extraction_version
@@ -838,6 +845,7 @@ class ScoutApplication:
         risks: tuple[str, ...],
         required_capabilities: tuple[str, ...],
         now: datetime,
+        candidate_specification: dict | None = None,
     ) -> ScoutSession:
         """Persist a BC14 proposal; repository outbox owns BC15 delivery intent."""
         session, decision = self.authorized_session(session_id, principal, now)
@@ -853,8 +861,27 @@ class ScoutApplication:
             return replay
         if session.version != expected_version or not command_id:
             raise ConflictError("expected version or command identity is invalid")
+        candidate = deepcopy(candidate_specification)
+        candidate_digest = (
+            hashlib.sha256(
+                (
+                    json.dumps(
+                        candidate,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode()
+            ).hexdigest()
+            if candidate is not None
+            else None
+        )
         proposal = PlaybookProposal(
-            "proposal-" + command_id,
+            # Proposal identity is session-derived, not command-derived. This
+            # lets an author bind candidate.proposal_ref without a digest/ID
+            # cycle in the idempotent command fingerprint.
+            "proposal-" + session_id,
             session.session_id,
             session.source,
             summary,
@@ -863,6 +890,9 @@ class ScoutApplication:
             assumptions,
             risks,
             required_capabilities,
+            1 if session.proposal is None else session.proposal.proposal_revision + 1,
+            candidate,
+            candidate_digest,
         )
         # Validate proposal references before persisting its command intent.
         session.propose(proposal, decision, now)
@@ -915,9 +945,81 @@ class ScoutApplication:
     def export_transcript(self, session_id: str, principal: str, now: datetime) -> dict:
         """Build a redacted BC14→BC15 DTO from reauthorized verified state."""
         session, decision = self.authorized_session(session_id, principal, now)
+        return self._export_transcript_snapshot(session, decision)
+
+    def export_transcript_for_review(
+        self, session_id: str, reviewer: str, now: datetime
+    ) -> dict:
+        """Export a proposal to an authenticated, source-scoped reviewer.
+
+        Reviewer access is independently authorized and uses the immutable
+        navigation-budget snapshot committed by BC14. It does not impersonate
+        the author or require the author's short-lived approval to remain live.
+        """
+        if self.proposal_review_access is None:
+            raise AuthorizationError("reviewer access is not configured")
+        header = self.repository.get_session_header(session_id)
+        if header is None:
+            raise IntegrityError("proposal unavailable")
+        source = header["source"]
+        self.proposal_review_access.authorize(reviewer, source)
+        session = self.repository.get_session(session_id)
+        if (
+            session is None
+            or session.session_id != session_id
+            or session.source != source
+            or header["principal"] != session.principal
+            or session.authorization is None
+        ):
+            raise IntegrityError("proposal unavailable")
+        self.sources.resolve(source)
+        policy_snapshot = self.repository.get_navigation_scope_snapshot(session_id)
+        if (
+            policy_snapshot is None
+            or policy_snapshot.get("principal") != session.principal
+            or policy_snapshot.get("source")
+            != {"source_id": source.source_id, "revision": source.revision}
+        ):
+            raise IntegrityError("durable discovery authorization is unavailable")
+        saved_scope = policy_snapshot.get("scope")
+        if not isinstance(saved_scope, dict):
+            raise IntegrityError("durable discovery authorization is invalid")
+        grants = saved_scope.get("grants")
+        if not isinstance(grants, list) or not grants:
+            raise IntegrityError("durable discovery scope is invalid")
+        saved = ScoutScope(
+            tuple(sorted({item["origin"] for item in grants})),
+            tuple(sorted({path for item in grants for path in item["path_prefixes"]})),
+            ("GET",),
+            saved_scope["max_requests"],
+            saved_scope["max_duration_seconds"],
+        )
+        scoped = session.authorization.scope.intersect(saved)
+        current_source_scope = self.sources.resolve(source)
+        if (
+            scoped.intersect(current_source_scope) != scoped
+            or not scoped.origins
+            or not scoped.path_prefixes
+        ):
+            raise IntegrityError("review scope no longer matches the SourceRevision")
+        if self.repository.has_incomplete_commands(session.session_id):
+            raise IntegrityError("proposal has an unresolved authoring operation")
+        decision = PolicyDecisionRef(
+            decision_id=session.authorization.decision_id,
+            principal=session.principal,
+            source=source,
+            allowed=True,
+            expires_at=now,
+            scope=scoped,
+            max_response_bytes=saved_scope["max_response_bytes"],
+        )
+        return self._export_transcript_snapshot(session, decision)
+
+    def _export_transcript_snapshot(self, session, decision) -> dict:
+        """Render already-authorized state and verify every referenced artifact."""
         if session.proposal is None or not session.findings or not session.manifests:
             raise IntegrityError("session lacks evidence-backed proposal state")
-        if self.repository.has_incomplete_commands(session_id):
+        if self.repository.has_incomplete_commands(session.session_id):
             raise IntegrityError("session has an in-progress or uncertain command")
         if len(decision.scope.origins) != 1:
             raise IntegrityError("transcript draft requires one approved origin")
@@ -1008,6 +1110,7 @@ class ScoutApplication:
                 )
             page = {
                 "url": observation.url,
+                "content_type": observation.content_type,
                 "evidence_ref": manifest_id,
                 "artifact_id": artifact.artifact_id,
                 "sha256": artifact.sha256,
@@ -1061,7 +1164,10 @@ class ScoutApplication:
         selected_sequences = [page["sequence"] for page in pages if "sequence" in page]
         transcript = {
             "transcript_schema": (
-                "scout-transcript-draft/v2"
+                "scout-transcript-draft/v4"
+                if http_observations
+                and session.proposal.candidate_specification is not None
+                else "scout-transcript-draft/v3"
                 if http_observations
                 else "scout-transcript-draft/v1"
             ),
@@ -1103,6 +1209,14 @@ class ScoutApplication:
                 == list(range(1, len(session_http_observations) + 1)),
                 "observation_count": len(session_http_observations),
             }
+        if session.proposal.candidate_specification is not None:
+            transcript["proposal_history"] = [
+                {
+                    "revision": item.proposal_revision,
+                    "proposal": projection(item),
+                }
+                for item in session.proposal_history
+            ]
         self._trace(
             "scout.transcript.exported",
             session.session_id,
@@ -1390,7 +1504,7 @@ class ScoutApplication:
             self.custody.verify(a) for m in session.manifests for a in m.artifacts
         ):
             raise IntegrityError("evidence integrity failed before handoff")
-        event_id = "handoff:" + session.proposal.proposal_id
+        event_id = proposal_event_id(session.proposal)
         handoff = self.repository.handoff_status(event_id)
         if handoff is None:
             raise IntegrityError("persisted proposal has no outbox intent")
@@ -1407,7 +1521,7 @@ class ScoutApplication:
         with bind_context(
             command_id=request.get("request_id"),
             session_id=session.session_id,
-            event_id="handoff:" + session.proposal.proposal_id,
+            event_id=proposal_event_id(session.proposal),
         ):
             log_event(
                 _LOGGER,

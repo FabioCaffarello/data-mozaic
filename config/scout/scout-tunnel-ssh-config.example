@@ -1,0 +1,15 @@
+# Template for the operator-managed macOS tunnel account, not the Codex user.
+Host scout-protected-vm
+    HostName REPLACE_WITH_OPERATOR_ASSIGNED_LINUX_VM_ADDRESS
+    User scout-mcp-tunnel
+    IdentityFile /etc/data-mozaic/scout/tunnel_ed25519
+    UserKnownHostsFile /etc/data-mozaic/scout/known_hosts
+    IdentitiesOnly yes
+    BatchMode yes
+    StrictHostKeyChecking yes
+    ForwardAgent no
+    ClearAllForwardings yes
+    LocalForward 127.0.0.1:8765 127.0.0.1:8765
+    ExitOnForwardFailure yes
+    ServerAliveInterval 30
+    ServerAliveCountMax 3

@@ -27,6 +27,7 @@ from ...domain import (
     SourceObservation,
     SourceRef,
     State,
+    proposal_event_id,
 )
 from ...projections import projection
 from ...tools.policy import EffectiveScope, OriginGrant
@@ -224,6 +225,23 @@ def _session_document(session: ScoutSession) -> dict[str, Any]:
     return {"document_version": 1, "session": asdict(session)}
 
 
+def _restore_proposal(value: dict[str, Any]) -> PlaybookProposal:
+    return PlaybookProposal(
+        value["proposal_id"],
+        value["session_id"],
+        SourceRef(**value["source"]),
+        value["summary"],
+        tuple(value["finding_ids"]),
+        tuple(value["manifest_ids"]),
+        tuple(value["assumptions"]),
+        tuple(value["risks"]),
+        tuple(value["required_capabilities"]),
+        value.get("proposal_revision", 1),
+        value.get("candidate_specification"),
+        value.get("candidate_sha256"),
+    )
+
+
 def _restore(value: dict[str, Any]) -> ScoutSession:
     if value.get("document_version") != 1 or not isinstance(value.get("session"), dict):
         raise IntegrityError("unsupported persisted Scout document version")
@@ -298,20 +316,10 @@ def _restore(value: dict[str, Any]) -> ScoutSession:
         for item in raw["findings"]
     )
     proposal_raw = raw["proposal"]
-    proposal = (
-        None
-        if proposal_raw is None
-        else PlaybookProposal(
-            proposal_raw["proposal_id"],
-            proposal_raw["session_id"],
-            SourceRef(**proposal_raw["source"]),
-            proposal_raw["summary"],
-            tuple(proposal_raw["finding_ids"]),
-            tuple(proposal_raw["manifest_ids"]),
-            tuple(proposal_raw["assumptions"]),
-            tuple(proposal_raw["risks"]),
-            tuple(proposal_raw["required_capabilities"]),
-        )
+    proposal = None if proposal_raw is None else _restore_proposal(proposal_raw)
+    proposal_history = tuple(
+        _restore_proposal(item)
+        for item in raw.get("proposal_history", [proposal_raw] if proposal_raw else [])
     )
     # Hydration is the sole adapter boundary allowed to reconstruct a terminal
     # snapshot. Build the identity first, then restore persisted state without
@@ -333,6 +341,7 @@ def _restore(value: dict[str, Any]) -> ScoutSession:
         ("manifests", manifests),
         ("findings", findings),
         ("proposal", proposal),
+        ("proposal_history", proposal_history),
         ("handoff_result", raw["handoff_result"]),
         ("start_requested_url", raw.get("start_requested_url")),
         ("start_effective_url", raw.get("start_effective_url")),
@@ -424,6 +433,26 @@ class PostgresScoutSessionRepository:
                 (session_id,),
             ).fetchone()
         return _restore(row[0]) if row else None
+
+    def get_navigation_scope_snapshot(self, session_id: str) -> dict[str, Any] | None:
+        """Read the exact durable authorization budget for reviewer inspection.
+
+        This is an owner-local lookup by the immutable session identity. It is
+        deliberately separate from the bounded operational outbox listing.
+        """
+        with psycopg.connect(self.dsn) as conn:
+            row = conn.execute(
+                """SELECT principal, source_id, source_revision, scope_snapshot
+                   FROM scout_navigation_budgets WHERE session_id=%s""",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "principal": row[0],
+            "source": {"source_id": row[1], "revision": row[2]},
+            "scope": row[3],
+        }
 
     def find_command_header(
         self, principal: str, key: str, fingerprint: str
@@ -580,14 +609,15 @@ class PostgresScoutSessionRepository:
                 payload = projection(session.proposal)
                 conn.execute(
                     """INSERT INTO scout_outbox
-                       (event_id,aggregate_id,aggregate_version,event_kind,channel,proposal_id,payload,publication_state)
-                       VALUES (%s,%s,%s,'PlaybookProposalSubmitted','BC15',%s,%s,'pending')
-                       ON CONFLICT (channel,proposal_id) DO NOTHING""",
+                       (event_id,aggregate_id,aggregate_version,event_kind,channel,proposal_id,proposal_revision,payload,publication_state)
+                       VALUES (%s,%s,%s,'PlaybookProposalSubmitted','BC15',%s,%s,%s,'pending')
+                       ON CONFLICT (channel,proposal_id,proposal_revision) DO NOTHING""",
                     (
-                        "handoff:" + session.proposal.proposal_id,
+                        proposal_event_id(session.proposal),
                         session.session_id,
                         next_version,
                         session.proposal.proposal_id,
+                        session.proposal.proposal_revision,
                         Jsonb(payload),
                     ),
                 )
@@ -650,14 +680,15 @@ class PostgresScoutSessionRepository:
                 payload = projection(session.proposal)
                 conn.execute(
                     """INSERT INTO scout_outbox
-                    (event_id,aggregate_id,aggregate_version,event_kind,channel,proposal_id,payload,publication_state)
-                    VALUES (%s,%s,%s,'PlaybookProposalSubmitted','BC15',%s,%s,'pending')
-                    ON CONFLICT (channel,proposal_id) DO NOTHING""",
+                    (event_id,aggregate_id,aggregate_version,event_kind,channel,proposal_id,proposal_revision,payload,publication_state)
+                    VALUES (%s,%s,%s,'PlaybookProposalSubmitted','BC15',%s,%s,%s,'pending')
+                    ON CONFLICT (channel,proposal_id,proposal_revision) DO NOTHING""",
                     (
-                        "handoff:" + session.proposal.proposal_id,
+                        proposal_event_id(session.proposal),
                         session.session_id,
                         next_version,
                         session.proposal.proposal_id,
+                        session.proposal.proposal_revision,
                         Jsonb(payload),
                     ),
                 )

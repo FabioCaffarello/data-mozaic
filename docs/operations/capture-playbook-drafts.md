@@ -6,9 +6,15 @@ This package creates an illustrative BC15 candidate from a host-produced transcr
 
 ```sh
 make sync
+make acquisition-capabilities
 tooling/codex-scout-bc15.sh draft /absolute/session/transcript.json --output /absolute/session/candidate.yaml
 tooling/codex-scout-bc15.sh validate /absolute/session/candidate.yaml
 ```
+
+`make acquisition-capabilities` prints the versioned surface projected from
+BC15 backend profiles, Playbook schemas and the live compiler's constrained
+graphs. It is descriptive only: it grants neither source access nor release
+approval. Historical Playbook schema versions retain their original meaning.
 
 ## CapturePlaybook draft/v2 and offline compiler backends
 
@@ -38,6 +44,28 @@ make collector-playbook-examples
 The versioned wrapper resolves the monorepo from its own location and works with an arbitrary current directory and artifact paths containing spaces. It requires the `.venv` produced by `make sync`, skips environment synchronization, stays offline, and keeps uv's cache in the ignored `.local/uv-cache/` path inside the checkout. This lets Codex workspace-write run it without access to a user-global cache. If the wrapper fails, stop and report the failure; do not unset proxy variables or invoke BC15 through `.venv`/Python as a fallback. The transcript must include an approval receipt, exact source revision and scope, a Scout v1 `PlaybookProposal`, classified findings, durable evidence references, and explicit BC14 navigation identity. For draft/v1 the proposal capability vocabulary is `http.fetch`, `links.discover`, `pagination.bounded`, and `output.raw`. BC14 transcript draft v2 carries requested/effective start URLs, ordered observations, evidence identity and discovery relations. Transcript draft v1 remains readable for inspection but BC15 refuses to author from it because its start URL is ambiguous. The local CLI checks that values match; it cannot authenticate the receipt. Only a trusted policy host can establish identity and authorization.
 
 The protected MCP executor receives an authorized transcript, draft and custody-verified fixture bytes over a bounded channel. BC15 independently verifies fixture identity, size and digest; it makes no network calls, records pages/request budgets, and publishes `output.raw` into the executor's per-run named volume. The container has no network, Docker socket, host bind mount, capabilities, or writable root filesystem; it runs as non-root with CPU, memory, PID and wall-time limits. Docker Desktop stores the volume in its Linux VM. Linux CI runs containers in the host kernel, so this does not claim protection from kernel compromise or container escape. The Codex workspace-write process is denied the local Docker daemon socket; the MCP adapter exposes only typed replay/acceptance operations and does not accept output/fixture paths, commands, mounts or runtime options. The underlying direct Python `replay()` and `accept_acquisition()` functions remain for trusted tests/development callers only. Their filesystem writer rejects initial symlinks and checks digests, permissions, and publication integrity, but `O_NOFOLLOW`, descriptor-relative operations, `fstat`, and post-write checks cannot prevent a same-UID process from moving an already-open directory. Direct calls are not the protected mode. Raw output preserves bytes and does not extract structured records. Missing fixtures, invalid status, excess bytes, budget exhaustion, output failures or digest mismatch fail closed; no `passed` result is returned after a failed publication.
+
+## Current transcript and raw document handoff
+
+New controlled HTTP exports use transcript draft/v3, which adds the observed
+`content_type` declaration to each page; v1/v2 remain readable with their
+historical shape. Scout discovery accepts bounded HTML, plain text, JSON text,
+and opaque PDF. JSON text is redacted and bounded for authoring. PDF bytes are
+not parsed or returned as text; BC06 custody remains the byte authority. A v3
+single-page transcript can produce a v4 raw artifact candidate:
+
+```sh
+tooling/codex-scout-bc15.sh draft /absolute/session/transcript.json \
+  --profile raw-artifact-v4 --output /absolute/session/candidate-v4.yaml
+tooling/codex-scout-bc15.sh validate /absolute/session/candidate-v4.yaml
+```
+
+The adapter binds the evidence's declared media type and the minimum of the
+approved response budget and historical 2,000,000-byte v4 maximum. It rejects
+multiple pages, redirects, malformed media declarations and oversize evidence.
+This only creates a candidate; it does not promote a Playbook, compile a live
+BotBuild, create a BotRelease or approve authority. The protected Scout broker
+deployment and governed promotion path remain separate operational gates.
 
 ## Protected run lifecycle
 

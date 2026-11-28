@@ -323,6 +323,38 @@ class HTTPDiscoveryToolTests(unittest.IsolatedAsyncioTestCase):
             "http.redirect.authorized", [event[0] for event in self.trace.events]
         )
 
+    async def test_json_is_bounded_authoring_text_and_pdf_remains_opaque_evidence(self):
+        for media_type, body, expected_text, expected_version in (
+            (
+                "application/json",
+                b'{"items":[{"id":"A-1"}],"api_key":"secret-value"}',
+                '{"items":[{"id":"A-1"}],"api_key":"[REDACTED]"}',
+                "scout-json-text-v1",
+            ),
+            ("application/pdf", b"%PDF-1.7\x00opaque", "", "scout-opaque-v1"),
+        ):
+            with self.subTest(media_type=media_type):
+                self.budget = ToolFakes.Budget()
+                response = HTTPResponse(200, {"content-type": media_type}, body)
+                transport = ToolFakes.Transport([response])
+                tool = HTTPDiscoveryTool(
+                    ToolFakes.Context(),
+                    self.auth,
+                    self.budget,
+                    self.evidence,
+                    self.trace,
+                    ToolFakes.Clock(),
+                    transport,
+                )
+                result = await tool.fetch(
+                    "owned-source", "revision-1", "https://example.org/foo/document"
+                )
+                self.assertEqual(expected_text, result.text)
+                self.assertEqual(expected_version, result.extraction_version)
+                self.assertEqual((), result.links)
+                self.assertEqual(body, self.evidence.rows[-1][3])
+                self.assertEqual(media_type, self.evidence.rows[-1][2])
+
     async def test_out_of_scope_initial_url_never_reaches_transport(self):
         transport = ToolFakes.Transport([])
         tool = HTTPDiscoveryTool(

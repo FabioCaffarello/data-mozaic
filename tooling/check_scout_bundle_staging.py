@@ -73,10 +73,30 @@ async def _exercise_http(token: str) -> None:
     ):
         await session.initialize()
         result = await session.list_tools()
-    names = {tool.name for tool in result.tools}
-    required = {"scout_preflight", "scout_bc15_replay", "scout_bc15_accept"}
-    if not required.issubset(names):
-        raise RuntimeError("installed broker MCP tool catalog is incomplete")
+        names = {tool.name for tool in result.tools}
+        required = {
+            "scout_preflight",
+            "scout_start",
+            "scout_fetch",
+            "scout_record_finding",
+            "scout_propose",
+            "scout_status",
+            "scout_export_transcript",
+            "scout_proposal_history",
+            "scout_validate_proposal",
+            "scout_prepare_promotion",
+        }
+        if names != required:
+            raise RuntimeError(
+                "installed broker MCP tool catalog is not authoring-only"
+            )
+        denied = await session.call_tool(
+            "scout_bc15_replay", {"session_id": "unavailable", "draft_yaml": "{}"}
+        )
+        if "unknown_tool" not in str(denied):
+            raise RuntimeError(
+                "installed broker accepted a tool outside the authoring set"
+            )
 
 
 def _request_unauthenticated(request: Request) -> None:
@@ -108,7 +128,8 @@ def main() -> int:
         state = root / "state"
         state.mkdir(mode=0o700)
         evidence = root / "evidence"
-        evidence.mkdir(mode=0o700)
+        evidence.mkdir(mode=0o750)
+        evidence.chmod(0o2750)
         artifacts = root / "artifacts"
         artifacts.mkdir(mode=0o700)
         token = "ci-synthetic-" + secrets.token_hex(32)
@@ -121,6 +142,7 @@ def main() -> int:
             "SCOUT_HOST_POLICY_FILE": str(policy),
             "SCOUT_RUNTIME_STATE_DIR": str(state),
             "SCOUT_EVIDENCE_ROOT": str(evidence),
+            "SCOUT_EVIDENCE_REVIEWER_GID": str(os.getegid()),
             "SCOUT_ARTIFACT_ROOT": str(artifacts),
             "SCOUT_BC15_WORKER_IMAGE_DIGEST": worker_image,
             "SCOUT_DOCKER_EXECUTABLE": docker,
